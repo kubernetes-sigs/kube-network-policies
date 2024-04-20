@@ -15,7 +15,7 @@ env:
   K8S_VERSION: "v1.29.2"
   KIND_VERSION: "v0.22.0"
   REGISTRY: ghcr.io
-  IMAGE_NAME: registry.k8s.io/kube-netpol
+  IMAGE_NAME: registry.k8s.io/kube-network-policies
   KIND_CLUSTER_NAME: kind
 
 permissions: write-all
@@ -36,14 +36,14 @@ jobs:
 
     - name: Build
       run: |
-        docker build -t registry.k8s.io/kube-netpol:test -f Dockerfile .
+        docker build -t registry.k8s.io/kube-network-policies:test -f Dockerfile .
         mkdir _output
-        docker save registry.k8s.io/kube-netpol:test  > _output/kube-netpol-image.tar
+        docker save registry.k8s.io/kube-network-policies:test  > _output/kube-network-policies-image.tar
 
     - uses: actions/upload-artifact@v2
       with:
         name: test-image
-        path: _output/kube-netpol-image.tar
+        path: _output/kube-network-policies-image.tar
 
   e2e:
     name: e2e
@@ -57,7 +57,7 @@ jobs:
         # TODO add "dual", waiting on KEP https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/3705-cloud-node-ips
         ipFamily: ["ipv4", "ipv6"]
     env:
-      JOB_NAME: "kube-netpol-${{ matrix.ipFamily }}"
+      JOB_NAME: "kube-network-policies-${{ matrix.ipFamily }}"
       IP_FAMILY: ${{ matrix.ipFamily }}
     steps:
     - name: Check out code
@@ -112,12 +112,12 @@ jobs:
       with:
         name: test-image
 
-    - name: Install kube-netpol
+    - name: Install kube-network-policies
       run: |
-        # preload kube-netpol image
-        docker load --input kube-netpol-image.tar
-        /usr/local/bin/kind load docker-image registry.k8s.io/kube-netpol:test --name ${{ env.KIND_CLUSTER_NAME}}
-        sed -i s#registry.k8s.io/kube-netpol.*#registry.k8s.io/kube-netpol:test# install.yaml
+        # preload kube-network-policies image
+        docker load --input kube-network-policies-image.tar
+        /usr/local/bin/kind load docker-image registry.k8s.io/kube-network-policies:test --name ${{ env.KIND_CLUSTER_NAME}}
+        sed -i s#registry.k8s.io/kube-network-policies.*#registry.k8s.io/kube-network-policies:test# install.yaml
         /usr/local/bin/kubectl apply -f ./install.yaml
 
     - name: Get Cluster status
