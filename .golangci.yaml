@@ -13,3 +13,10 @@ linters:
     - staticcheck
     - stylecheck
     - typecheck
+
+issues:
+  exclude-rules:
+    # metrics use the names of the kernel variables using snake case format
+    - path: pkg/networkpolicy/metrics.go
+      linters:
+        - stylecheck

@@ -354,7 +354,7 @@ func (c *Controller) Run(ctx context.Context) error {
 func (c *Controller) syncNFTablesRules(ctx context.Context) {
 	rule := fmt.Sprintf("ct state new queue to %d", c.config.QueueID)
 	if c.config.FailOpen {
-		rule = rule + " bypass"
+		rule += " bypass"
 	}
 	table := &knftables.Table{
 		Comment: knftables.PtrTo("rules for kubernetes NetworkPolicy"),
@@ -455,10 +455,10 @@ func (c *Controller) acceptPacket(p packet) bool {
 
 	msg := fmt.Sprintf("checking packet %s:", p.String())
 	if srcPod != nil {
-		msg = msg + fmt.Sprintf(" SrcPod (%s/%s): %d NetworkPolicy", srcPod.Name, srcPod.Namespace, len(srcPodNetworkPolices))
+		msg += fmt.Sprintf(" SrcPod (%s/%s): %d NetworkPolicy", srcPod.Name, srcPod.Namespace, len(srcPodNetworkPolices))
 	}
 	if dstPod != nil {
-		msg = msg + fmt.Sprintf(" DstPod (%s/%s): %d NetworkPolicy", dstPod.Name, dstPod.Namespace, len(dstPodNetworkPolices))
+		msg += fmt.Sprintf(" DstPod (%s/%s): %d NetworkPolicy", dstPod.Name, dstPod.Namespace, len(dstPodNetworkPolices))
 	}
 	klog.V(2).Infof("%s", msg)
 
