@@ -14,7 +14,7 @@ require (
 	k8s.io/component-base v0.29.3
 	k8s.io/klog/v2 v2.120.1
 	k8s.io/utils v0.0.0-20230726121419-3b25d923346b
-	sigs.k8s.io/knftables v0.0.15
+	sigs.k8s.io/knftables v0.0.16
 )
 
 require (
