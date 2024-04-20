@@ -30,7 +30,7 @@ Current implemented metrics are:
 
 ## Testing
 
-See [.docs/testing/README.md] 
+See [TESTING](docs/testing/README.md) 
 
 ## References
 
