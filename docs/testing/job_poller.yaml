@@ -1,0 +1,14 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: abtest
+spec:
+  completions: 50
+  parallelism: 10
+  template:
+    spec:
+      containers:
+      - name: ab
+        image: httpd:2
+        command: ["ab", "-n", "10000", "-c", "1000", "-v", "1", "http://test-service:80/"]
+      restartPolicy: Never
