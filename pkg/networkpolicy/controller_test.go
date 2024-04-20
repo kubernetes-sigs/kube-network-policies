@@ -121,7 +121,10 @@ func newController() *networkpolicyController {
 }
 
 func TestSyncPacket(t *testing.T) {
-	logs.GlogSetter("4")
+	_, err := logs.GlogSetter("4")
+	if err != nil {
+		t.Fatal(err)
+	}
 	state := klog.CaptureState()
 	t.Cleanup(state.Restore)
 
@@ -498,13 +501,22 @@ func TestSyncPacket(t *testing.T) {
 			controller := newController()
 			// Add objects to the Store
 			for _, n := range tt.networkpolicy {
-				controller.networkpolicyStore.Add(n)
+				err := controller.networkpolicyStore.Add(n)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			for _, n := range tt.namespace {
-				controller.namespaceStore.Add(n)
+				err := controller.namespaceStore.Add(n)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			for _, p := range tt.pod {
-				controller.podStore.Add(p)
+				err := controller.podStore.Add(p)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			ok := controller.acceptPacket(tt.p)
@@ -535,13 +547,22 @@ func TestController_evaluateSelectors(t *testing.T) {
 			c := newController()
 			// Add objects to the Store
 			for _, n := range tt.networkpolicies {
-				c.networkpolicyStore.Add(n)
+				err := c.networkpolicyStore.Add(n)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			for _, n := range tt.namespaces {
-				c.namespaceStore.Add(n)
+				err := c.namespaceStore.Add(n)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			for _, p := range tt.pods {
-				c.podStore.Add(p)
+				err := c.podStore.Add(p)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			if got := c.evaluateSelectors(tt.peerPodSelector, tt.peerNSSelector, tt.pod, tt.policyNs); got != tt.want {
 				t.Errorf("Controller.evaluateSelectors() = %v, want %v", got, tt.want)

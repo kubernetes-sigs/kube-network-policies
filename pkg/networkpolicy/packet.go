@@ -33,8 +33,7 @@ func parsePacket(b []byte) (packet, error) {
 	}
 	version := int(b[0] >> 4)
 	// initialize variables
-	hdrlen := -1
-	protocol := -1
+	var hdrlen, protocol int
 	switch version {
 	case 4:
 		t.family = v1.IPv4Protocol

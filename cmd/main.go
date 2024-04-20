@@ -11,13 +11,15 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/sys/unix"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -76,7 +78,10 @@ func main() {
 	informersFactory := informers.NewSharedInformerFactory(clientset, 0)
 
 	http.Handle("/metrics", promhttp.Handler())
-	go http.ListenAndServe(metricsBindAddress, nil)
+	go func() {
+		err := http.ListenAndServe(metricsBindAddress, nil)
+		utilruntime.HandleError(err)
+	}()
 
 	networkPolicyController := networkpolicy.NewController(
 		clientset,
@@ -85,7 +90,10 @@ func main() {
 		informersFactory.Core().V1().Pods(),
 		cfg,
 	)
-	go networkPolicyController.Run(ctx)
+	go func() {
+		err := networkPolicyController.Run(ctx)
+		utilruntime.HandleError(err)
+	}()
 
 	informersFactory.Start(ctx.Done())
 

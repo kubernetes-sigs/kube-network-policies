@@ -122,7 +122,7 @@ func NewController(client clientset.Interface,
 
 	}
 
-	podInformer.Informer().AddIndexers(cache.Indexers{
+	err := podInformer.Informer().AddIndexers(cache.Indexers{
 		podIPIndex: func(obj interface{}) ([]string, error) {
 			pod, ok := obj.(*v1.Pod)
 			if !ok {
@@ -140,6 +140,9 @@ func NewController(client clientset.Interface,
 			return result, nil
 		},
 	})
+	if err != nil {
+		panic(err)
+	}
 
 	podIndexer := podInformer.Informer().GetIndexer()
 	// Theoretically only one IP can be active at a time
@@ -173,7 +176,10 @@ func NewController(client clientset.Interface,
 		}
 		return obj, nil
 	}
-	podInformer.Informer().SetTransform(trim)
+	err = podInformer.Informer().SetTransform(trim)
+	if err != nil {
+		utilruntime.HandleError(err)
+	}
 
 	c.podLister = podInformer.Lister()
 	c.podsSynced = podInformer.Informer().HasSynced
@@ -304,14 +310,14 @@ func (c *Controller) Run(ctx context.Context) error {
 		packet, err := parsePacket(*a.Payload)
 		if err != nil {
 			klog.Infof("Can not process packet %d accepting it: %v", *a.PacketID, err)
-			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfAccept)
+			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfAccept) //nolint:errcheck
 		}
 
 		verdict := c.acceptPacket(packet)
 		if verdict {
-			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfAccept)
+			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfAccept) //nolint:errcheck
 		} else {
-			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfDrop)
+			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfDrop) //nolint:errcheck
 		}
 
 		processingTime := float64(time.Since(startTime).Microseconds())

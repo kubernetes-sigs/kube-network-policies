@@ -59,13 +59,13 @@ var registerMetricsOnce sync.Once
 func registerMetrics(ctx context.Context) {
 	registerMetricsOnce.Do(func() {
 		klog.Infof("Registering metrics")
-		prometheus.Register(packetProcessingHist)
-		prometheus.Register(packetProcessingSum)
-		prometheus.Register(packetCounterVec)
-		prometheus.Register(nfqueueQueueTotal)
-		prometheus.Register(nfqueueQueueDropped)
-		prometheus.Register(nfqueueUserDropped)
-		prometheus.Register(nfqueuePacketID)
+		prometheus.MustRegister(packetProcessingHist)
+		prometheus.MustRegister(packetProcessingSum)
+		prometheus.MustRegister(packetCounterVec)
+		prometheus.MustRegister(nfqueueQueueTotal)
+		prometheus.MustRegister(nfqueueQueueDropped)
+		prometheus.MustRegister(nfqueueUserDropped)
+		prometheus.MustRegister(nfqueuePacketID)
 	})
 }
 
@@ -79,7 +79,7 @@ type nfnetlinkQueue struct {
 	queue_dropped int    // Number of packets that had to be dropped by the kernel because too many packets are already waiting for user space to send back the mandatory accept/drop verdicts.
 	user_dropped  int    // Number of packets that were dropped within the netlink subsystem. Such drops usually happen when the corresponding socket buffer is full; that is, user space is not able to read 	messages fast enough.
 	id_sequence   int    // sequence number.  Every queued packet is associated with a (32-bit) monotonically increasing sequence number. This shows the ID of the most recent packet queued.
-	dummy         int    // Field is always ‘1’ and is ignored, only kept for compatibility reasons.
+	// dummy      int    // Field is always ‘1’ and is ignored, only kept for compatibility reasons.
 }
 
 func readNfnetlinkQueueStats() ([]nfnetlinkQueue, error) {
