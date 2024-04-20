@@ -69,7 +69,7 @@ spec:
       serviceAccountName: kube-network-policies
       containers:
       - name: kube-network-policies
-        image: registry.k8s.io/kube-network-policies:v0.1.0
+        image: registry.k8s.io/networking/kube-network-policies:v0.1.0
         args:
         - /bin/netpol
         - -v

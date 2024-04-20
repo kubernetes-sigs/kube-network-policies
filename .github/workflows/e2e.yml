@@ -14,8 +14,7 @@ env:
   GO_VERSION: "1.22.0"
   K8S_VERSION: "v1.29.2"
   KIND_VERSION: "v0.22.0"
-  REGISTRY: ghcr.io
-  IMAGE_NAME: registry.k8s.io/kube-network-policies
+  IMAGE_NAME: registry.k8s.io/networking/kube-network-policies
   KIND_CLUSTER_NAME: kind
 
 permissions: write-all
@@ -36,9 +35,9 @@ jobs:
 
     - name: Build
       run: |
-        docker build -t registry.k8s.io/kube-network-policies:test -f Dockerfile .
+        docker build -t registry.k8s.io/networking/kube-network-policies:test -f Dockerfile .
         mkdir _output
-        docker save registry.k8s.io/kube-network-policies:test  > _output/kube-network-policies-image.tar
+        docker save registry.k8s.io/networking/kube-network-policies:test  > _output/kube-network-policies-image.tar
 
     - uses: actions/upload-artifact@v2
       with:
@@ -116,8 +115,8 @@ jobs:
       run: |
         # preload kube-network-policies image
         docker load --input kube-network-policies-image.tar
-        /usr/local/bin/kind load docker-image registry.k8s.io/kube-network-policies:test --name ${{ env.KIND_CLUSTER_NAME}}
-        sed -i s#registry.k8s.io/kube-network-policies.*#registry.k8s.io/kube-network-policies:test# install.yaml
+        /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test --name ${{ env.KIND_CLUSTER_NAME}}
+        sed -i s#registry.k8s.io/networking/kube-network-policies.*#registry.k8s.io/networking/kube-network-policies:test# install.yaml
         /usr/local/bin/kubectl apply -f ./install.yaml
 
     - name: Get Cluster status
