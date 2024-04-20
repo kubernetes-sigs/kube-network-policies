@@ -7,7 +7,7 @@ require (
 	github.com/florianl/go-nfqueue v1.3.1
 	github.com/mdlayher/netlink v1.6.0
 	github.com/prometheus/client_golang v1.19.0
-	golang.org/x/sys v0.16.0
+	golang.org/x/sys v0.19.0
 	k8s.io/api v0.29.3
 	k8s.io/apimachinery v0.29.3
 	k8s.io/client-go v0.29.3
