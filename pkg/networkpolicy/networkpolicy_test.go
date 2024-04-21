@@ -8,13 +8,9 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes/fake"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/knftables"
 )
 
 type netpolTweak func(networkPolicy *networkingv1.NetworkPolicy)
@@ -42,84 +38,6 @@ func makePort(proto *v1.Protocol, port intstr.IntOrString, endPort int32) networ
 		r.EndPort = ptr.To[int32](endPort)
 	}
 	return r
-}
-
-func makeNamespace(name string) *v1.Namespace {
-	return &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"kubernetes.io/metadata.name": name,
-				"a":                           "b",
-			},
-		},
-	}
-}
-func makePod(name, ns string, ip string) *v1.Pod {
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-			Labels: map[string]string{
-				"a": "b",
-			},
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Name:    "write-pod",
-					Command: []string{"/bin/sh"},
-					Ports: []v1.ContainerPort{{
-						Name:          "http",
-						ContainerPort: 80,
-						Protocol:      v1.ProtocolTCP,
-					}},
-				},
-			},
-		},
-		Status: v1.PodStatus{
-			PodIPs: []v1.PodIP{
-				{IP: ip},
-			},
-		},
-	}
-
-	return pod
-
-}
-
-var (
-	alwaysReady = func() bool { return true }
-	protocolTCP = v1.ProtocolTCP
-	protocolUDP = v1.ProtocolUDP
-)
-
-type networkpolicyController struct {
-	*Controller
-	networkpolicyStore cache.Store
-	namespaceStore     cache.Store
-	podStore           cache.Store
-}
-
-func newController() *networkpolicyController {
-	client := fake.NewSimpleClientset()
-	informersFactory := informers.NewSharedInformerFactory(client, 0)
-	controller := NewController(client,
-		&knftables.Fake{},
-		informersFactory.Networking().V1().NetworkPolicies(),
-		informersFactory.Core().V1().Namespaces(),
-		informersFactory.Core().V1().Pods(),
-		Config{},
-	)
-	controller.networkpoliciesSynced = alwaysReady
-	controller.namespacesSynced = alwaysReady
-	controller.podsSynced = alwaysReady
-	return &networkpolicyController{
-		controller,
-		informersFactory.Networking().V1().NetworkPolicies().Informer().GetStore(),
-		informersFactory.Core().V1().Namespaces().Informer().GetStore(),
-		informersFactory.Core().V1().Pods().Informer().GetStore(),
-	}
 }
 
 func TestSyncPacket(t *testing.T) {
@@ -521,7 +439,7 @@ func TestSyncPacket(t *testing.T) {
 				}
 			}
 
-			ok := controller.acceptNetworkPolicy(tt.p)
+			ok := controller.evaluatePacket(tt.p)
 			if ok != tt.expect {
 				t.Errorf("expected %v got  %v", ok, tt.expect)
 			}

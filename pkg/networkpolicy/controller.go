@@ -9,6 +9,7 @@ import (
 	"github.com/mdlayher/netlink"
 
 	v1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -22,7 +23,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
+
 	"sigs.k8s.io/knftables"
+	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
+	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
+	policyinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
+	policylisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 )
 
 // Network policies are hard to implement efficiently, and in large clusters this is
@@ -47,8 +53,9 @@ const (
 )
 
 type Config struct {
-	FailOpen bool // allow traffic if the controller is not available
-	QueueID  int
+	FailOpen           bool // allow traffic if the controller is not available
+	AdminNetworkPolicy bool
+	QueueID            int
 }
 
 // NewController returns a new *Controller.
@@ -57,6 +64,9 @@ func NewController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
+	nodeInformer coreinformers.NodeInformer,
+	npaClient npaclient.Interface,
+	adminNetworkPolicyInformer policyinformers.AdminNetworkPolicyInformer,
 	config Config,
 ) *Controller {
 	klog.V(2).Info("Creating event broadcaster")
@@ -136,6 +146,13 @@ func NewController(client clientset.Interface,
 	c.namespacesSynced = namespaceInformer.Informer().HasSynced
 	c.networkpolicyLister = networkpolicyInformer.Lister()
 	c.networkpoliciesSynced = networkpolicyInformer.Informer().HasSynced
+	if config.AdminNetworkPolicy {
+		c.npaClient = npaClient
+		c.nodeLister = nodeInformer.Lister()
+		c.nodesSynced = nodeInformer.Informer().HasSynced
+		c.adminNetworkPolicyLister = adminNetworkPolicyInformer.Lister()
+		c.adminNetworkPolicySynced = adminNetworkPolicyInformer.Informer().HasSynced
+	}
 
 	c.eventBroadcaster = broadcaster
 	c.eventRecorder = recorder
@@ -159,6 +176,12 @@ type Controller struct {
 	podLister             corelisters.PodLister
 	podsSynced            cache.InformerSynced
 
+	npaClient npaclient.Interface
+
+	adminNetworkPolicyLister policylisters.AdminNetworkPolicyLister
+	adminNetworkPolicySynced cache.InformerSynced
+	nodeLister               corelisters.NodeLister
+	nodesSynced              cache.InformerSynced
 	// function to get the Pod given an IP
 	// if an error or not found it returns nil
 	getPodAssignedToIP func(podIP string) *v1.Pod
@@ -178,7 +201,11 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	// Wait for the caches to be synced
 	klog.Info("Waiting for informer caches to sync")
-	if !cache.WaitForNamedCacheSync(controllerName, ctx.Done(), c.networkpoliciesSynced, c.namespacesSynced, c.podsSynced) {
+	caches := []cache.InformerSynced{c.networkpoliciesSynced, c.namespacesSynced, c.podsSynced}
+	if c.config.AdminNetworkPolicy {
+		caches = append(caches, c.adminNetworkPolicySynced, c.nodesSynced)
+	}
+	if !cache.WaitForNamedCacheSync(controllerName, ctx.Done(), caches...) {
 		return fmt.Errorf("error syncing cache")
 	}
 
@@ -243,7 +270,8 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	c.nfq = nf
 
-	// Parse the packet and check if should be accepted
+	// Parse the packet and check if it should be accepted
+	// Packets should be evaludated independently in each direction
 	fn := func(a nfqueue.Attribute) int {
 		verdict := nfqueue.NfDrop
 		if c.config.FailOpen {
@@ -255,10 +283,11 @@ func (c *Controller) Run(ctx context.Context) error {
 
 		packet, err := parsePacket(*a.Payload)
 		if err != nil {
-			klog.Infof("Can not process packet %d accepting it: %v", *a.PacketID, err)
+			klog.Infof("Can not process packet %d applying default policy (failOpen: %v): %v", *a.PacketID, c.config.FailOpen, err)
 			c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
 			return 0
 		}
+		packet.id = *a.PacketID
 
 		defer func() {
 			processingTime := float64(time.Since(startTime).Microseconds())
@@ -268,8 +297,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			klog.V(2).Infof("Finished syncing packet %d took: %v accepted: %v", *a.PacketID, time.Since(startTime), verdict == nfqueue.NfAccept)
 		}()
 
-		// Network Policy
-		if c.acceptNetworkPolicy(packet) {
+		if c.evaluatePacket(packet) {
 			verdict = nfqueue.NfAccept
 		} else {
 			verdict = nfqueue.NfDrop
@@ -296,6 +324,69 @@ func (c *Controller) Run(ctx context.Context) error {
 	<-ctx.Done()
 
 	return nil
+}
+
+// evaluatePacket evalute the network policies using the following order:
+// 1. AdminNetworkPolicies in Egress for the source Pod/IP
+// 2. NetworkPolicies in Egress (if needed) for the source Pod/IP
+// 3. AdminNetworkPolicies in Ingress for the destination Pod/IP
+// 4. NetworkPolicies in Ingress (if needed) for the destination Pod/IP
+func (c *Controller) evaluatePacket(p packet) bool {
+	srcIP := p.srcIP
+	srcPod := c.getPodAssignedToIP(srcIP.String())
+	srcPort := p.srcPort
+	dstIP := p.dstIP
+	dstPod := c.getPodAssignedToIP(dstIP.String())
+	dstPort := p.dstPort
+	protocol := p.proto
+
+	klog.V(2).Infof("Evaluating packet %s", p.String())
+
+	// Evalute Egress Policies
+
+	// Admin Network Policies are evaluated first
+	evaluateEgressNetworkPolicy := true
+	if c.config.AdminNetworkPolicy {
+		srcPodAdminNetworkPolices := c.getAdminNetworkPoliciesForPod(srcPod)
+		action := c.evaluateAdminEgress(srcPodAdminNetworkPolices, dstPod, dstIP, dstPort, protocol)
+		klog.V(2).Infof("[Packet %d] Egress AdminNetworkPolicies: %d Action: %s", p.id, len(srcPodAdminNetworkPolices), action)
+		switch action {
+		case npav1alpha1.AdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
+			return false
+		case npav1alpha1.AdminNetworkPolicyRuleActionAllow: // Packet is allowed in Egress so no need to evalute Network Policies
+			evaluateEgressNetworkPolicy = false
+		case npav1alpha1.AdminNetworkPolicyRuleActionPass: // Packet need to evalute Egress Network Policies
+		}
+	}
+	if evaluateEgressNetworkPolicy {
+		srcPodNetworkPolices := c.getNetworkPoliciesForPod(srcPod)
+		// if is not allowed no need to evalute more
+		allowed := c.evaluator(srcPodNetworkPolices, networkingv1.PolicyTypeEgress, srcPod, srcPort, dstPod, dstIP, dstPort, protocol)
+		klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(srcPodNetworkPolices), allowed)
+		if !allowed {
+			return false
+		}
+	}
+	// Evalute Ingress Policies
+
+	// Admin Network Policies are evaluated first
+	if c.config.AdminNetworkPolicy {
+		dstPodAdminNetworkPolices := c.getAdminNetworkPoliciesForPod(dstPod)
+		action := c.evaluateAdminIngress(dstPodAdminNetworkPolices, srcPod, dstPort, protocol)
+		klog.V(2).Infof("[Packet %d] Ingress AdminNetworkPolicies: %d Action: %s", p.id, len(dstPodAdminNetworkPolices), action)
+		switch action {
+		case npav1alpha1.AdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
+			return false
+		case npav1alpha1.AdminNetworkPolicyRuleActionAllow: // Packet is allowed in Egress so no need to evalute Network Policies
+			return true
+		case npav1alpha1.AdminNetworkPolicyRuleActionPass: // Packet need to evalute Egress Network Policies
+		}
+	}
+	dstPodNetworkPolices := c.getNetworkPoliciesForPod(dstPod)
+	// if is not allowed no need to evalute more
+	allowed := c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
+	klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
+	return allowed
 }
 
 // syncNFTablesRules adds the necessary rules to process the first connection packets in userspace

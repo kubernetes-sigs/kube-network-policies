@@ -1,7 +1,6 @@
 package networkpolicy
 
 import (
-	"fmt"
 	"net"
 
 	v1 "k8s.io/api/core/v1"
@@ -39,38 +38,6 @@ func (c *Controller) getNetworkPoliciesForPod(pod *v1.Pod) []*networkingv1.Netwo
 		}
 	}
 	return result
-}
-
-func (c *Controller) acceptNetworkPolicy(p packet) bool {
-	srcIP := p.srcIP
-	srcPod := c.getPodAssignedToIP(srcIP.String())
-	srcPort := p.srcPort
-	dstIP := p.dstIP
-	dstPod := c.getPodAssignedToIP(dstIP.String())
-	dstPort := p.dstPort
-	protocol := p.proto
-	srcPodNetworkPolices := c.getNetworkPoliciesForPod(srcPod)
-	dstPodNetworkPolices := c.getNetworkPoliciesForPod(dstPod)
-
-	msg := fmt.Sprintf("checking packet %s", p.String())
-	if srcPod != nil {
-		msg += fmt.Sprintf("\nSrcPod (%s/%s): %d NetworkPolicy", srcPod.Name, srcPod.Namespace, len(srcPodNetworkPolices))
-	}
-	if dstPod != nil {
-		msg += fmt.Sprintf("\nDstPod (%s/%s): %d NetworkPolicy", dstPod.Name, dstPod.Namespace, len(dstPodNetworkPolices))
-	}
-	klog.V(2).Infof("%s", msg)
-
-	// For a connection from a source pod to a destination pod to be allowed,
-	// both the egress policy on the source pod and the ingress policy on the
-	// destination pod need to allow the connection.
-	// If either side does not allow the connection, it will not happen.
-
-	// This is the first packet originated from srcPod so we need to check:
-	// 1. srcPod egress is accepted
-	// 2. dstPod ingress is accepted
-	return c.evaluator(srcPodNetworkPolices, networkingv1.PolicyTypeEgress, srcPod, srcPort, dstPod, dstIP, dstPort, protocol) &&
-		c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
 }
 
 // validator obtains a verdict for network policies that applies to a src Pod in the direction
