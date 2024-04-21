@@ -20,7 +20,7 @@ type packet struct {
 }
 
 func (p packet) String() string {
-	return fmt.Sprintf("%s:%d %s:%d %s :: %s", p.srcIP.String(), p.srcPort, p.dstIP.String(), p.dstPort, p.proto, hex.Dump(p.payload))
+	return fmt.Sprintf("%s:%d %s:%d %s\n%s", p.srcIP.String(), p.srcPort, p.dstIP.String(), p.dstPort, p.proto, hex.Dump(p.payload))
 }
 
 // https://en.wikipedia.org/wiki/Internet_Protocol_version_4#Packet_structure
