@@ -307,6 +307,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		if err != nil {
 			klog.Infof("Can not process packet %d accepting it: %v", *a.PacketID, err)
 			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfAccept) //nolint:errcheck
+			return 0
 		}
 
 		verdict := c.acceptPacket(packet)
