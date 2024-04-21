@@ -34,12 +34,12 @@ func (c *Controller) acceptNetworkPolicy(p packet) bool {
 	srcPodNetworkPolices := c.getNetworkPoliciesForPod(srcPod)
 	dstPodNetworkPolices := c.getNetworkPoliciesForPod(dstPod)
 
-	msg := fmt.Sprintf("checking packet %s:", p.String())
+	msg := fmt.Sprintf("checking packet %s", p.String())
 	if srcPod != nil {
-		msg += fmt.Sprintf(" SrcPod (%s/%s): %d NetworkPolicy", srcPod.Name, srcPod.Namespace, len(srcPodNetworkPolices))
+		msg += fmt.Sprintf("\nSrcPod (%s/%s): %d NetworkPolicy", srcPod.Name, srcPod.Namespace, len(srcPodNetworkPolices))
 	}
 	if dstPod != nil {
-		msg += fmt.Sprintf(" DstPod (%s/%s): %d NetworkPolicy", dstPod.Name, dstPod.Namespace, len(dstPodNetworkPolices))
+		msg += fmt.Sprintf("\nDstPod (%s/%s): %d NetworkPolicy", dstPod.Name, dstPod.Namespace, len(dstPodNetworkPolices))
 	}
 	klog.V(2).Infof("%s", msg)
 
