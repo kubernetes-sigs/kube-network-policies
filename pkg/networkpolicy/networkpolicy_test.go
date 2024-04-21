@@ -519,7 +519,7 @@ func TestSyncPacket(t *testing.T) {
 				}
 			}
 
-			ok := controller.acceptPacket(tt.p)
+			ok := controller.acceptNetworkPolicy(tt.p)
 			if ok != tt.expect {
 				t.Errorf("expected %v got  %v", ok, tt.expect)
 			}
