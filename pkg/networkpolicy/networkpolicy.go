@@ -23,7 +23,7 @@ func (c *Controller) getNetworkPoliciesForPod(pod *v1.Pod) []*networkingv1.Netwo
 	return networkPolices
 }
 
-func (c *Controller) acceptPacket(p packet) bool {
+func (c *Controller) acceptNetworkPolicy(p packet) bool {
 	srcIP := p.srcIP
 	srcPod := c.getPodAssignedToIP(srcIP.String())
 	srcPort := p.srcPort

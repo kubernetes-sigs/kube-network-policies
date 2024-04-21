@@ -300,28 +300,36 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	// Parse the packet and check if should be accepted
 	fn := func(a nfqueue.Attribute) int {
+		verdict := nfqueue.NfDrop
+		if c.config.FailOpen {
+			verdict = nfqueue.NfAccept
+		}
+
 		startTime := time.Now()
 		klog.V(2).Infof("Processing sync for packet %d", *a.PacketID)
 
 		packet, err := parsePacket(*a.Payload)
 		if err != nil {
 			klog.Infof("Can not process packet %d accepting it: %v", *a.PacketID, err)
-			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfAccept) //nolint:errcheck
+			c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
 			return 0
 		}
 
-		verdict := c.acceptPacket(packet)
-		if verdict {
-			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfAccept) //nolint:errcheck
-		} else {
-			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfDrop) //nolint:errcheck
-		}
+		defer func() {
+			processingTime := float64(time.Since(startTime).Microseconds())
+			packetProcessingHist.WithLabelValues(string(packet.proto), string(packet.family)).Observe(processingTime)
+			packetProcessingSum.Observe(processingTime)
+			packetCounterVec.WithLabelValues(string(packet.proto), string(packet.family)).Inc()
+			klog.V(2).Infof("Finished syncing packet %d took: %v accepted: %v", *a.PacketID, time.Since(startTime), verdict == nfqueue.NfAccept)
+		}()
 
-		processingTime := float64(time.Since(startTime).Microseconds())
-		packetProcessingHist.WithLabelValues(string(packet.proto), string(packet.family)).Observe(processingTime)
-		packetProcessingSum.Observe(processingTime)
-		packetCounterVec.WithLabelValues(string(packet.proto), string(packet.family)).Inc()
-		klog.V(2).Infof("Finished syncing packet %d took: %v accepted: %v", *a.PacketID, time.Since(startTime), verdict)
+		// Network Policy
+		if c.acceptNetworkPolicy(packet) {
+			verdict = nfqueue.NfAccept
+		} else {
+			verdict = nfqueue.NfDrop
+		}
+		c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
 		return 0
 	}
 
