@@ -34,7 +34,7 @@ func init() {
 	flag.StringVar(&metricsBindAddress, "metrics-bind-address", ":9080", "The IP address and port for the metrics server to serve on")
 
 	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: kube-netpol [options]\n\n")
+		fmt.Fprint(os.Stderr, "Usage: kube-network-policies [options]\n\n")
 		flag.PrintDefaults()
 	}
 }

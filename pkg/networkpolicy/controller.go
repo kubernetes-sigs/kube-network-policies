@@ -47,7 +47,7 @@ import (
 // https://netfilter.org/projects/libnetfilter_queue/doxygen/html/
 
 const (
-	controllerName = "kube-netpol"
+	controllerName = "kube-network-policies"
 	podIPIndex     = "podIPKeyIndex"
 )
 
@@ -102,7 +102,7 @@ func NewController(client clientset.Interface,
 		klog.Infof("Using iptables legacy")
 		c.ipt = ipt
 	} else {
-		nft, err := knftables.New(knftables.InetFamily, "kube-netpol")
+		nft, err := knftables.New(knftables.InetFamily, "kube-network-policies")
 		if err != nil {
 			klog.Infof("Error initializing nftables: %v", err)
 			ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
