@@ -14,6 +14,7 @@ import (
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/knftables"
 )
 
 type netpolTweak func(networkPolicy *networkingv1.NetworkPolicy)
@@ -104,6 +105,7 @@ func newController() *networkpolicyController {
 	client := fake.NewSimpleClientset()
 	informersFactory := informers.NewSharedInformerFactory(client, 0)
 	controller := NewController(client,
+		&knftables.Fake{},
 		informersFactory.Networking().V1().NetworkPolicies(),
 		informersFactory.Core().V1().Namespaces(),
 		informersFactory.Core().V1().Pods(),

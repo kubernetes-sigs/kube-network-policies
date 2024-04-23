@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"sigs.k8s.io/knftables"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -34,7 +35,7 @@ func init() {
 	flag.StringVar(&metricsBindAddress, "metrics-bind-address", ":9080", "The IP address and port for the metrics server to serve on")
 
 	flag.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: kube-netpol [options]\n\n")
+		fmt.Fprint(os.Stderr, "Usage: kube-network-policies [options]\n\n")
 		flag.PrintDefaults()
 	}
 }
@@ -43,7 +44,12 @@ func main() {
 	// enable logging
 	klog.InitFlags(nil)
 	flag.Parse()
-	//
+
+	nft, err := knftables.New(knftables.InetFamily, "kube-network-policies")
+	if err != nil {
+		klog.Fatalf("Error initializing nftables: %v", err)
+	}
+
 	if _, _, err := net.SplitHostPort(metricsBindAddress); err != nil {
 		klog.Fatalf("error parsing metrics bind address %s : %v", metricsBindAddress, err)
 	}
@@ -85,6 +91,7 @@ func main() {
 
 	networkPolicyController := networkpolicy.NewController(
 		clientset,
+		nft,
 		informersFactory.Networking().V1().NetworkPolicies(),
 		informersFactory.Core().V1().Namespaces(),
 		informersFactory.Core().V1().Pods(),
