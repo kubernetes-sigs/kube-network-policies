@@ -20,7 +20,25 @@ func (c *Controller) getNetworkPoliciesForPod(pod *v1.Pod) []*networkingv1.Netwo
 	if err != nil {
 		return nil
 	}
-	return networkPolices
+	result := []*networkingv1.NetworkPolicy{}
+	for _, policy := range networkPolices {
+		// podSelector selects the pods to which this NetworkPolicy object applies.
+		// The array of ingress rules is applied to any pods selected by this field.
+		// Multiple network policies can select the same set of pods. In this case,
+		// the ingress rules for each are combined additively.
+		// This field is NOT optional and follows standard label selector semantics.
+		// An empty podSelector matches all pods in this namespace.
+		podSelector, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
+		if err != nil {
+			klog.Infof("error parsing PodSelector: %v", err)
+			continue
+		}
+		// networkPolicy does not select the pod try the next network policy
+		if podSelector.Matches(labels.Set(pod.Labels)) {
+			result = append(result, policy)
+		}
+	}
+	return result
 }
 
 func (c *Controller) acceptNetworkPolicy(p packet) bool {
@@ -69,23 +87,6 @@ func (c *Controller) evaluator(
 	// no network policies matching the Pod allows all
 	verdict := true
 	for _, netpol := range networkPolicies {
-		// podSelector selects the pods to which this NetworkPolicy object applies.
-		// The array of ingress rules is applied to any pods selected by this field.
-		// Multiple network policies can select the same set of pods. In this case,
-		// the ingress rules for each are combined additively.
-		// This field is NOT optional and follows standard label selector semantics.
-		// An empty podSelector matches all pods in this namespace.
-		podSelector, err := metav1.LabelSelectorAsSelector(&netpol.Spec.PodSelector)
-		if err != nil {
-			klog.Infof("error parsing PodSelector: %v", err)
-			continue
-		}
-		// networkPolicy does not selects the pod try the next network policy
-		if !podSelector.Matches(labels.Set(srcPod.Labels)) {
-			klog.V(2).Infof("Pod %s/%s does not match NetworkPolicy %s/%s", srcPod.Name, srcPod.Namespace, netpol.Name, netpol.Namespace)
-			continue
-		}
-
 		for _, policyType := range netpol.Spec.PolicyTypes {
 			// only evaluate one direction
 			if policyType != networkPolictType {
