@@ -69,15 +69,15 @@ func (c *Controller) acceptNetworkPolicy(p packet) bool {
 	// This is the first packet originated from srcPod so we need to check:
 	// 1. srcPod egress is accepted
 	// 2. dstPod ingress is accepted
-	return c.evaluator(srcPodNetworkPolices, networkingv1.PolicyTypeEgress, srcPod, srcIP, srcPort, dstPod, dstIP, dstPort, protocol) &&
-		c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstIP, dstPort, srcPod, srcIP, srcPort, protocol)
+	return c.evaluator(srcPodNetworkPolices, networkingv1.PolicyTypeEgress, srcPod, srcPort, dstPod, dstIP, dstPort, protocol) &&
+		c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
 }
 
 // validator obtains a verdict for network policies that applies to a src Pod in the direction
 // passed as parameter
 func (c *Controller) evaluator(
 	networkPolicies []*networkingv1.NetworkPolicy, networkPolictType networkingv1.PolicyType,
-	srcPod *v1.Pod, srcIP net.IP, srcPort int, dstPod *v1.Pod, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
+	srcPod *v1.Pod, srcPort int, dstPod *v1.Pod, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
 
 	// no network policies implies allow all by default
 	if len(networkPolicies) == 0 {
