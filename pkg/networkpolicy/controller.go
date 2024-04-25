@@ -347,8 +347,10 @@ func (c *Controller) Run(ctx context.Context) error {
 // evaluatePacket evalute the network policies using the following order:
 // 1. AdminNetworkPolicies in Egress for the source Pod/IP
 // 2. NetworkPolicies in Egress (if needed) for the source Pod/IP
-// 3. AdminNetworkPolicies in Ingress for the destination Pod/IP
-// 4. NetworkPolicies in Ingress (if needed) for the destination Pod/IP
+// 3. BaselineAdminNetworkPolicies in Egress (if needed) for the source Pod/IP
+// 4. AdminNetworkPolicies in Ingress for the destination Pod/IP
+// 5. NetworkPolicies in Ingress (if needed) for the destination Pod/IP
+// 6. BaselineAdminNetworkPolicies in Ingress (if needed) for the destination Pod/IP
 func (c *Controller) evaluatePacket(p packet) bool {
 	srcIP := p.srcIP
 	srcPod := c.getPodAssignedToIP(srcIP.String())
@@ -376,16 +378,19 @@ func (c *Controller) evaluatePacket(p packet) bool {
 		case npav1alpha1.AdminNetworkPolicyRuleActionPass: // Packet need to evalute Egress Network Policies
 		}
 	}
+	evaluateAdminEgressNetworkPolicy := evaluateEgressNetworkPolicy
 	if evaluateEgressNetworkPolicy {
 		srcPodNetworkPolices := c.getNetworkPoliciesForPod(srcPod)
-		// if is not allowed no need to evalute more
+		if len(srcPodNetworkPolices) > 0 {
+			evaluateAdminEgressNetworkPolicy = false
+		}
 		allowed := c.evaluator(srcPodNetworkPolices, networkingv1.PolicyTypeEgress, srcPod, srcPort, dstPod, dstIP, dstPort, protocol)
 		klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(srcPodNetworkPolices), allowed)
 		if !allowed {
 			return false
 		}
 	}
-	if c.config.BaselineAdminNetworkPolicy && evaluateEgressNetworkPolicy {
+	if c.config.BaselineAdminNetworkPolicy && evaluateAdminEgressNetworkPolicy {
 		srcPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(srcPod)
 		action := c.evaluateBaselineAdminEgress(srcPodBaselineAdminNetworkPolices, dstPod, dstIP, dstPort, protocol)
 		klog.V(2).Infof("[Packet %d] Egress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(srcPodBaselineAdminNetworkPolices), action)
@@ -411,12 +416,12 @@ func (c *Controller) evaluatePacket(p packet) bool {
 		case npav1alpha1.AdminNetworkPolicyRuleActionPass: // Packet need to evalute Egress Network Policies
 		}
 	}
+	// Network policies override Baseline Admin Network Policies
 	dstPodNetworkPolices := c.getNetworkPoliciesForPod(dstPod)
-	// if is not allowed no need to evalute more
-	allowed := c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
-	klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
-	if !allowed {
-		return false
+	if len(dstPodNetworkPolices) > 0 {
+		allowed := c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
+		klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
+		return allowed
 	}
 	if c.config.BaselineAdminNetworkPolicy {
 		dstPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(dstPod)
