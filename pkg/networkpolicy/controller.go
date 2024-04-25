@@ -77,6 +77,7 @@ func NewController(client clientset.Interface,
 	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: client.CoreV1().Events("")})
 	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: controllerName})
 
+	klog.V(2).Infof("Creating controller: %#v", config)
 	c := &Controller{
 		client: client,
 		config: config,

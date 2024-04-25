@@ -53,6 +53,8 @@ func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
 
+	klog.Infof("flags: %v", flag.Args())
+
 	nft, err := knftables.New(knftables.InetFamily, "kube-network-policies")
 	if err != nil {
 		klog.Fatalf("Error initializing nftables: %v", err)
