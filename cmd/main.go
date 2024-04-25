@@ -63,9 +63,10 @@ func main() {
 	}
 
 	cfg := networkpolicy.Config{
-		AdminNetworkPolicy: adminNetworkPolicy,
-		FailOpen:           failOpen,
-		QueueID:            queueID,
+		AdminNetworkPolicy:         adminNetworkPolicy,
+		BaselineAdminNetworkPolicy: baselineAdminNetworkPolicy,
+		FailOpen:                   failOpen,
+		QueueID:                    queueID,
 	}
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
