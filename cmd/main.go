@@ -28,15 +28,17 @@ import (
 )
 
 var (
-	failOpen           bool
-	adminNetworkPolicy bool // 	AdminNetworkPolicy is alpha so keep it feature gated behind a flag
-	queueID            int
-	metricsBindAddress string
+	failOpen                   bool
+	adminNetworkPolicy         bool // 	AdminNetworkPolicy is alpha so keep it feature gated behind a flag
+	baselineAdminNetworkPolicy bool // 	BaselineAdminNetworkPolicy is alpha so keep it feature gated behind a flag
+	queueID                    int
+	metricsBindAddress         string
 )
 
 func init() {
 	flag.BoolVar(&failOpen, "fail-open", false, "If set, don't drop packets if the controller is not running")
 	flag.BoolVar(&adminNetworkPolicy, "admin-network-policy", false, "If set, enable Admin Network Policy API")
+	flag.BoolVar(&baselineAdminNetworkPolicy, "baseline-admin-network-policy", false, "If set, enable Baseline Admin Network Policy API")
 	flag.IntVar(&queueID, "nfqueue-id", 100, "Number of the nfqueue used")
 	flag.StringVar(&metricsBindAddress, "metrics-bind-address", ":9080", "The IP address and port for the metrics server to serve on")
 
@@ -92,16 +94,23 @@ func main() {
 
 	var npaClient *npaclient.Clientset
 	var npaInformerFactory npainformers.SharedInformerFactory
-	var npaInformer v1alpha1.AdminNetworkPolicyInformer
 	var nodeInformer v1.NodeInformer
-	if adminNetworkPolicy {
+	if adminNetworkPolicy || baselineAdminNetworkPolicy {
 		nodeInformer = informersFactory.Core().V1().Nodes()
 		npaClient, err = npaclient.NewForConfig(config)
 		if err != nil {
 			klog.Fatalf("Failed to create Network client: %v", err)
 		}
 		npaInformerFactory = npainformers.NewSharedInformerFactory(npaClient, 0)
-		npaInformer = npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies()
+	}
+
+	var anpInformer v1alpha1.AdminNetworkPolicyInformer
+	if adminNetworkPolicy {
+		anpInformer = npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies()
+	}
+	var banpInformer v1alpha1.BaselineAdminNetworkPolicyInformer
+	if baselineAdminNetworkPolicy {
+		banpInformer = npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies()
 	}
 
 	http.Handle("/metrics", promhttp.Handler())
@@ -118,7 +127,8 @@ func main() {
 		informersFactory.Core().V1().Pods(),
 		nodeInformer,
 		npaClient,
-		npaInformer,
+		anpInformer,
+		banpInformer,
 		cfg,
 	)
 	go func() {

@@ -77,11 +77,12 @@ var (
 
 type networkpolicyController struct {
 	*Controller
-	adminNetworkpolicyStore cache.Store
-	networkpolicyStore      cache.Store
-	namespaceStore          cache.Store
-	podStore                cache.Store
-	nodeStore               cache.Store
+	adminNetworkpolicyStore         cache.Store
+	baselineAdminNetworkpolicyStore cache.Store
+	networkpolicyStore              cache.Store
+	namespaceStore                  cache.Store
+	podStore                        cache.Store
+	nodeStore                       cache.Store
 }
 
 func newController() *networkpolicyController {
@@ -99,8 +100,10 @@ func newController() *networkpolicyController {
 		informersFactory.Core().V1().Nodes(),
 		npaClient,
 		npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies(),
+		npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies(),
 		Config{
-			AdminNetworkPolicy: true,
+			AdminNetworkPolicy:         true,
+			BaselineAdminNetworkPolicy: true,
 		},
 	)
 	controller.networkpoliciesSynced = alwaysReady
@@ -111,6 +114,7 @@ func newController() *networkpolicyController {
 	return &networkpolicyController{
 		controller,
 		npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies().Informer().GetStore(),
+		npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies().Informer().GetStore(),
 		informersFactory.Networking().V1().NetworkPolicies().Informer().GetStore(),
 		informersFactory.Core().V1().Namespaces().Informer().GetStore(),
 		informersFactory.Core().V1().Pods().Informer().GetStore(),

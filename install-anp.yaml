@@ -24,6 +24,7 @@ rules:
      - "policy.networking.k8s.io"
     resources:
       - adminnetworkpolicies
+      - baselineadminnetworkpolicies
     verbs:
       - list
       - watch
@@ -83,6 +84,8 @@ spec:
         - -v
         - "2"
         - -admin-network-policy
+        - "true"
+        - -baseline-admin-network-policy
         - "true"
         volumeMounts:
         - name: lib-modules

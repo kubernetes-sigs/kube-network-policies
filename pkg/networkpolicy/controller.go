@@ -53,9 +53,10 @@ const (
 )
 
 type Config struct {
-	FailOpen           bool // allow traffic if the controller is not available
-	AdminNetworkPolicy bool
-	QueueID            int
+	FailOpen                   bool // allow traffic if the controller is not available
+	AdminNetworkPolicy         bool
+	BaselineAdminNetworkPolicy bool
+	QueueID                    int
 }
 
 // NewController returns a new *Controller.
@@ -67,6 +68,7 @@ func NewController(client clientset.Interface,
 	nodeInformer coreinformers.NodeInformer,
 	npaClient npaclient.Interface,
 	adminNetworkPolicyInformer policyinformers.AdminNetworkPolicyInformer,
+	baselineAdminNetworkPolicyInformer policyinformers.BaselineAdminNetworkPolicyInformer,
 	config Config,
 ) *Controller {
 	klog.V(2).Info("Creating event broadcaster")
@@ -146,12 +148,20 @@ func NewController(client clientset.Interface,
 	c.namespacesSynced = namespaceInformer.Informer().HasSynced
 	c.networkpolicyLister = networkpolicyInformer.Lister()
 	c.networkpoliciesSynced = networkpolicyInformer.Informer().HasSynced
-	if config.AdminNetworkPolicy {
+	if config.AdminNetworkPolicy || config.BaselineAdminNetworkPolicy {
 		c.npaClient = npaClient
 		c.nodeLister = nodeInformer.Lister()
 		c.nodesSynced = nodeInformer.Informer().HasSynced
+	}
+
+	if config.AdminNetworkPolicy {
 		c.adminNetworkPolicyLister = adminNetworkPolicyInformer.Lister()
 		c.adminNetworkPolicySynced = adminNetworkPolicyInformer.Informer().HasSynced
+	}
+
+	if config.BaselineAdminNetworkPolicy {
+		c.baselineAdminNetworkPolicyLister = baselineAdminNetworkPolicyInformer.Lister()
+		c.baselineAdminNetworkPolicySynced = baselineAdminNetworkPolicyInformer.Informer().HasSynced
 	}
 
 	c.eventBroadcaster = broadcaster
@@ -178,10 +188,12 @@ type Controller struct {
 
 	npaClient npaclient.Interface
 
-	adminNetworkPolicyLister policylisters.AdminNetworkPolicyLister
-	adminNetworkPolicySynced cache.InformerSynced
-	nodeLister               corelisters.NodeLister
-	nodesSynced              cache.InformerSynced
+	adminNetworkPolicyLister         policylisters.AdminNetworkPolicyLister
+	adminNetworkPolicySynced         cache.InformerSynced
+	baselineAdminNetworkPolicyLister policylisters.BaselineAdminNetworkPolicyLister
+	baselineAdminNetworkPolicySynced cache.InformerSynced
+	nodeLister                       corelisters.NodeLister
+	nodesSynced                      cache.InformerSynced
 	// function to get the Pod given an IP
 	// if an error or not found it returns nil
 	getPodAssignedToIP func(podIP string) *v1.Pod
@@ -202,8 +214,14 @@ func (c *Controller) Run(ctx context.Context) error {
 	// Wait for the caches to be synced
 	klog.Info("Waiting for informer caches to sync")
 	caches := []cache.InformerSynced{c.networkpoliciesSynced, c.namespacesSynced, c.podsSynced}
+	if c.config.AdminNetworkPolicy || c.config.BaselineAdminNetworkPolicy {
+		caches = append(caches, c.nodesSynced)
+	}
 	if c.config.AdminNetworkPolicy {
-		caches = append(caches, c.adminNetworkPolicySynced, c.nodesSynced)
+		caches = append(caches, c.adminNetworkPolicySynced)
+	}
+	if c.config.BaselineAdminNetworkPolicy {
+		caches = append(caches, c.baselineAdminNetworkPolicySynced)
 	}
 	if !cache.WaitForNamedCacheSync(controllerName, ctx.Done(), caches...) {
 		return fmt.Errorf("error syncing cache")
@@ -367,6 +385,17 @@ func (c *Controller) evaluatePacket(p packet) bool {
 			return false
 		}
 	}
+	if c.config.BaselineAdminNetworkPolicy {
+		srcPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(srcPod)
+		action := c.evaluateBaselineAdminEgress(srcPodBaselineAdminNetworkPolices, dstPod, dstIP, dstPort, protocol)
+		klog.V(2).Infof("[Packet %d] Egress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(srcPodBaselineAdminNetworkPolices), action)
+		switch action {
+		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
+			return false
+		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow:
+		}
+	}
+
 	// Evalute Ingress Policies
 
 	// Admin Network Policies are evaluated first
@@ -386,7 +415,21 @@ func (c *Controller) evaluatePacket(p packet) bool {
 	// if is not allowed no need to evalute more
 	allowed := c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
 	klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
-	return allowed
+	if !allowed {
+		return false
+	}
+	if c.config.BaselineAdminNetworkPolicy {
+		dstPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(dstPod)
+		action := c.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPort, protocol)
+		klog.V(2).Infof("[Packet %d] Egress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(dstPodBaselineAdminNetworkPolices), action)
+		switch action {
+		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
+			return false
+		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow:
+			return true
+		}
+	}
+	return true
 }
 
 // syncNFTablesRules adds the necessary rules to process the first connection packets in userspace

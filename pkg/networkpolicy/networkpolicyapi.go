@@ -237,3 +237,133 @@ func evaluateAdminNetworkPolicyPort(networkPolicyPorts []npav1alpha1.AdminNetwor
 	}
 	return false
 }
+
+// getBaselineAdminNetworkPoliciesForPod returns the list of Baseline Admin Network Policies matching the Pod
+// The list is ordered by priority, from higher to lower.
+func (c *Controller) getBaselineAdminNetworkPoliciesForPod(pod *v1.Pod) []*npav1alpha1.BaselineAdminNetworkPolicy {
+	if pod == nil {
+		return nil
+	}
+	// Get all the network policies that affect this pod
+	networkPolices, err := c.baselineAdminNetworkPolicyLister.List(labels.Everything())
+	if err != nil {
+		klog.Infof("getAdminNetworkPoliciesForPod error: %v", err)
+		return nil
+	}
+
+	result := []*npav1alpha1.BaselineAdminNetworkPolicy{}
+	for _, policy := range networkPolices {
+		if policy.Spec.Subject.Namespaces != nil &&
+			c.namespaceSelector(policy.Spec.Subject.Namespaces, pod) {
+			klog.V(2).Infof("Pod %s/%s match AdminNetworkPolicy %s", pod.Name, pod.Namespace, policy.Name)
+			result = append(result, policy)
+		}
+
+		if policy.Spec.Subject.Pods != nil &&
+			c.namespaceSelector(&policy.Spec.Subject.Pods.NamespaceSelector, pod) &&
+			podSelector(&policy.Spec.Subject.Pods.PodSelector, pod) {
+			klog.V(2).Infof("Pod %s/%s match AdminNetworkPolicy %s", pod.Name, pod.Namespace, policy.Name)
+			result = append(result, policy)
+		}
+	}
+	return result
+}
+
+func (c *Controller) evaluateBaselineAdminEgress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, pod *v1.Pod, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
+	for _, policy := range adminNetworkPolices {
+		for _, rule := range policy.Spec.Egress {
+			// Ports allows for matching traffic based on port and protocols.
+			// This field is a list of destination ports for the outgoing egress traffic.
+			// If Ports is not set then the rule does not filter traffic via port.
+			if rule.Ports != nil {
+				if !evaluateAdminNetworkPolicyPort(*rule.Ports, pod, port, protocol) {
+					continue
+				}
+			}
+			// To is the List of destinations whose traffic this rule applies to.
+			// If any AdminNetworkPolicyEgressPeer matches the destination of outgoing
+			// traffic then the specified action is applied.
+			// This field must be defined and contain at least one item.
+			for _, to := range rule.To {
+				// Exactly one of the selector pointers must be set for a given peer. If a
+				// consumer observes none of its fields are set, they must assume an unknown
+				// option has been specified and fail closed.
+				if to.Namespaces != nil && pod != nil {
+					if c.namespaceSelector(to.Namespaces, pod) {
+						return rule.Action
+					}
+				}
+
+				if to.Pods != nil && pod != nil {
+					if c.namespaceSelector(&to.Pods.NamespaceSelector, pod) &&
+						podSelector(&to.Pods.PodSelector, pod) {
+						return rule.Action
+					}
+				}
+
+				if to.Nodes != nil && pod != nil {
+					if c.nodeSelector(to.Nodes, pod) {
+						return rule.Action
+					}
+				}
+
+				for _, network := range to.Networks {
+					_, cidr, err := net.ParseCIDR(string(network))
+					if err != nil { // this has been validated by the API
+						continue
+					}
+					if cidr.Contains(ip) {
+						return rule.Action
+					}
+				}
+			}
+		}
+	}
+
+	return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
+}
+
+func (c *Controller) evaluateBaselineAdminIngress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, pod *v1.Pod, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
+	// Ingress rules only apply to pods
+	if pod == nil {
+		return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
+	}
+	for _, policy := range adminNetworkPolices {
+		// Ingress is the list of Ingress rules to be applied to the selected pods. A total of 100 rules will be allowed in each ANP instance. The relative precedence of ingress rules within a single ANP object (all of which share the priority) will be determined by the order in which the rule is written. Thus, a rule that appears at the top of the ingress rules would take the highest precedence.
+		// ANPs with no ingress rules do not affect ingress traffic.
+		for _, rule := range policy.Spec.Ingress {
+			// Ports allows for matching traffic based on port and protocols.
+			// This field is a list of ports which should be matched on the pods selected for this policy
+			// i.e the subject of the policy. So it matches on the destination port for the ingress traffic.
+			// If Ports is not set then the rule does not filter traffic via port.
+			if rule.Ports != nil {
+				if !evaluateAdminNetworkPolicyPort(*rule.Ports, pod, port, protocol) {
+					continue
+				}
+			}
+			// From is the list of sources whose traffic this rule applies to.
+			// If any AdminNetworkPolicyIngressPeer matches the source of incoming traffic then the specified action is applied.
+			// This field must be defined and contain at least one item.
+			for _, from := range rule.From {
+				// Exactly one of the selector pointers must be set for a given peer. If a
+				// consumer observes none of its fields are set, they must assume an unknown
+				// option has been specified and fail closed.
+				if from.Namespaces != nil {
+					if c.namespaceSelector(from.Namespaces, pod) {
+						return rule.Action
+					}
+				}
+
+				if from.Pods != nil {
+					if c.namespaceSelector(&from.Pods.NamespaceSelector, pod) &&
+						podSelector(&from.Pods.PodSelector, pod) {
+						return rule.Action
+					}
+				}
+			}
+
+		}
+	}
+
+	return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
+}
