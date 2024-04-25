@@ -107,7 +107,8 @@ jobs:
 
     - name: Install kube-network-policies
       run: |
-        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
+        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
+        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
         # preload kube-network-policies image
         docker load --input kube-network-policies-image.tar
         /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test --name ${{ env.KIND_CLUSTER_NAME}}
@@ -129,7 +130,7 @@ jobs:
         git clone https://github.com/kubernetes-sigs/network-policy-api.git
         cd network-policy-api/
         go mod download
-        go test  -v ./conformance -run TestConformanceProfiles -args --conformance-profiles=AdminNetworkPolicy --organization=kubernetes --project=kube-network-policies --url=https://github.com/kubernetes-sigs/kube-network-policies --version=0.1.1 --contact=antonio.ojea.garcia@gmail.com --additional-info=https://github.com/kubernetes-sigs/kube-network-policies
+        go test  -v ./conformance -run TestConformanceProfiles -args --conformance-profiles=AdminNetworkPolicy,BaselineAdminNetworkPolicy --organization=kubernetes --project=kube-network-policies --url=https://github.com/kubernetes-sigs/kube-network-policies --version=0.1.1 --contact=antonio.ojea.garcia@gmail.com --additional-info=https://github.com/kubernetes-sigs/kube-network-policies
         cd -
 
     - name: Upload Junit Reports
