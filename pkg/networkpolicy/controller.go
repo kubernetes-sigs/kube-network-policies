@@ -385,7 +385,7 @@ func (c *Controller) evaluatePacket(p packet) bool {
 			return false
 		}
 	}
-	if c.config.BaselineAdminNetworkPolicy {
+	if c.config.BaselineAdminNetworkPolicy && evaluateEgressNetworkPolicy {
 		srcPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(srcPod)
 		action := c.evaluateBaselineAdminEgress(srcPodBaselineAdminNetworkPolices, dstPod, dstIP, dstPort, protocol)
 		klog.V(2).Infof("[Packet %d] Egress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(srcPodBaselineAdminNetworkPolices), action)
