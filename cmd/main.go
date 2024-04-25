@@ -137,7 +137,7 @@ func main() {
 	}()
 
 	informersFactory.Start(ctx.Done())
-	if adminNetworkPolicy {
+	if adminNetworkPolicy || baselineAdminNetworkPolicy {
 		npaInformerFactory.Start(ctx.Done())
 	}
 
