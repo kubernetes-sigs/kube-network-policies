@@ -1,13 +1,31 @@
 # Kubernetes network policies
 
-Network policies are hard to implement efficiently and in large clusters this is translated to performance and scalability problems.
+Implementation of Kubernetes Network Policies:
+- [Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+- [Admin Network Policies and Baseline Admint Network Policies](https://network-policy-api.sigs.k8s.io/)
 
-Most of the existing implementations use the same approach of processing the APIs and transforming them in the corresponding dataplane implementation: iptables, nftables, ebpf or ovs, ...
+## Install
 
-This project takes a different approach. It uses the NFQUEUE functionality implemented in netfilter to process the first packet of each connection in userspace and emit a verdict. The advantage is that the dataplane implementation does not need to represent all the complex logic, allowing it to scale better. The disadvantage is that we need to pass each new connection packet through userspace.
+There are two manifest in the current repository:
 
-There are some performance improvements that can be applied, such as to restrict in the dataplane the packets that are sent to userspace to the ones that have network policies only, so only
-the Pods affected by network policies will hit the first byte performance.
+1. For "traditional" Kubernetes Network policies just do:
+
+```
+kubectl apply -f install.yaml
+```
+
+2. For the Admin Network Policies and Baseline Admint Network Policies the CRDs has to be installed first:
+```
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
+
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+```
+
+and then install the daemonset enabling the features with the corresponding flags:
+
+```
+kubectl apply -f install-anp.yaml
+```
 
 ## Metrics
 
@@ -28,9 +46,22 @@ Current implemented metrics are:
 * nfqueue_user_dropped: Number of packets that were dropped within the netlink subsystem. Such drops usually happen when the corresponding socket buffer is full; that is, user space is not able to read messages fast enough
 * nfqueue_packet_id: ID of the most recent packet queued
 
+## Development
+
+Network policies are hard to implement efficiently and in large clusters this is translated to performance and scalability problems.
+
+Most of the existing implementations use the same approach of processing the APIs and transforming them in the corresponding dataplane implementation: iptables, nftables, ebpf or ovs, ...
+
+This project takes a different approach. It uses the NFQUEUE functionality implemented in netfilter to process the first packet of each connection in userspace and emit a verdict. The advantage is that the dataplane implementation does not need to represent all the complex logic, allowing it to scale better. The disadvantage is that we need to pass each new connection packet through userspace.
+
+There are some performance improvements that can be applied, such as to restrict in the dataplane the packets that are sent to userspace to the ones that have network policies only, so only
+the Pods affected by network policies will hit the first byte performance.
+
 ## Testing
 
 See [TESTING](docs/testing/README.md) 
+
+There are two github workflows that runs e2e tests aginst the Kubernetes/Kubernetes Network Policy tests and the Network Policy API Working Group conformance tests.
 
 ## References
 
