@@ -78,15 +78,9 @@ spec:
       serviceAccountName: kube-network-policies
       containers:
       - name: kube-network-policies
-        image: registry.k8s.io/networking/kube-network-policies:v0.1.0
-        args:
-        - /bin/netpol
-        - -v
-        - "2"
-        - -admin-network-policy
-        - "true"
-        - -baseline-admin-network-policy
-        - "true"
+        image: aojea/kube-netpol:v0.1.0
+        command: ["/bin/netpol"]
+        args: ["-v=2", "-admin-network-policy=true", "-baseline-admin-network-policy=true"]
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules
