@@ -63,6 +63,29 @@ See [TESTING](docs/testing/README.md)
 
 There are two github workflows that runs e2e tests aginst the Kubernetes/Kubernetes Network Policy tests and the Network Policy API Working Group conformance tests.
 
+## Project Scope
+
+This project was created to fill the gap on testing coverage in the area of Network Policies.
+There are limited existing solutions, but those are specific to individual network providers that require to install additional functionality, adding complexity and debugging difficulty, and not allowing to iterate fast during the development of new features.
+
+Ref: https://github.com/kubernetes/org/issues/4856
+
+### Goals
+
+P0: Support Testing Kubernetes
+
+Stakeholders: SIG Network, SIG Testing, SIG Scalability, SIG Release, Network Policy API Working Group
+Covered Work: e2e testing, scalability, performance and reliability
+
+P0: Provide Early Feedback
+
+Stakeholders: SIG Network, Network Policy API Working Group
+Covered: New features implemented under feature gates for fast iteraton
+
+### Non Goals
+
+Implementing additional functionalities unrelated to Network Policies
+
 ## References
 
 * https://home.regit.org/netfilter-en/using-nfqueue-and-libnetfilter_queue/
