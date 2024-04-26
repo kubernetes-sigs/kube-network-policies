@@ -84,7 +84,7 @@ Covered: New features implemented under feature gates for fast iteraton
 
 ### Non Goals
 
-Implementing additional functionalities unrelated to Network Policies
+Implementing functionality that is not part of an official or proposed Kubernetes network policy API
 
 ## References
 
