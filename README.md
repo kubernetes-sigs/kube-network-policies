@@ -86,6 +86,7 @@ Covered: New features implemented under feature gates for fast iteraton
 
 Implementing functionality that is not part of an official or proposed Kubernetes network policy API
 
+Contributions aligned with the project scope, feedback and bugs reports are very welcome, but this is an Open Source project maintained by the community with a best-effort support model.
 ## References
 
 * https://home.regit.org/netfilter-en/using-nfqueue-and-libnetfilter_queue/
