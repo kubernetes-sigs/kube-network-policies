@@ -75,6 +75,13 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
+
+	// use protobuf for better performance at scale
+	// https://kubernetes.io/docs/reference/using-api/api-concepts/#alternate-representations-of-resources
+	npaConfig := config // shallow copy because  CRDs does not support proto
+	config.AcceptContentTypes = "application/vnd.kubernetes.protobuf,application/json"
+	config.ContentType = "application/vnd.kubernetes.protobuf"
+
 	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -100,7 +107,7 @@ func main() {
 	var nodeInformer v1.NodeInformer
 	if adminNetworkPolicy || baselineAdminNetworkPolicy {
 		nodeInformer = informersFactory.Core().V1().Nodes()
-		npaClient, err = npaclient.NewForConfig(config)
+		npaClient, err = npaclient.NewForConfig(npaConfig)
 		if err != nil {
 			klog.Fatalf("Failed to create Network client: %v", err)
 		}
