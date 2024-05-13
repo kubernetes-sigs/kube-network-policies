@@ -12,8 +12,8 @@ github.com/emicklei/go-restful/v3 v3.12.0 h1:y2DdzBAURM29NFF94q6RaY4vjIH1rtwDapw
 github.com/emicklei/go-restful/v3 v3.12.0/go.mod h1:6n3XBCmQQb25CM2LCACGz8ukIrRry+4bhvbpWn3mrbc=
 github.com/evanphx/json-patch v5.9.0+incompatible h1:fBXyNpNMuTTDdquAq/uisOr2lShz4oaXpDTX2bLe7ls=
 github.com/evanphx/json-patch v5.9.0+incompatible/go.mod h1:50XU6AFN0ol/bzJsmQLiYLvXMP4fmwYFNcr97nuDLSk=
-github.com/florianl/go-nfqueue v1.3.1 h1:khQ9fYCrjbu5CF8dZF55G2RTIEIQRI0Aj5k3msJR6Gw=
-github.com/florianl/go-nfqueue v1.3.1/go.mod h1:aHWbgkhryJxF5XxYvJ3oRZpdD4JP74Zu/hP1zuhja+M=
+github.com/florianl/go-nfqueue v1.3.2 h1:8DPzhKJHywpHJAE/4ktgcqveCL7qmMLsEsVD68C4x4I=
+github.com/florianl/go-nfqueue v1.3.2/go.mod h1:eSnAor2YCfMCVYrVNEhkLGN/r1L+J4uDjc0EUy0tfq4=
 github.com/go-logr/logr v1.4.1 h1:pKouT5E8xu9zeFC39JXRDukb6JFQPXM5p5I91188VAQ=
 github.com/go-logr/logr v1.4.1/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
 github.com/go-logr/zapr v1.3.0 h1:XGdV8XW8zdwFiwOA2Dryh1gj2KRQyOOoNmBy4EplIcQ=
