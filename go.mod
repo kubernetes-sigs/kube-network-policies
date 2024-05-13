@@ -3,7 +3,7 @@ module sigs.k8s.io/kube-network-policies
 go 1.22.0
 
 require (
-	github.com/florianl/go-nfqueue v1.3.1
+	github.com/florianl/go-nfqueue v1.3.2
 	github.com/mdlayher/netlink v1.7.2
 	github.com/prometheus/client_golang v1.19.0
 	golang.org/x/sys v0.20.0
