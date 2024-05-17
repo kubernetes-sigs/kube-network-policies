@@ -442,10 +442,6 @@ func (c *Controller) evaluatePacket(p packet) bool {
 // and check if network policies must apply.
 // TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
 func (c *Controller) syncNFTablesRules(ctx context.Context) {
-	rule := fmt.Sprintf("ct state new queue to %d", c.config.QueueID)
-	if c.config.FailOpen {
-		rule += " bypass"
-	}
 	table := &knftables.Table{
 		Comment: knftables.PtrTo("rules for kubernetes NetworkPolicy"),
 	}
@@ -469,6 +465,18 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) {
 		tx.Flush(&knftables.Chain{
 			Name: chainName,
 		})
+		// instead of aggregating all the expresion in one rule, use two different
+		// rules to understand if is causing issues with UDP packets with the same
+		// tuple (https://github.com/kubernetes-sigs/kube-network-policies/issues/12)
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"ct", "state", "!=", "new", "return"),
+		})
+		rule := fmt.Sprintf("queue num %d", c.config.QueueID)
+		if c.config.FailOpen {
+			rule += " bypass"
+		}
 		tx.Add(&knftables.Rule{
 			Chain: chainName,
 			Rule:  rule,
