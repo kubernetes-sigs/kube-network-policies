@@ -1,11 +1,21 @@
-ARG GOARCH="amd64"
-FROM golang:1.22 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.22 AS builder
+
 WORKDIR /src
+
+COPY go.mod go.sum .
+RUN --mount=type=cache,target=/go/pkg \
+    go mod download
+
 COPY . .
-# build
-RUN go mod download
-RUN CGO_ENABLED=0 go build -o /go/bin/netpol ./cmd
+
+ARG TARGETOS TARGETARCH
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -o /go/bin/netpol ./cmd
+
 # STEP 2: Build small image
 FROM registry.k8s.io/build-image/distroless-iptables:v0.5.2
 COPY --from=builder --chown=root:root /go/bin/netpol /bin/netpol
+
 CMD ["/bin/netpol"]
