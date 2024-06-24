@@ -93,6 +93,11 @@ spec:
           privileged: true
           capabilities:
             add: ["NET_ADMIN"]
+        env:
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
       volumes:
       - name: lib-modules
         hostPath:

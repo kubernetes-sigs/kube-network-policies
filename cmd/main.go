@@ -64,11 +64,17 @@ func main() {
 		klog.Fatalf("error parsing metrics bind address %s : %v", metricsBindAddress, err)
 	}
 
+	nodeName := os.Getenv("MY_NODE_NAME")
+	if nodeName == "" {
+		klog.Fatalf("node name not set, please set the environment variable using the Downward API")
+	}
+
 	cfg := networkpolicy.Config{
 		AdminNetworkPolicy:         adminNetworkPolicy,
 		BaselineAdminNetworkPolicy: baselineAdminNetworkPolicy,
 		FailOpen:                   failOpen,
 		QueueID:                    queueID,
+		NodeName:                   nodeName,
 	}
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()

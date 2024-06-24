@@ -10,6 +10,29 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// getPodsForNetworkPolicyNode obtains all the Pods selected by the network policy for current Node
+func (c *Controller) getLocalPodsForNetworkPolicy(networkPolicy *networkingv1.NetworkPolicy) []*v1.Pod {
+	if networkPolicy == nil {
+		return nil
+	}
+	podSelector, err := metav1.LabelSelectorAsSelector(&networkPolicy.Spec.PodSelector)
+	if err != nil {
+		klog.Infof("error parsing PodSelector: %v", err)
+		return nil
+	}
+	pods, err := c.podLister.Pods(networkPolicy.Namespace).List(podSelector)
+	if err != nil {
+		return nil
+	}
+	result := []*v1.Pod{}
+	for _, pod := range pods {
+		if pod.Spec.NodeName == c.config.NodeName {
+			result = append(result, pod)
+		}
+	}
+	return result
+}
+
 func (c *Controller) getNetworkPoliciesForPod(pod *v1.Pod) []*networkingv1.NetworkPolicy {
 	if pod == nil {
 		return nil
