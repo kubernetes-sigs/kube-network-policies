@@ -72,8 +72,8 @@ spec:
         image: registry.k8s.io/networking/kube-network-policies:v0.3.0
         args:
         - /bin/netpol
-        - -v
-        - "2"
+        - --hostname-override=$(MY_NODE_NAME)
+        - --v=2
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules

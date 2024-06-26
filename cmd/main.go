@@ -22,6 +22,7 @@ import (
 	v1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	nodeutil "k8s.io/component-helpers/node/util"
 	"k8s.io/klog/v2"
 
 	"golang.org/x/sys/unix"
@@ -33,6 +34,7 @@ var (
 	baselineAdminNetworkPolicy bool // 	BaselineAdminNetworkPolicy is alpha so keep it feature gated behind a flag
 	queueID                    int
 	metricsBindAddress         string
+	hostnameOverride           string
 )
 
 func init() {
@@ -41,6 +43,7 @@ func init() {
 	flag.BoolVar(&baselineAdminNetworkPolicy, "baseline-admin-network-policy", false, "If set, enable Baseline Admin Network Policy API")
 	flag.IntVar(&queueID, "nfqueue-id", 100, "Number of the nfqueue used")
 	flag.StringVar(&metricsBindAddress, "metrics-bind-address", ":9080", "The IP address and port for the metrics server to serve on")
+	flag.StringVar(&hostnameOverride, "hostname-override", "", "If non-empty, will be used as the name of the Node that kube-network-policies is running on. If unset, the node name is assumed to be the same as the node's hostname.")
 
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: kube-network-policies [options]\n\n")
@@ -64,9 +67,9 @@ func main() {
 		klog.Fatalf("error parsing metrics bind address %s : %v", metricsBindAddress, err)
 	}
 
-	nodeName := os.Getenv("MY_NODE_NAME")
-	if nodeName == "" {
-		klog.Fatalf("node name not set, please set the environment variable using the Downward API")
+	nodeName, err := nodeutil.GetHostname(hostnameOverride)
+	if err != nil {
+		klog.Fatalf("can not obtain the node name, use the hostname-override flag if you want to set it to a specific value: %v", err)
 	}
 
 	cfg := networkpolicy.Config{
