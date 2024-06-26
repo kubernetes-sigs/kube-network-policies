@@ -69,7 +69,7 @@ func main() {
 
 	nodeName, err := nodeutil.GetHostname(hostnameOverride)
 	if err != nil {
-		klog.Fatalf("can not obtain the node name, use the hostname-override flag if you want to set it to a specific value")
+		klog.Fatalf("can not obtain the node name, use the hostname-override flag if you want to set it to a specific value: %v", err)
 	}
 
 	cfg := networkpolicy.Config{
