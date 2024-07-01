@@ -674,8 +674,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			})
 		}
 	}
-
-	for _, hook := range []knftables.BaseChainHook{knftables.ForwardHook} {
+	for _, hook := range []knftables.BaseChainHook{knftables.ForwardHook, knftables.OutputHook} {
 		chainName := string(hook)
 		tx.Add(&knftables.Chain{
 			Name:     chainName,
