@@ -645,7 +645,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		}
 	}
 
-	for _, hook := range []knftables.BaseChainHook{knftables.ForwardHook} {
+	for _, hook := range []knftables.BaseChainHook{knftables.ForwardHook, knftables.OutputHook} {
 		chainName := string(hook)
 		tx.Add(&knftables.Chain{
 			Name:     chainName,
@@ -656,6 +656,16 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		tx.Flush(&knftables.Chain{
 			Name: chainName,
 		})
+
+		if hook == knftables.OutputHook {
+			// accept all outbound traffic to the loopback interface
+			tx.Add(&knftables.Rule{
+				Chain: chainName,
+				Rule: knftables.Concat(
+					"oif", "lo", "accept"),
+			})
+		}
+
 		// instead of aggregating all the expresion in one rule, use two different
 		// rules to understand if is causing issues with UDP packets with the same
 		// tuple (https://github.com/kubernetes-sigs/kube-network-policies/issues/12)
