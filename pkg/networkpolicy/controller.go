@@ -693,6 +693,11 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			Rule: knftables.Concat(
 				"ct", "state", "established,related", "accept"),
 		})
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"oif", "lo", "accept"),
+		})
 
 		action := fmt.Sprintf("queue num %d", c.config.QueueID)
 		if c.config.FailOpen {
