@@ -665,6 +665,13 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				"ct", "state", "established,related", "accept"),
 		})
 
+		// only process protocols supported by Kubernetes network policies
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"meta", "l4proto", "!=", "{ tcp, udp, sctp }", "accept"),
+		})
+
 		action := fmt.Sprintf("queue num %d", c.config.QueueID)
 		if c.config.FailOpen {
 			action += " bypass"
