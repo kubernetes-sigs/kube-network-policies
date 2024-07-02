@@ -58,7 +58,7 @@ func parsePacket(b []byte) (packet, error) {
 		// NextHeader (not extension headers supported)
 		protocol = int(b[6])
 	default:
-		return t, fmt.Errorf("unknown versions %d", version)
+		return t, fmt.Errorf("unknown IP version %d", version)
 	}
 
 	var dataOffset int
@@ -73,7 +73,7 @@ func parsePacket(b []byte) (packet, error) {
 		t.proto = v1.ProtocolSCTP
 		dataOffset = hdrlen + 8
 	default:
-		return t, fmt.Errorf("unknown protocol %d", protocol)
+		return t, fmt.Errorf("IP family %s unknown transport protocol %d", t.family, protocol)
 	}
 	// TCP, UDP and SCTP srcPort and dstPort are the first 4 bytes after the IP header
 	t.srcPort = int(binary.BigEndian.Uint16(b[hdrlen : hdrlen+2]))

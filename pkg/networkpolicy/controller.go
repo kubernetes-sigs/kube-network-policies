@@ -391,8 +391,8 @@ func (c *Controller) Run(ctx context.Context) error {
 
 		packet, err := parsePacket(*a.Payload)
 		if err != nil {
-			klog.Infof("Can not process packet %d applying default policy (failOpen: %v): %v", *a.PacketID, c.config.FailOpen, err)
-			c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
+			klog.Infof("Can not process packet %d, allowing ... : %v", *a.PacketID, err)
+			c.nfq.SetVerdict(*a.PacketID, nfqueue.NfAccept) //nolint:errcheck
 			return 0
 		}
 		packet.id = *a.PacketID
