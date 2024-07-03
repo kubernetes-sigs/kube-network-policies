@@ -140,7 +140,7 @@ func newController(client clientset.Interface,
 	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: client.CoreV1().Events("")})
 	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: controllerName})
 
-	klog.V(2).Infof("Creating controller: %#v", config)
+	klog.V(2).InfoS("Creating controller", "config", config)
 	c := &Controller{
 		client: client,
 		config: config,
@@ -357,12 +357,13 @@ type Controller struct {
 func (c *Controller) Run(ctx context.Context) error {
 	defer utilruntime.HandleCrash()
 	defer c.queue.ShutDown()
+	logger := klog.FromContext(ctx)
 
-	klog.Infof("Starting controller %s", controllerName)
-	defer klog.Infof("Shutting down controller %s", controllerName)
+	logger.Info("Starting controller", "name", controllerName)
+	defer logger.Info("Shutting down controller", "name", controllerName)
 
 	// Wait for the caches to be synced
-	klog.Info("Waiting for informer caches to sync")
+	logger.Info("Waiting for informer caches to sync")
 	caches := []cache.InformerSynced{c.networkpoliciesSynced, c.namespacesSynced, c.podsSynced}
 	if c.config.AdminNetworkPolicy || c.config.BaselineAdminNetworkPolicy {
 		caches = append(caches, c.nodesSynced)
@@ -381,14 +382,15 @@ func (c *Controller) Run(ctx context.Context) error {
 	registerMetrics(ctx)
 	// collect metrics periodically
 	go wait.UntilWithContext(ctx, func(ctx context.Context) {
+		logger := klog.FromContext(ctx)
 		queues, err := readNfnetlinkQueueStats()
 		if err != nil {
-			klog.Infof("error reading nfqueue stats: %v", err)
+			logger.Error(err, "reading nfqueue stats")
 			return
 		}
-		klog.V(4).Infof("Obtained metrics for %d queues", len(queues))
+		logger.V(4).Info("Obtained metrics for queues", "nqueues", len(queues))
 		for _, q := range queues {
-			klog.V(4).Infof("Updating metrics for queue: %d", q.id_sequence)
+			logger.V(4).Info("Updating metrics", "queue", q.id_sequence)
 			nfqueueQueueTotal.WithLabelValues(q.queue_number).Set(float64(q.queue_total))
 			nfqueueQueueDropped.WithLabelValues(q.queue_number).Set(float64(q.queue_dropped))
 			nfqueueUserDropped.WithLabelValues(q.queue_number).Set(float64(q.user_dropped))
@@ -398,9 +400,9 @@ func (c *Controller) Run(ctx context.Context) error {
 	}, 30*time.Second)
 
 	// Start the workers after the repair loop to avoid races
-	klog.Info("Syncing nftables rules")
+	logger.Info("Syncing nftables rules")
 	_ = c.syncNFTablesRules(ctx)
-	defer c.cleanNFTablesRules()
+	defer c.cleanNFTablesRules(ctx)
 	go wait.Until(c.runWorker, time.Second, ctx.Done())
 
 	var flags uint32
@@ -428,7 +430,7 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	nf, err := nfqueue.Open(&config)
 	if err != nil {
-		klog.Infof("could not open nfqueue socket: %v", err)
+		logger.Info("could not open nfqueue socket", "error", err)
 		return err
 	}
 	defer nf.Close()
@@ -444,11 +446,11 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 
 		startTime := time.Now()
-		klog.V(2).Infof("Processing sync for packet %d", *a.PacketID)
+		logger.V(2).Info("Processing sync for packet", "id", *a.PacketID)
 
 		packet, err := parsePacket(*a.Payload)
 		if err != nil {
-			klog.Infof("Can not process packet %d applying default policy (failOpen: %v): %v", *a.PacketID, c.config.FailOpen, err)
+			logger.Error(err, "Can not process packet, applying default policy", "id", *a.PacketID, "failOpen", c.config.FailOpen)
 			c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
 			return 0
 		}
@@ -459,10 +461,10 @@ func (c *Controller) Run(ctx context.Context) error {
 			packetProcessingHist.WithLabelValues(string(packet.proto), string(packet.family)).Observe(processingTime)
 			packetProcessingSum.Observe(processingTime)
 			packetCounterVec.WithLabelValues(string(packet.proto), string(packet.family)).Inc()
-			klog.V(2).Infof("Finished syncing packet %d took: %v accepted: %v", *a.PacketID, time.Since(startTime), verdict == nfqueue.NfAccept)
+			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime), "accepted", verdict == nfqueue.NfAccept)
 		}()
 
-		if c.evaluatePacket(packet) {
+		if c.evaluatePacket(ctx, packet) {
 			verdict = nfqueue.NfAccept
 		} else {
 			verdict = nfqueue.NfDrop
@@ -478,11 +480,11 @@ func (c *Controller) Run(ctx context.Context) error {
 				return 0
 			}
 		}
-		klog.Infof("Could not receive message: %v\n", err)
+		logger.Info("Could not receive message", "error", err)
 		return 0
 	})
 	if err != nil {
-		klog.Infof("could not open nfqueue socket: %v", err)
+		logger.Info("could not open nfqueue socket", "error", err)
 		return err
 	}
 
@@ -498,7 +500,8 @@ func (c *Controller) Run(ctx context.Context) error {
 // 4. AdminNetworkPolicies in Ingress for the destination Pod/IP
 // 5. NetworkPolicies in Ingress (if needed) for the destination Pod/IP
 // 6. BaselineAdminNetworkPolicies in Ingress (if needed) for the destination Pod/IP
-func (c *Controller) evaluatePacket(p packet) bool {
+func (c *Controller) evaluatePacket(ctx context.Context, p packet) bool {
+	logger := klog.FromContext(ctx)
 	srcIP := p.srcIP
 	srcPod := c.getPodAssignedToIP(srcIP.String())
 	srcPort := p.srcPort
@@ -507,16 +510,25 @@ func (c *Controller) evaluatePacket(p packet) bool {
 	dstPort := p.dstPort
 	protocol := p.proto
 
-	klog.V(2).Infof("Evaluating packet %s", p.String())
+	// evaluatePacket() should be fast unless trace logging is enabled.
+	// Logging optimization: We check if V(2) is enabled before hand,
+	// rather than evaluating the all parameters make an unnecessary logger call
+	tlogger := logger.V(2)
+	if tlogger.Enabled() {
+		tlogger.Info("Evaluating packet", "packet", p)
+		tlogger = tlogger.WithValues("id", p.id)
+	}
 
 	// Evalute Egress Policies
 
 	// Admin Network Policies are evaluated first
 	evaluateEgressNetworkPolicy := true
 	if c.config.AdminNetworkPolicy {
-		srcPodAdminNetworkPolices := c.getAdminNetworkPoliciesForPod(srcPod)
+		srcPodAdminNetworkPolices := c.getAdminNetworkPoliciesForPod(ctx, srcPod)
 		action := c.evaluateAdminEgress(srcPodAdminNetworkPolices, dstPod, dstIP, dstPort, protocol)
-		klog.V(2).Infof("[Packet %d] Egress AdminNetworkPolicies: %d Action: %s", p.id, len(srcPodAdminNetworkPolices), action)
+		if tlogger.Enabled() {
+			tlogger.Info("Egress AdminNetworkPolicies", "npolicies", len(srcPodAdminNetworkPolices), "action", action)
+		}
 		switch action {
 		case npav1alpha1.AdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
 			return false
@@ -531,16 +543,20 @@ func (c *Controller) evaluatePacket(p packet) bool {
 		if len(srcPodNetworkPolices) > 0 {
 			evaluateAdminEgressNetworkPolicy = false
 		}
-		allowed := c.evaluator(srcPodNetworkPolices, networkingv1.PolicyTypeEgress, srcPod, srcPort, dstPod, dstIP, dstPort, protocol)
-		klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(srcPodNetworkPolices), allowed)
+		allowed := c.evaluator(ctx, srcPodNetworkPolices, networkingv1.PolicyTypeEgress, srcPod, srcPort, dstPod, dstIP, dstPort, protocol)
+		if tlogger.Enabled() {
+			tlogger.Info("Egress NetworkPolicies", "npolicies", len(srcPodNetworkPolices), "allowed", allowed)
+		}
 		if !allowed {
 			return false
 		}
 	}
 	if c.config.BaselineAdminNetworkPolicy && evaluateAdminEgressNetworkPolicy {
-		srcPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(srcPod)
+		srcPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(ctx, srcPod)
 		action := c.evaluateBaselineAdminEgress(srcPodBaselineAdminNetworkPolices, dstPod, dstIP, dstPort, protocol)
-		klog.V(2).Infof("[Packet %d] Egress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(srcPodBaselineAdminNetworkPolices), action)
+		if tlogger.Enabled() {
+			tlogger.Info("Egress BaselineAdminNetworkPolicies", "npolicies", len(srcPodBaselineAdminNetworkPolices), "action", action)
+		}
 		switch action {
 		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
 			return false
@@ -552,9 +568,11 @@ func (c *Controller) evaluatePacket(p packet) bool {
 
 	// Admin Network Policies are evaluated first
 	if c.config.AdminNetworkPolicy {
-		dstPodAdminNetworkPolices := c.getAdminNetworkPoliciesForPod(dstPod)
+		dstPodAdminNetworkPolices := c.getAdminNetworkPoliciesForPod(ctx, dstPod)
 		action := c.evaluateAdminIngress(dstPodAdminNetworkPolices, srcPod, dstPort, protocol)
-		klog.V(2).Infof("[Packet %d] Ingress AdminNetworkPolicies: %d Action: %s", p.id, len(dstPodAdminNetworkPolices), action)
+		if tlogger.Enabled() {
+			tlogger.Info("Ingress AdminNetworkPolicies", "npolicies", len(dstPodAdminNetworkPolices), "action", action)
+		}
 		switch action {
 		case npav1alpha1.AdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
 			return false
@@ -566,14 +584,18 @@ func (c *Controller) evaluatePacket(p packet) bool {
 	// Network policies override Baseline Admin Network Policies
 	dstPodNetworkPolices := c.getNetworkPoliciesForPod(dstPod)
 	if len(dstPodNetworkPolices) > 0 {
-		allowed := c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
-		klog.V(2).Infof("[Packet %d] Ingress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
+		allowed := c.evaluator(ctx, dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
+		if tlogger.Enabled() {
+			tlogger.Info("Ingress NetworkPolicies", "npolicies", len(dstPodNetworkPolices), "allowed", allowed)
+		}
 		return allowed
 	}
 	if c.config.BaselineAdminNetworkPolicy {
-		dstPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(dstPod)
+		dstPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(ctx, dstPod)
 		action := c.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPort, protocol)
-		klog.V(2).Infof("[Packet %d] Ingress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(dstPodBaselineAdminNetworkPolices), action)
+		if tlogger.Enabled() {
+			tlogger.Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", action)
+		}
 		switch action {
 		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
 			return false
@@ -619,7 +641,7 @@ func (c *Controller) handleErr(err error, key string) {
 
 	// This controller retries 5 times if something goes wrong. After that, it stops trying.
 	if c.queue.NumRequeues(key) < 5 {
-		klog.Infof("Error syncing %v: %v", key, err)
+		klog.ErrorS(err, "syncing", "key", key)
 
 		// Re-enqueue the key rate limited. Based on the rate limiter on the
 		// queue and the re-enqueue history, the key will be processed later again.
@@ -630,7 +652,7 @@ func (c *Controller) handleErr(err error, key string) {
 	c.queue.Forget(key)
 	// Report to an external entity that, even after several retries, we could not successfully process this key
 	utilruntime.HandleError(err)
-	klog.Infof("Dropping %q out of the queue: %v", key, err)
+	klog.InfoS("Dropping out of the queue", "error", err, "key", key)
 }
 
 // syncNFTablesRules adds the necessary rules to process the first connection packets in userspace
@@ -795,11 +817,11 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	}
 
 	if c.config.NetfilterBug1766Fix {
-		c.addDNSRacersWorkaroundRules(tx)
+		c.addDNSRacersWorkaroundRules(ctx, tx)
 	}
 
 	if err := c.nft.Run(ctx, tx); err != nil {
-		klog.Infof("error syncing nftables rules %v", err)
+		klog.FromContext(ctx).Info("syncing nftables rules", "error", err)
 		return err
 	}
 	return nil
@@ -813,7 +835,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 // This can be removed once all kernels contain the fix in
 // https://github.com/torvalds/linux/commit/8af79d3edb5fd2dce35ea0a71595b6d4f9962350
 // TODO: remove once kernel fix is on most distros
-func (c *Controller) addDNSRacersWorkaroundRules(tx *knftables.Transaction) {
+func (c *Controller) addDNSRacersWorkaroundRules(ctx context.Context, tx *knftables.Transaction) {
 	hook := knftables.PreroutingHook
 	chainName := string(hook)
 	tx.Add(&knftables.Chain{
@@ -873,14 +895,20 @@ func (c *Controller) addDNSRacersWorkaroundRules(tx *knftables.Transaction) {
 	}
 }
 
-func (c *Controller) cleanNFTablesRules() {
+func (c *Controller) cleanNFTablesRules(ctx context.Context) {
 	tx := c.nft.NewTransaction()
 	// Add+Delete is idempotent and won't return an error if the table doesn't already
 	// exist.
 	tx.Add(&knftables.Table{})
 	tx.Delete(&knftables.Table{})
 
-	if err := c.nft.Run(context.TODO(), tx); err != nil {
-		klog.Infof("error deleting nftables rules %v", err)
+	// When this function is called, the ctx is likely cancelled. So
+	// we only use it for logging, and create a context with timeout
+	// for nft.Run. There is a grace period of 5s in main, so we keep
+	// this timeout shorter
+	nctx, cancel := context.WithTimeout(context.Background(), time.Second*4)
+	defer cancel()
+	if err := c.nft.Run(nctx, tx); err != nil {
+		klog.FromContext(ctx).Error(err, "deleting nftables rules")
 	}
 }

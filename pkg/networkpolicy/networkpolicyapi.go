@@ -2,6 +2,7 @@ package networkpolicy
 
 import (
 	"cmp"
+	"context"
 	"net"
 	"slices"
 
@@ -160,14 +161,19 @@ func (c *Controller) nodeSelector(selector *metav1.LabelSelector, pod *v1.Pod) b
 
 // getAdminNetworkPoliciesForPod returns the list of Admin Network Policies matching the Pod
 // The list is ordered by priority, from higher to lower.
-func (c *Controller) getAdminNetworkPoliciesForPod(pod *v1.Pod) []*npav1alpha1.AdminNetworkPolicy {
+func (c *Controller) getAdminNetworkPoliciesForPod(ctx context.Context, pod *v1.Pod) []*npav1alpha1.AdminNetworkPolicy {
 	if pod == nil {
 		return nil
+	}
+	logger := klog.FromContext(ctx)
+	tlogger := logger.V(2)
+	if tlogger.Enabled() {
+		tlogger = tlogger.WithValues("pod", pod.Name, "namespace", pod.Namespace)
 	}
 	// Get all the network policies that affect this pod
 	networkPolices, err := c.adminNetworkPolicyLister.List(labels.Everything())
 	if err != nil {
-		klog.Infof("getAdminNetworkPoliciesForPod error: %v", err)
+		logger.Info("getAdminNetworkPoliciesForPod", "error", err)
 		return nil
 	}
 
@@ -175,14 +181,14 @@ func (c *Controller) getAdminNetworkPoliciesForPod(pod *v1.Pod) []*npav1alpha1.A
 	for _, policy := range networkPolices {
 		if policy.Spec.Subject.Namespaces != nil &&
 			c.namespaceSelector(policy.Spec.Subject.Namespaces, pod) {
-			klog.V(2).Infof("Pod %s/%s match AdminNetworkPolicy %s", pod.Name, pod.Namespace, policy.Name)
+			tlogger.Info("Pod match AdminNetworkPolicy", "policy", policy.Name)
 			result = append(result, policy)
 		}
 
 		if policy.Spec.Subject.Pods != nil &&
 			c.namespaceSelector(&policy.Spec.Subject.Pods.NamespaceSelector, pod) &&
 			podSelector(&policy.Spec.Subject.Pods.PodSelector, pod) {
-			klog.V(2).Infof("Pod %s/%s match AdminNetworkPolicy %s", pod.Name, pod.Namespace, policy.Name)
+			tlogger.Info("Pod match AdminNetworkPolicy", "policy", policy.Name)
 			result = append(result, policy)
 		}
 	}
@@ -240,14 +246,19 @@ func evaluateAdminNetworkPolicyPort(networkPolicyPorts []npav1alpha1.AdminNetwor
 
 // getBaselineAdminNetworkPoliciesForPod returns the list of Baseline Admin Network Policies matching the Pod
 // The list is ordered by priority, from higher to lower.
-func (c *Controller) getBaselineAdminNetworkPoliciesForPod(pod *v1.Pod) []*npav1alpha1.BaselineAdminNetworkPolicy {
+func (c *Controller) getBaselineAdminNetworkPoliciesForPod(ctx context.Context, pod *v1.Pod) []*npav1alpha1.BaselineAdminNetworkPolicy {
 	if pod == nil {
 		return nil
+	}
+	logger := klog.FromContext(ctx)
+	tlogger := logger.V(2)
+	if tlogger.Enabled() {
+		tlogger = tlogger.WithValues("pod", pod.Name, "namespace", pod.Namespace)
 	}
 	// Get all the network policies that affect this pod
 	networkPolices, err := c.baselineAdminNetworkPolicyLister.List(labels.Everything())
 	if err != nil {
-		klog.Infof("getAdminNetworkPoliciesForPod error: %v", err)
+		logger.Info("getBaselineAdminNetworkPoliciesForPod", "error", err)
 		return nil
 	}
 
@@ -255,14 +266,14 @@ func (c *Controller) getBaselineAdminNetworkPoliciesForPod(pod *v1.Pod) []*npav1
 	for _, policy := range networkPolices {
 		if policy.Spec.Subject.Namespaces != nil &&
 			c.namespaceSelector(policy.Spec.Subject.Namespaces, pod) {
-			klog.V(2).Infof("Pod %s/%s match AdminNetworkPolicy %s", pod.Name, pod.Namespace, policy.Name)
+			tlogger.Info("Pod match AdminNetworkPolicy", "policy", policy.Name)
 			result = append(result, policy)
 		}
 
 		if policy.Spec.Subject.Pods != nil &&
 			c.namespaceSelector(&policy.Spec.Subject.Pods.NamespaceSelector, pod) &&
 			podSelector(&policy.Spec.Subject.Pods.PodSelector, pod) {
-			klog.V(2).Infof("Pod %s/%s match AdminNetworkPolicy %s", pod.Name, pod.Namespace, policy.Name)
+			tlogger.Info("Pod match AdminNetworkPolicy", "policy", policy.Name)
 			result = append(result, policy)
 		}
 	}
