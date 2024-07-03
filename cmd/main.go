@@ -21,6 +21,9 @@ import (
 	v1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/component-base/logs"
+	logsapi "k8s.io/component-base/logs/api/v1"
+	_ "k8s.io/component-base/logs/json/register"
 	nodeutil "k8s.io/component-helpers/node/util"
 	"k8s.io/klog/v2"
 
@@ -52,17 +55,36 @@ func init() {
 	}
 }
 
+// This is a pattern to ensure that deferred functions executes before os.Exit
 func main() {
-	// enable logging
-	klog.InitFlags(nil)
+	os.Exit(run())
+}
+func run() int {
+	// Enable logging in the Kubernetes core package way (support json output)
+	// https://github.com/kubernetes/component-base/tree/master
+	c := logsapi.NewLoggingConfiguration()
+	logsapi.AddGoFlags(c, flag.CommandLine)
 	flag.Parse()
+	logs.InitLogs()
+	if err := logsapi.ValidateAndApply(c, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
 
+	// Create a context for structured logging, and catch termination signals
+	ctx, cancel := signal.NotifyContext(
+		context.Background(), os.Interrupt, unix.SIGINT)
+	defer cancel()
+
+	logger := klog.FromContext(ctx)
+	logger.Info("called", "args", flag.Args())
 	flag.VisitAll(func(flag *flag.Flag) {
-		klog.Infof("FLAG: --%s=%q", flag.Name, flag.Value)
+		logger.Info("flag", "name", flag.Name, "value", flag.Value)
 	})
 
 	if _, _, err := net.SplitHostPort(metricsBindAddress); err != nil {
-		klog.Fatalf("error parsing metrics bind address %s : %v", metricsBindAddress, err)
+		logger.Error(err, "parsing metrics bind address", "address", metricsBindAddress)
+		return 1
 	}
 
 	nodeName, err := nodeutil.GetHostname(hostnameOverride)
@@ -95,18 +117,6 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
-
-	// trap Ctrl+C and call cancel on the context
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
-
-	// Enable signal handler
-	signalCh := make(chan os.Signal, 2)
-	defer func() {
-		close(signalCh)
-		cancel()
-	}()
-	signal.Notify(signalCh, os.Interrupt, unix.SIGINT)
 
 	informersFactory := informers.NewSharedInformerFactory(clientset, 0)
 
@@ -149,7 +159,8 @@ func main() {
 		cfg,
 	)
 	if err != nil {
-		klog.Fatalf("Can not start network policy controller: %v", err)
+		logger.Error(err, "Can not start network policy controller")
+		return 1
 	}
 	go func() {
 		err := networkPolicyController.Run(ctx)
@@ -161,13 +172,9 @@ func main() {
 		npaInformerFactory.Start(ctx.Done())
 	}
 
-	select {
-	case <-signalCh:
-		klog.Infof("Exiting: received signal")
-		cancel()
-	case <-ctx.Done():
-	}
+	<-ctx.Done()
 
 	// grace period to cleanup resources
 	time.Sleep(5 * time.Second)
+	return 0
 }
