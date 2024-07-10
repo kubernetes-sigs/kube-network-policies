@@ -7,6 +7,7 @@ package networkpolicy
 
 import (
 	"net"
+	"syscall"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
@@ -24,7 +25,6 @@ func TestUDPFragmentIPv6(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    []byte
-		err      bool
 		expected packet
 	}{
 		{
@@ -33,6 +33,7 @@ func TestUDPFragmentIPv6(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv6Protocol,
 				proto:   v1.ProtocolUDP,
+				ipproto: syscall.IPPROTO_UDP,
 				dstIP:   net.ParseIP("fd00::c0a8:101"),
 				dstPort: 5001,
 			},
@@ -42,6 +43,7 @@ func TestUDPFragmentIPv6(t *testing.T) {
 			input: packetsUDPFragIPv6[1],
 			expected: packet{
 				family: v1.IPv6Protocol,
+				ipproto: syscall.IPPROTO_FRAGMENT,
 				dstIP:  net.ParseIP("fd00::c0a8:101"),
 			},
 		},
@@ -51,6 +53,7 @@ func TestUDPFragmentIPv6(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv6Protocol,
 				proto:   v1.ProtocolUDP,
+				ipproto: syscall.IPPROTO_UDP,
 				srcIP:   net.ParseIP("fd00::c0a8:101"),
 				srcPort: 5001,
 			},
@@ -59,10 +62,7 @@ func TestUDPFragmentIPv6(t *testing.T) {
 	for _, tc := range tests {
 		packet, err := parsePacket(tc.input)
 		if err != nil {
-			if !tc.err {
-				t.Fatalf("%s: unexpected error: %v", tc.name, err)
-			}
-			continue
+			t.Fatalf("%s: unexpected error: %v", tc.name, err)
 		}
 		comparePacket(t, tc.name, tc.expected, packet)
 	}
@@ -82,6 +82,7 @@ func TestTCPIPv4(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
+				ipproto: syscall.IPPROTO_TCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
 				dstPort: 5001,
 				srcIP:   net.ParseIP("192.168.1.201"),
@@ -93,6 +94,7 @@ func TestTCPIPv4(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
+				ipproto: syscall.IPPROTO_TCP,
 				dstIP:   net.ParseIP("192.168.1.201"),
 				srcIP:   net.ParseIP("192.168.1.1"),
 				srcPort: 5001,
@@ -104,6 +106,7 @@ func TestTCPIPv4(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
+				ipproto: syscall.IPPROTO_TCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
 				dstPort: 5001,
 				srcIP:   net.ParseIP("192.168.1.2+1"),
@@ -115,6 +118,7 @@ func TestTCPIPv4(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
+				ipproto: syscall.IPPROTO_TCP,
 				dstIP:   net.ParseIP("192.168.1.201"),
 				srcIP:   net.ParseIP("192.168.1.1"),
 				srcPort: 5001,
@@ -126,6 +130,7 @@ func TestTCPIPv4(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
+				ipproto: syscall.IPPROTO_TCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
 				dstPort: 5001,
 				srcIP:   net.ParseIP("192.168.1.2+1"),
@@ -137,6 +142,7 @@ func TestTCPIPv4(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
+				ipproto: syscall.IPPROTO_TCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
 				dstPort: 5001,
 				srcIP:   net.ParseIP("192.168.1.201"),
@@ -148,6 +154,7 @@ func TestTCPIPv4(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
+				ipproto: syscall.IPPROTO_TCP,
 				dstIP:   net.ParseIP("192.168.1.201"),
 				srcIP:   net.ParseIP("192.168.1.1"),
 				srcPort: 5001,
@@ -159,6 +166,7 @@ func TestTCPIPv4(t *testing.T) {
 			expected: packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
+				ipproto: syscall.IPPROTO_TCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
 				dstPort: 5001,
 				srcIP:   net.ParseIP("192.168.1.201"),
@@ -202,8 +210,13 @@ func comparePacket(t *testing.T, tc string, expected, got packet) {
 	if got.family != expected.family {
 		t.Fatalf("%s: family: expected=%v, got=%v", tc, expected.family, got.family)
 	}
-	if got.proto != expected.proto {
-		t.Fatalf("%s: proto: expected=%v, got=%v", tc, expected.proto, got.proto)
+	if expected.proto != "" {
+		if got.proto != expected.proto {
+			t.Fatalf("%s: proto: expected=%v, got=%v", tc, expected.proto, got.proto)
+		}
+	}
+	if got.ipproto != expected.ipproto {
+		t.Fatalf("%s: ipproto: expected=%d, got=%d", tc, expected.ipproto, got.ipproto)
 	}
 	// Compare other fields only if expected (never compare id and payload)
 	if expected.srcIP != nil {

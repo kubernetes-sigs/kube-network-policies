@@ -15,7 +15,8 @@ type packet struct {
 	family  v1.IPFamily
 	srcIP   net.IP
 	dstIP   net.IP
-	proto   v1.Protocol
+	proto   v1.Protocol			// Set only for TCP, UDP and SCTP
+	ipproto int
 	srcPort int
 	dstPort int
 	payload []byte
@@ -23,6 +24,7 @@ type packet struct {
 
 var ErrorTooShort = fmt.Errorf("packet too short")
 var ErrorCorrupted = fmt.Errorf("packet corrupted")
+var ErrorExtensionHeader = fmt.Errorf("unsupported extension header")
 
 func (p packet) String() string {
 	return fmt.Sprintf("[%d] %s:%d %s:%d %s\n%s", p.id, p.srcIP.String(), p.srcPort, p.dstIP.String(), p.dstPort, p.proto, hex.Dump(p.payload))
@@ -39,7 +41,7 @@ func parsePacket(b []byte) (packet, error) {
 	}
 	version := int(b[0] >> 4)
 	// initialize variables
-	var protocol, l4offset, nxtHeader int
+	var l4offset, nxtHeader int
 	switch version {
 	case 4:
 		t.family = v1.IPv4Protocol
@@ -53,7 +55,7 @@ func parsePacket(b []byte) (packet, error) {
 		}
 		t.srcIP = net.IPv4(b[12], b[13], b[14], b[15])
 		t.dstIP = net.IPv4(b[16], b[17], b[18], b[19])
-		protocol = int(b[9])
+		t.ipproto = int(b[9])
 		// IPv4 fragments:
 		// Since the conntracker is always used in K8s, IPv4 fragments
 		// will never be passed via the nfqueue. Packets are
@@ -62,8 +64,8 @@ func parsePacket(b []byte) (packet, error) {
 	case 6:
 		t.family = v1.IPv6Protocol
 		if len(b) < 48 {
-			// 40 is the minimum length of an IPv6 header, and 8 is
-			// the minimum lenght of an extension or L4 header
+			// 40 is the length of an IPv6 header, and 8 is the
+			// minimum lenght of an extension or L4 header
 			return t, ErrorTooShort
 		}
 		t.srcIP = make(net.IP, net.IPv6len)
@@ -74,6 +76,11 @@ func parsePacket(b []byte) (packet, error) {
 		nxtHeader = int(b[6])
 		l4offset = 40
 		for nxtHeader == syscall.IPPROTO_DSTOPTS || nxtHeader == syscall.IPPROTO_HOPOPTS || nxtHeader == syscall.IPPROTO_ROUTING {
+			if nxtHeader == syscall.IPPROTO_ROUTING {
+				// IPv6 routing headers are too complex to process (e.g. SRv6),
+				// and they should not be seen inside the cluster
+				return t, ErrorExtensionHeader
+			}
 			// These headers have a lenght in 8-octet units, not
 			// including the first 8 octets
 			nxtHeader = int(b[l4offset])
@@ -91,18 +98,29 @@ func parsePacket(b []byte) (packet, error) {
 			if fragOffset&0xfff8 == 0 {
 				nxtHeader = int(b[l4offset])
 				l4offset += 8
-				// Here it's assumed that the fragment is the last
-				// extension header before the L4 header. But more
-				// IPPROTO_DSTOPTS are allowed by the recommended order.
-				// TODO: handle extra IPPROTO_DSTOPTS.
+				// We only handle extension headers in the recommended
+				// order. After a fragment header, only
+				// IPPROTO_DSTOPTS extension headers are accepted
+				for nxtHeader == syscall.IPPROTO_DSTOPTS {
+					nxtHeader = int(b[l4offset])
+					l4offset += (8 + int(b[l4offset+1])*8)
+					if (l4offset + 8) >= len(b) {
+						return t, ErrorTooShort
+					}
+				}
+				if nxtHeader == syscall.IPPROTO_HOPOPTS || nxtHeader == syscall.IPPROTO_ROUTING || nxtHeader == syscall.IPPROTO_FRAGMENT {
+					// Extension headers out-of-order
+					return t, ErrorExtensionHeader
+				}
 			} else {
-				// If this is NOT the first fragment, we have no L4
-				// header and the payload begins after this
-				// header. Return a packet with t.proto unset
+				// Not first fragment, we have no L4 header and the
+				// payload begins after this header (don't care about
+				// extra extension headers) Return a packet with t.proto unset
+				t.ipproto = syscall.IPPROTO_FRAGMENT
 				return t, nil
 			}
 		}
-		protocol = nxtHeader
+		t.ipproto = nxtHeader
 	default:
 		return t, fmt.Errorf("unknown version %d", version)
 	}
@@ -112,7 +130,7 @@ func parsePacket(b []byte) (packet, error) {
 	// L4header len) The L4header len is 8 byte for udp and sctp, but
 	// may vary for tcp (the dataOffset)
 	var payloadOffset int
-	switch protocol {
+	switch t.ipproto {
 	case syscall.IPPROTO_TCP:
 		t.proto = v1.ProtocolTCP
 		dataOffset := int(b[l4offset+12]>>4) * 4
@@ -129,13 +147,13 @@ func parsePacket(b []byte) (packet, error) {
 	default:
 		// Return a packet with t.proto unset, and ports 0
 		return t, nil
-
 	}
 	if payloadOffset > len(b) {
 		// If the payloadOffset is beyond the packet size, we have an
 		// incomplete L4 header
 		return t, ErrorTooShort
 	}
+
 	t.srcPort = int(binary.BigEndian.Uint16(b[l4offset : l4offset+2]))
 	t.dstPort = int(binary.BigEndian.Uint16(b[l4offset+2 : l4offset+4]))
 
