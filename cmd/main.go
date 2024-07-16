@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"sigs.k8s.io/knftables"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
@@ -57,11 +56,6 @@ func main() {
 	flag.Parse()
 
 	klog.Infof("flags: %v", flag.Args())
-
-	nft, err := knftables.New(knftables.InetFamily, "kube-network-policies")
-	if err != nil {
-		klog.Fatalf("Error initializing nftables: %v", err)
-	}
 
 	if _, _, err := net.SplitHostPort(metricsBindAddress); err != nil {
 		klog.Fatalf("error parsing metrics bind address %s : %v", metricsBindAddress, err)
@@ -138,9 +132,8 @@ func main() {
 		utilruntime.HandleError(err)
 	}()
 
-	networkPolicyController := networkpolicy.NewController(
+	networkPolicyController, err := networkpolicy.NewController(
 		clientset,
-		nft,
 		informersFactory.Networking().V1().NetworkPolicies(),
 		informersFactory.Core().V1().Namespaces(),
 		informersFactory.Core().V1().Pods(),
@@ -150,6 +143,9 @@ func main() {
 		banpInformer,
 		cfg,
 	)
+	if err != nil {
+		klog.Fatalf("Can not start network policy controller: %v", err)
+	}
 	go func() {
 		err := networkPolicyController.Run(ctx)
 		utilruntime.HandleError(err)

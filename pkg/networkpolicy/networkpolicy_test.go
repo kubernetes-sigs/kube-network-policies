@@ -418,7 +418,7 @@ func TestSyncPacket(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller := newController()
+			controller := newTestController()
 			// Add objects to the Store
 			for _, n := range tt.networkpolicy {
 				err := controller.networkpolicyStore.Add(n)
@@ -464,7 +464,7 @@ func TestController_evaluateSelectors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newController()
+			c := newTestController()
 			// Add objects to the Store
 			for _, n := range tt.networkpolicies {
 				err := c.networkpolicyStore.Add(n)
@@ -529,7 +529,7 @@ func TestController_evaluateIPBlocks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newController()
+			c := newTestController()
 			if got := c.evaluateIPBlocks(tt.ipBlock, tt.ip); got != tt.want {
 				t.Errorf("Controller.evaluateIPBlocks() = %v, want %v", got, tt.want)
 			}
@@ -625,7 +625,7 @@ func TestController_evaluatePorts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newController()
+			c := newTestController()
 			if got := c.evaluatePorts(tt.networkPolicyPorts, tt.pod, tt.port, tt.protocol); got != tt.want {
 				t.Errorf("Controller.evaluatePorts() = %v, want %v", got, tt.want)
 			}
