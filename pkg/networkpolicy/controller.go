@@ -70,6 +70,36 @@ type Config struct {
 
 // NewController returns a new *Controller.
 func NewController(client clientset.Interface,
+	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
+	namespaceInformer coreinformers.NamespaceInformer,
+	podInformer coreinformers.PodInformer,
+	nodeInformer coreinformers.NodeInformer,
+	npaClient npaclient.Interface,
+	adminNetworkPolicyInformer policyinformers.AdminNetworkPolicyInformer,
+	baselineAdminNetworkPolicyInformer policyinformers.BaselineAdminNetworkPolicyInformer,
+	config Config,
+) (*Controller, error) {
+	klog.V(2).Info("Initializing nftables")
+	nft, err := knftables.New(knftables.InetFamily, "kube-network-policies")
+	if err != nil {
+		return nil, err
+	}
+
+	return newController(
+		client,
+		nft,
+		networkpolicyInformer,
+		namespaceInformer,
+		podInformer,
+		nodeInformer,
+		npaClient,
+		adminNetworkPolicyInformer,
+		baselineAdminNetworkPolicyInformer,
+		config,
+	)
+}
+
+func newController(client clientset.Interface,
 	nft knftables.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
@@ -79,7 +109,7 @@ func NewController(client clientset.Interface,
 	adminNetworkPolicyInformer policyinformers.AdminNetworkPolicyInformer,
 	baselineAdminNetworkPolicyInformer policyinformers.BaselineAdminNetworkPolicyInformer,
 	config Config,
-) *Controller {
+) (*Controller, error) {
 	klog.V(2).Info("Creating event broadcaster")
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartStructuredLogging(0)
@@ -113,7 +143,7 @@ func NewController(client clientset.Interface,
 		},
 	})
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	podIndexer := podInformer.Informer().GetIndexer()
@@ -150,7 +180,7 @@ func NewController(client clientset.Interface,
 	}
 	err = podInformer.Informer().SetTransform(trim)
 	if err != nil {
-		utilruntime.HandleError(err)
+		return nil, err
 	}
 
 	// process only local Pods that are affected by network policices
@@ -257,7 +287,7 @@ func NewController(client clientset.Interface,
 	c.eventBroadcaster = broadcaster
 	c.eventRecorder = recorder
 
-	return c
+	return c, nil
 }
 
 // Controller manages selector-based networkpolicy endpoints.

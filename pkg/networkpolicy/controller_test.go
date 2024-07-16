@@ -85,15 +85,16 @@ type networkpolicyController struct {
 	nodeStore                       cache.Store
 }
 
-func newController() *networkpolicyController {
+func newTestController() *networkpolicyController {
 	client := fake.NewSimpleClientset()
 	informersFactory := informers.NewSharedInformerFactory(client, 0)
 
 	npaClient := npaclientfake.NewSimpleClientset()
 	npaInformerFactory := npainformers.NewSharedInformerFactory(npaClient, 0)
 
-	controller := NewController(client,
-		&knftables.Fake{},
+	controller, err := newController(
+		client,
+		knftables.NewFake(knftables.InetFamily, "kube-network-policies"),
 		informersFactory.Networking().V1().NetworkPolicies(),
 		informersFactory.Core().V1().Namespaces(),
 		informersFactory.Core().V1().Pods(),
@@ -106,6 +107,9 @@ func newController() *networkpolicyController {
 			BaselineAdminNetworkPolicy: true,
 		},
 	)
+	if err != nil {
+		panic(err)
+	}
 	controller.networkpoliciesSynced = alwaysReady
 	controller.namespacesSynced = alwaysReady
 	controller.podsSynced = alwaysReady

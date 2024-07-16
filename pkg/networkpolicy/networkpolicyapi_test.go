@@ -455,7 +455,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller := newController()
+			controller := newTestController()
 			// Add objects to the Store
 			for _, n := range tt.networkpolicy {
 				err := controller.adminNetworkpolicyStore.Add(n)
@@ -720,7 +720,7 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller := newController()
+			controller := newTestController()
 			// Add objects to the Store
 			err := controller.adminNetworkpolicyStore.Add(tt.networkpolicy)
 			if err != nil {
