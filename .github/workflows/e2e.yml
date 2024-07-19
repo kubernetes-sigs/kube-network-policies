@@ -55,9 +55,11 @@ jobs:
       matrix:
         # TODO add "dual", waiting on KEP https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/3705-cloud-node-ips
         ipFamily: ["ipv4", "ipv6"]
+        proxyMode: ["iptables", "ipvs"]
     env:
-      JOB_NAME: "kube-network-policies-${{ matrix.ipFamily }}"
+      JOB_NAME: "kube-network-policies-${{ matrix.ipFamily }}-${{ matrix.proxyMode }}"
       IP_FAMILY: ${{ matrix.ipFamily }}
+      KUBEPROXY_MODE: ${{ matrix.proxyMode }}
     steps:
     - name: Check out code
       uses: actions/checkout@v2
@@ -99,6 +101,7 @@ jobs:
         apiVersion: kind.x-k8s.io/v1alpha4
         networking:
           ipFamily: ${IP_FAMILY}
+          kubeProxyMode: ${KUBEPROXY_MODE}
         nodes:
         - role: control-plane
         - role: worker
