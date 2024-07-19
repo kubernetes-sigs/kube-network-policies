@@ -13,8 +13,8 @@ on:
 
 env:
   GO_VERSION: "1.22.0"
-  K8S_VERSION: "v1.29.2"
-  KIND_VERSION: "v0.22.0"
+  K8S_VERSION: "v1.30.0"
+  KIND_VERSION: "v0.23.0"
   IMAGE_NAME: registry.k8s.io/networking/kube-network-policies
   KIND_CLUSTER_NAME: kind
 

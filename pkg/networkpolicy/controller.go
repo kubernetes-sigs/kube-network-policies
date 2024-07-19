@@ -540,13 +540,13 @@ func (c *Controller) evaluatePacket(p packet) bool {
 	dstPodNetworkPolices := c.getNetworkPoliciesForPod(dstPod)
 	if len(dstPodNetworkPolices) > 0 {
 		allowed := c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
-		klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
+		klog.V(2).Infof("[Packet %d] Ingress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
 		return allowed
 	}
 	if c.config.BaselineAdminNetworkPolicy {
 		dstPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(dstPod)
 		action := c.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPort, protocol)
-		klog.V(2).Infof("[Packet %d] Egress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(dstPodBaselineAdminNetworkPolices), action)
+		klog.V(2).Infof("[Packet %d] Ingress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(dstPodBaselineAdminNetworkPolices), action)
 		switch action {
 		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
 			return false
@@ -674,17 +674,26 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			})
 		}
 	}
-
-	for _, hook := range []knftables.BaseChainHook{knftables.ForwardHook} {
+	// Process the packets that are, usually on the FORWARD hook, but
+	// IPVS packets follow a different path in netfilter, so we process
+	// everything in the POSTROUTING hook before SNAT happens.
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/46
+	for _, hook := range []knftables.BaseChainHook{knftables.PostroutingHook} {
 		chainName := string(hook)
 		tx.Add(&knftables.Chain{
 			Name:     chainName,
 			Type:     knftables.PtrTo(knftables.FilterType),
 			Hook:     knftables.PtrTo(hook),
-			Priority: knftables.PtrTo(knftables.FilterPriority + "-5"),
+			Priority: knftables.PtrTo(knftables.SNATPriority + "-5"),
 		})
 		tx.Flush(&knftables.Chain{
 			Name: chainName,
+		})
+		// IPv6 needs ICMP Neighbor Discovery to work
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"icmpv6", "type", "{", "nd-neighbor-solicit, nd-neighbor-advert", "}", "accept"),
 		})
 		// instead of aggregating all the expresion in one rule, use two different
 		// rules to understand if is causing issues with UDP packets with the same

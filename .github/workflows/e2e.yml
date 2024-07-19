@@ -12,8 +12,8 @@ on:
 
 env:
   GO_VERSION: "1.22.0"
-  K8S_VERSION: "v1.29.2"
-  KIND_VERSION: "v0.22.0"
+  K8S_VERSION: "v1.30.0"
+  KIND_VERSION: "v0.23.0"
   IMAGE_NAME: registry.k8s.io/networking/kube-network-policies
   KIND_CLUSTER_NAME: kind
 
@@ -55,9 +55,12 @@ jobs:
       matrix:
         # TODO add "dual", waiting on KEP https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/3705-cloud-node-ips
         ipFamily: ["ipv4", "ipv6"]
+        # TODO add nftables (beta in 1.31) waiting for 1.31 images
+        proxyMode: ["iptables", "ipvs"]
     env:
-      JOB_NAME: "kube-network-policies-${{ matrix.ipFamily }}"
+      JOB_NAME: "kube-network-policies-${{ matrix.ipFamily }}-${{ matrix.proxyMode }}"
       IP_FAMILY: ${{ matrix.ipFamily }}
+      KUBEPROXY_MODE: ${{ matrix.proxyMode }}
     steps:
     - name: Check out code
       uses: actions/checkout@v2
@@ -99,6 +102,7 @@ jobs:
         apiVersion: kind.x-k8s.io/v1alpha4
         networking:
           ipFamily: ${IP_FAMILY}
+          kubeProxyMode: ${KUBEPROXY_MODE}
         nodes:
         - role: control-plane
         - role: worker

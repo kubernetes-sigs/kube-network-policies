@@ -94,7 +94,7 @@ func (c *Controller) evaluator(
 				// if there is at least one network policy matching the Pod it defaults to deny
 				verdict = false
 				if netpol.Spec.Egress == nil {
-					klog.V(2).Infof("Pod %s/%s has limited all egress traffic by NetworkPolicy %s/%s", srcPod.Name, srcPod.Namespace, netpol.Name, netpol.Namespace)
+					klog.V(2).Infof("Pod %s has limited all egress traffic by NetworkPolicy %s/%s", klog.KObj(srcPod), netpol.Name, netpol.Namespace)
 					continue
 				}
 				// This evaluator only evaluates one policyType, if it matches then traffic is allowed
@@ -115,7 +115,7 @@ func (c *Controller) evaluator(
 				// if there is at least one network policy matching the Pod it defaults to deny
 				verdict = false
 				if netpol.Spec.Ingress == nil {
-					klog.V(2).Infof("Pod %s/%s has limited all ingress traffic by NetworkPolicy %s/%s", dstPod.Name, dstPod.Namespace, netpol.Name, netpol.Namespace)
+					klog.V(2).Infof("Pod %s has limited all ingress traffic by NetworkPolicy %s/%s", klog.KObj(dstPod), netpol.Name, netpol.Namespace)
 					continue
 				}
 				// This evaluator only evaluates one policyType, if it matches then traffic is allowed
@@ -132,14 +132,14 @@ func (c *Controller) evaluator(
 func (c *Controller) evaluateIngress(netpolNamespace string, ingressRules []networkingv1.NetworkPolicyIngressRule, srcPod *v1.Pod, srcPort int, dstPod *v1.Pod, dstIP net.IP, proto v1.Protocol) bool {
 	// assume srcPod and ingressRules are not nil
 	if len(ingressRules) == 0 {
-		klog.V(2).Infof("Pod %s/%s has allowed all egress traffic", srcPod.Name, srcPod.Namespace)
+		klog.V(2).Infof("Pod %s has allowed all egress traffic", klog.KObj(srcPod))
 		return true
 	}
 
 	for _, rule := range ingressRules {
 		// Evaluate if Port is accessible in the specified Pod
 		if !c.evaluatePorts(rule.Ports, srcPod, srcPort, proto) {
-			klog.V(2).Infof("Pod %s/%s is not allowed to be connected on port %d", srcPod.Name, srcPod.Namespace, srcPort)
+			klog.V(2).Infof("Pod %s is not allowed to be connected on port %d", klog.KObj(srcPod), srcPort)
 			continue
 		}
 
@@ -149,7 +149,7 @@ func (c *Controller) evaluateIngress(netpolNamespace string, ingressRules []netw
 		// source). If this field is present and contains at least one item, this rule
 		// allows traffic only if the traffic matches at least one item in the from list.
 		if len(rule.From) == 0 {
-			klog.V(2).Infof("Pod %s/%s is allowed to connect from any destination", srcPod.Name, srcPod.Namespace)
+			klog.V(2).Infof("Pod %s is allowed to connect from any destination", klog.KObj(srcPod))
 			return true
 		}
 		for _, peer := range rule.From {
@@ -158,7 +158,7 @@ func (c *Controller) evaluateIngress(netpolNamespace string, ingressRules []netw
 			// that should not be included within this rule.
 			if peer.IPBlock != nil {
 				if c.evaluateIPBlocks(peer.IPBlock, dstIP) {
-					klog.V(2).Infof("Pod %s/%s is not accessible from %s", srcPod.Name, srcPod.Namespace, dstIP)
+					klog.V(2).Infof("Pod %s is not accessible from %s", klog.KObj(srcPod), dstIP)
 					return true
 				}
 				continue
@@ -171,7 +171,7 @@ func (c *Controller) evaluateIngress(netpolNamespace string, ingressRules []netw
 
 			if peer.NamespaceSelector != nil || peer.PodSelector != nil {
 				if c.evaluateSelectors(peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
-					klog.V(2).Infof("Pod %s/%s is accessible from Pod %s/%s because match selectors", srcPod.Name, srcPod.Namespace, dstPod.Name, dstPod.Namespace)
+					klog.V(2).Infof("Pod %s is accessible from Pod %s because match selectors", klog.KObj(srcPod), klog.KObj(dstPod))
 					return true
 				}
 			}
@@ -182,14 +182,14 @@ func (c *Controller) evaluateIngress(netpolNamespace string, ingressRules []netw
 
 func (c *Controller) evaluateEgress(netpolNamespace string, egressRules []networkingv1.NetworkPolicyEgressRule, srcPod *v1.Pod, dstPod *v1.Pod, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
 	if len(egressRules) == 0 {
-		klog.V(2).Infof("Pod %s/%s has allowed all egress traffic", srcPod.Name, srcPod.Namespace)
+		klog.V(2).Infof("Pod %s has allowed all egress traffic", klog.KObj(srcPod))
 		return true
 	}
 
 	for _, rule := range egressRules {
 		// Evaluate if Pod is allowed to connect to dstPort
 		if !c.evaluatePorts(rule.Ports, dstPod, dstPort, proto) {
-			klog.V(2).Infof("Pod %s/%s is not allowed to connect to port %d", srcPod.Name, srcPod.Namespace, dstPort)
+			klog.V(2).Infof("Pod %s is not allowed to connect to port %d", klog.KObj(srcPod), dstPort)
 			continue
 		}
 		// to is a list of destinations for outgoing traffic of pods selected for this rule.
@@ -198,7 +198,7 @@ func (c *Controller) evaluateEgress(netpolNamespace string, egressRules []networ
 		// destination). If this field is present and contains at least one item, this rule
 		// allows traffic only if the traffic matches at least one item in the to list.
 		if len(rule.To) == 0 {
-			klog.V(2).Infof("Pod %s/%s is allowed to connect to any destination", srcPod.Name, srcPod.Namespace)
+			klog.V(2).Infof("Pod %s is allowed to connect to any destination", klog.KObj(srcPod))
 			return true
 		}
 		for _, peer := range rule.To {
@@ -207,7 +207,7 @@ func (c *Controller) evaluateEgress(netpolNamespace string, egressRules []networ
 			// that should not be included within this rule.
 			if peer.IPBlock != nil {
 				if c.evaluateIPBlocks(peer.IPBlock, dstIP) {
-					klog.V(2).Infof("Pod %s/%s is allowed to connect to %s", srcPod.Name, srcPod.Namespace, dstIP)
+					klog.V(2).Infof("Pod %s is allowed to connect to %s", klog.KObj(srcPod), dstIP)
 					return true
 				}
 				continue
@@ -220,7 +220,7 @@ func (c *Controller) evaluateEgress(netpolNamespace string, egressRules []networ
 
 			if peer.NamespaceSelector != nil || peer.PodSelector != nil {
 				if c.evaluateSelectors(peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
-					klog.V(2).Infof("Pod %s/%s is allowed to connect because of Pod and Namespace selectors", srcPod.Name, srcPod.Namespace)
+					klog.V(2).Infof("Pod %s is allowed to connect because of Pod and Namespace selectors", klog.KObj(srcPod))
 					return true
 				}
 			}
