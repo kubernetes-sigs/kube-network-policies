@@ -540,13 +540,13 @@ func (c *Controller) evaluatePacket(p packet) bool {
 	dstPodNetworkPolices := c.getNetworkPoliciesForPod(dstPod)
 	if len(dstPodNetworkPolices) > 0 {
 		allowed := c.evaluator(dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
-		klog.V(2).Infof("[Packet %d] Egress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
+		klog.V(2).Infof("[Packet %d] Ingress NetworkPolicies: %d Allowed: %v", p.id, len(dstPodNetworkPolices), allowed)
 		return allowed
 	}
 	if c.config.BaselineAdminNetworkPolicy {
 		dstPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(dstPod)
 		action := c.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPort, protocol)
-		klog.V(2).Infof("[Packet %d] Egress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(dstPodBaselineAdminNetworkPolices), action)
+		klog.V(2).Infof("[Packet %d] Ingress BaselineAdminNetworkPolicies: %d Action: %s", p.id, len(dstPodBaselineAdminNetworkPolices), action)
 		switch action {
 		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
 			return false
