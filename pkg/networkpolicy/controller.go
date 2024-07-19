@@ -674,8 +674,11 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			})
 		}
 	}
-
-	for _, hook := range []knftables.BaseChainHook{knftables.ForwardHook} {
+	// Process the packets that are, usually on the FORWARD hook, but
+	// IPVS packets follow a different path in netfilter, so we process
+	// everything in the POSTROUTING hook before SNAT happens.
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/46
+	for _, hook := range []knftables.BaseChainHook{knftables.PostroutingHook} {
 		chainName := string(hook)
 		tx.Add(&knftables.Chain{
 			Name:     chainName,
