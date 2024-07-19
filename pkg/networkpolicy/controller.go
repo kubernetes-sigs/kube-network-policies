@@ -689,6 +689,12 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		tx.Flush(&knftables.Chain{
 			Name: chainName,
 		})
+		// IPv6 needs ICMP Neighbor Discovery to work
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"icmpv6", "type", "{", "nd-neighbor-solicit, nd-neighbor-advert", "}", "accept"),
+		})
 		// instead of aggregating all the expresion in one rule, use two different
 		// rules to understand if is causing issues with UDP packets with the same
 		// tuple (https://github.com/kubernetes-sigs/kube-network-policies/issues/12)
