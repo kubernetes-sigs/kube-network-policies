@@ -15,7 +15,7 @@ type packet struct {
 	family  v1.IPFamily
 	srcIP   net.IP
 	dstIP   net.IP
-	proto   v1.Protocol			// Set only for TCP, UDP and SCTP
+	proto   v1.Protocol // Set only for TCP, UDP and SCTP
 	ipproto int
 	srcPort int
 	dstPort int
