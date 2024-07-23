@@ -695,6 +695,13 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			Rule: knftables.Concat(
 				"icmpv6", "type", "{", "nd-neighbor-solicit, nd-neighbor-advert", "}", "accept"),
 		})
+		// Don't process traffic generated from the root user in the Node, it can block kubelet probes
+		// or system daemons that depend on the internal node traffic to not be blocked.
+		// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/65
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule:  "meta skuid 0 accept",
+		})
 		// instead of aggregating all the expresion in one rule, use two different
 		// rules to understand if is causing issues with UDP packets with the same
 		// tuple (https://github.com/kubernetes-sigs/kube-network-policies/issues/12)
