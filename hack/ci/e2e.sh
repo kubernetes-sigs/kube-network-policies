@@ -168,8 +168,9 @@ run_tests() {
   fi
 
   # ginkgo regexes
-  SKIP="${SKIP:-"Feature|Federation|PerformanceDNS|DualStack|Disruptive|Serial|KubeProxy|GCE|Netpol|NetworkPolicy|256.search.list.characters|LoadBalancer.Service.without.NodePort|type.and.ports.of.a.TCP.service|loadbalancer.source.ranges"}"
-  FOCUS="${FOCUS:-"\\[sig-network\\]"}"
+  SKIP="${SKIP:-}"
+  FOCUS="${FOCUS:-}"
+  LABEL_FILTER="${LABEL_FILTER:-"Feature: containsAny NetworkPolicy"}"
   # if we set PARALLEL=true, skip serial tests set --ginkgo-parallel
   if [ "${PARALLEL:-false}" = "true" ]; then
     export GINKGO_PARALLEL=y
