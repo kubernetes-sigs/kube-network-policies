@@ -37,6 +37,10 @@ TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
 IMAGE?=$(REGISTRY)/$(IMAGE_NAME):$(TAG)
 PLATFORMS?=linux/amd64,linux/arm64
 
+.PHONY: ensure-buildx
+ensure-buildx:
+	./hack/init-buildx.sh
+	
 image-build:
 	docker buildx build . \
 		--tag="${IMAGE}" \
@@ -47,3 +51,6 @@ image-push:
 		--platform="${PLATFORMS}" \
 		--tag="${IMAGE}" \
 		--push
+
+.PHONY: release # Build a multi-arch docker image
+release: ensure-buildx image-push
