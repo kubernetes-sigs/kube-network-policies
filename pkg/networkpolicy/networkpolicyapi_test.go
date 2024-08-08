@@ -1,6 +1,7 @@
 package networkpolicy
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -480,7 +481,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ok := controller.evaluatePacket(tt.p)
+			ok := controller.evaluatePacket(context.TODO(), tt.p)
 			if ok != tt.expect {
 				t.Errorf("expected %v got  %v", tt.expect, ok)
 			}
@@ -731,7 +732,7 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if got := controller.getAdminNetworkPoliciesForPod(makePod("a", "foo", "192.168.1.11")); len(got) > 0 != tt.want {
+			if got := controller.getAdminNetworkPoliciesForPod(context.TODO(), makePod("a", "foo", "192.168.1.11")); len(got) > 0 != tt.want {
 				t.Errorf("Controller.getAdminNetworkPoliciesForPod() = %v, want %v", len(got) > 0, tt.want)
 			}
 		})
