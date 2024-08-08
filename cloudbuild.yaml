@@ -5,4 +5,7 @@ options:
 steps:
 - name: gcr.io/k8s-staging-test-infra/gcb-docker-gcloud:v20240718-5ef92b5c36
   entrypoint: make
+  env:
+  - REGISTRY=gcr.io/k8s-staging-networking
+  - IMAGE_NAME=kube-network-policies
   args: ['release']
