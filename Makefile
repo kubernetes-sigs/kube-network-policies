@@ -34,7 +34,7 @@ REGISTRY?=gcr.io/k8s-staging-networking
 # tag based on date-sha
 TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
 # the full image tag
-IMAGE?=$(REGISTRY)/$(IMAGE_NAME):$(TAG)
+KNP_IMAGE?=$(REGISTRY)/$(IMAGE_NAME):$(TAG)
 PLATFORMS?=linux/amd64,linux/arm64
 
 .PHONY: ensure-buildx
@@ -43,13 +43,13 @@ ensure-buildx:
 	
 image-build:
 	docker buildx build . \
-		--tag="${IMAGE}" \
+		--tag="${KNP_IMAGE}" \
 		--load
 
 image-push:
 	docker buildx build . \
 		--platform="${PLATFORMS}" \
-		--tag="${IMAGE}" \
+		--tag="${KNP_IMAGE}" \
 		--push
 
 .PHONY: release # Build a multi-arch docker image
