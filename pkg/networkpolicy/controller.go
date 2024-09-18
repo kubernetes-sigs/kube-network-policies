@@ -121,7 +121,10 @@ func newController(client clientset.Interface,
 		client: client,
 		config: config,
 		nft:    nft,
-		queue:  workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "controllerName"},
+		),
 	}
 
 	err := podInformer.Informer().AddIndexers(cache.Indexers{
@@ -306,7 +309,7 @@ type Controller struct {
 	podLister             corelisters.PodLister
 	podsSynced            cache.InformerSynced
 
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 
 	npaClient npaclient.Interface
 
@@ -576,7 +579,7 @@ func (c *Controller) processNextItem() bool {
 	// Invoke the method containing the business logic
 	err := c.syncNFTablesRules(context.Background())
 	// Handle the error if something went wrong during the execution of the business logic
-	c.handleErr(err, key.(string))
+	c.handleErr(err, key)
 	return true
 }
 
