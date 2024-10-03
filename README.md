@@ -2,7 +2,7 @@
 
 Implementation of Kubernetes Network Policies:
 - [Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
-- [Admin Network Policies and Baseline Admint Network Policies](https://network-policy-api.sigs.k8s.io/)
+- [Admin Network Policies and Baseline Admin Network Policies](https://network-policy-api.sigs.k8s.io/)
 
 ## Install
 
@@ -14,7 +14,7 @@ There are two manifest in the current repository:
 kubectl apply -f install.yaml
 ```
 
-2. For the Admin Network Policies and Baseline Admint Network Policies the CRDs has to be installed first:
+2. For the Admin Network Policies and Baseline Admin Network Policies the CRDs has to be installed first:
 ```
 kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
 
