@@ -3,14 +3,17 @@ package networkpolicy
 import (
 	"context"
 	"fmt"
+	"runtime"
+	"strings"
 	"time"
+	"unique"
 
 	nfqueue "github.com/florianl/go-nfqueue"
 	"github.com/mdlayher/netlink"
-
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -173,6 +176,24 @@ func newController(client clientset.Interface,
 
 	// reduce memory usage only care about Labels and Status
 	trim := func(obj interface{}) (interface{}, error) {
+		if po, ok := obj.(*v1.Pod); ok {
+			ips := make([]v1.PodIP, 0, len(po.Status.PodIPs))
+			for _, i := range po.Status.PodIPs {
+				ips = append(ips, v1.PodIP{IP: intern(i.IP)})
+			}
+			return &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      intern(po.Name),
+					Namespace: intern(po.Namespace),
+					Labels:    internm(po.Labels),
+				},
+				Spec: v1.PodSpec{Hostname: intern(po.Spec.Hostname), NodeName: intern(po.Spec.NodeName)},
+				Status: v1.PodStatus{
+					Phase:  v1.PodPhase(intern(string(po.Status.Phase))),
+					PodIPs: ips,
+				},
+			}, nil
+		}
 		if accessor, err := meta.Accessor(obj); err == nil {
 			accessor.SetManagedFields(nil)
 		}
@@ -183,9 +204,16 @@ func newController(client clientset.Interface,
 		return nil, err
 	}
 
+	pods := 0
 	// process only local Pods that are affected by network policices
-	_, _ = podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
+	_, _ = podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerDetailedFuncs{
+		AddFunc: func(obj interface{}, isInitialList bool) {
+			if isInitialList {
+				pods++
+				if pods%200 == 0 {
+					runtime.GC()
+				}
+			}
 			pod := obj.(*v1.Pod)
 			if pod.Spec.NodeName != c.config.NodeName {
 				return
@@ -774,4 +802,16 @@ func (c *Controller) cleanNFTablesRules() {
 	if err := c.nft.Run(context.TODO(), tx); err != nil {
 		klog.Infof("error deleting nftables rules %v", err)
 	}
+}
+
+func intern(s string) string {
+	return unique.Make(strings.Clone(s)).Value()
+}
+
+func internm(s map[string]string) map[string]string {
+	nm := make(map[string]string, len(s))
+	for k, v := range s {
+		nm[intern(k)] = intern(v)
+	}
+	return nm
 }
