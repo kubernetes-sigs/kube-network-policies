@@ -1,6 +1,7 @@
 package networkpolicy
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -439,7 +440,7 @@ func TestSyncPacket(t *testing.T) {
 				}
 			}
 
-			ok := controller.evaluatePacket(tt.p)
+			ok := controller.evaluatePacket(context.TODO(), tt.p)
 			if ok != tt.expect {
 				t.Errorf("expected %v got  %v", ok, tt.expect)
 			}
@@ -484,7 +485,7 @@ func TestController_evaluateSelectors(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if got := c.evaluateSelectors(tt.peerPodSelector, tt.peerNSSelector, tt.pod, tt.policyNs); got != tt.want {
+			if got := c.evaluateSelectors(context.TODO(), tt.peerPodSelector, tt.peerNSSelector, tt.pod, tt.policyNs); got != tt.want {
 				t.Errorf("Controller.evaluateSelectors() = %v, want %v", got, tt.want)
 			}
 		})
