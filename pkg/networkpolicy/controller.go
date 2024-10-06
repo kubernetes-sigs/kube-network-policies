@@ -123,7 +123,7 @@ func newController(client clientset.Interface,
 		nft:    nft,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
-			workqueue.TypedRateLimitingQueueConfig[string]{Name: "controllerName"},
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: controllerName},
 		),
 	}
 
