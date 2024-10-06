@@ -55,7 +55,9 @@ func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
 
-	klog.Infof("flags: %v", flag.Args())
+	flag.VisitAll(func(flag *flag.Flag) {
+		klog.Infof("FLAG: --%s=%q", flag.Name, flag.Value)
+	})
 
 	if _, _, err := net.SplitHostPort(metricsBindAddress); err != nil {
 		klog.Fatalf("error parsing metrics bind address %s : %v", metricsBindAddress, err)
