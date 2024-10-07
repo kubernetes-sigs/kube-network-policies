@@ -66,6 +66,7 @@ type Config struct {
 	BaselineAdminNetworkPolicy bool
 	QueueID                    int
 	NodeName                   string
+	NetfilterBug1766Fix        bool
 }
 
 // NewController returns a new *Controller.
@@ -692,6 +693,17 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	tx.Flush(&knftables.Chain{
 		Name: chainName,
 	})
+
+	// DNS is processed by addDNSRacersWorkaroundRules()
+	// TODO: remove once kernel fix is on most distros
+	if c.config.NetfilterBug1766Fix {
+		tx.Add(&knftables.Rule{
+			Chain:   chainName,
+			Rule:    "udp dport 53 accept",
+			Comment: ptr.To("process DNS traffic on PREROUTING hook with network policy enforcement to avoid netfilter race condition bug"),
+		})
+	}
+
 	// IPv6 needs ICMP Neighbor Discovery to work
 	tx.Add(&knftables.Rule{
 		Chain: chainName,
@@ -759,11 +771,83 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		})
 	}
 
+	if c.config.NetfilterBug1766Fix {
+		c.addDNSRacersWorkaroundRules(tx)
+	}
+
 	if err := c.nft.Run(ctx, tx); err != nil {
 		klog.Infof("error syncing nftables rules %v", err)
 		return err
 	}
 	return nil
+}
+
+// To avoid a kernel bug caused by UDP DNS request racing with conntrack
+// process the DNS packets only on the PREROUTING hook after DNAT happens
+// so we can see the resolved destination IPs, typically the ones of the Pods
+// that are used for the Kubernetes DNS Service.
+// xref: https://github.com/kubernetes-sigs/kube-network-policies/issues/12
+// This can be removed once all kernels contain the fix in
+// https://github.com/torvalds/linux/commit/8af79d3edb5fd2dce35ea0a71595b6d4f9962350
+// TODO: remove once kernel fix is on most distros
+func (c *Controller) addDNSRacersWorkaroundRules(tx *knftables.Transaction) {
+	hook := knftables.PreroutingHook
+	chainName := string(hook)
+	tx.Add(&knftables.Chain{
+		Name:     chainName,
+		Type:     knftables.PtrTo(knftables.FilterType),
+		Hook:     knftables.PtrTo(hook),
+		Priority: knftables.PtrTo(knftables.DNATPriority + "+5"),
+	})
+	tx.Flush(&knftables.Chain{
+		Name: chainName,
+	})
+
+	action := fmt.Sprintf("queue num %d", c.config.QueueID)
+	if c.config.FailOpen {
+		action += " bypass"
+	}
+
+	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"ip", "saddr", "@", podV4IPsSet, "udp dport 53", action,
+			),
+			Comment: ptr.To("process IPv4 traffic destined to a DNS server with network policy enforcement"),
+		})
+
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"ip", "daddr", "@", podV4IPsSet, "udp dport 53", action,
+			),
+			Comment: ptr.To("process IPv4 traffic destined to a DNS server with network policy enforcement"),
+		})
+
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"ip6", "saddr", "@", podV6IPsSet, "udp dport 53", action,
+			),
+			Comment: ptr.To("process IPv6 traffic destined to a DNS server with network policy enforcement"),
+		})
+
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"ip6", "daddr", "@", podV6IPsSet, "udp dport 53", action,
+			),
+			Comment: ptr.To("process IPv6 traffic destined to a DNS server with network policy enforcement"),
+		})
+	} else {
+		tx.Add(&knftables.Rule{
+			Chain: chainName,
+			Rule: knftables.Concat(
+				"udp dport 53", action,
+			),
+		})
+	}
 }
 
 func (c *Controller) cleanNFTablesRules() {
