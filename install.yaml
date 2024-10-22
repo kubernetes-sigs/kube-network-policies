@@ -74,6 +74,7 @@ spec:
         - /bin/netpol
         - --hostname-override=$(MY_NODE_NAME)
         - --v=2
+        - --nfqueue-id=98
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules
