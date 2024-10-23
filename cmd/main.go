@@ -77,6 +77,7 @@ func main() {
 		QueueID:                    queueID,
 		NodeName:                   nodeName,
 		NetfilterBug1766Fix:        netfilterBug1766Fix,
+		NFTableName:                "kube-network-policies-different",
 	}
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
