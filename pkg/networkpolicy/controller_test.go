@@ -1,6 +1,8 @@
 package networkpolicy
 
 import (
+	"testing"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
@@ -123,5 +125,72 @@ func newTestController() *networkpolicyController {
 		informersFactory.Core().V1().Namespaces().Informer().GetStore(),
 		informersFactory.Core().V1().Pods().Informer().GetStore(),
 		informersFactory.Core().V1().Nodes().Informer().GetStore(),
+	}
+}
+
+func TestConfig_Defaults(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   Config
+		expected Config
+	}{
+		{
+			name: "empty",
+			config: Config{
+				NodeName: "testnode", // nodename defaults to os.Hostname so we ignore for tests
+			},
+			expected: Config{
+				FailOpen:                   false,
+				AdminNetworkPolicy:         false,
+				BaselineAdminNetworkPolicy: false,
+				QueueID:                    100,
+				NodeName:                   "testnode", // nodename defaults to os.Hostname so we ignore for tests
+				NetfilterBug1766Fix:        false,
+				NFTableName:                "kube-network-policies",
+			},
+		}, {
+			name: "queue id",
+			config: Config{
+				NodeName: "testnode", // nodename defaults to os.Hostname so we ignore for tests
+				QueueID:  99,
+			},
+			expected: Config{
+				FailOpen:                   false,
+				AdminNetworkPolicy:         false,
+				BaselineAdminNetworkPolicy: false,
+				QueueID:                    99,
+				NodeName:                   "testnode", // nodename defaults to os.Hostname so we ignore for tests
+				NetfilterBug1766Fix:        false,
+				NFTableName:                "kube-network-policies",
+			},
+		}, {
+			name: "table name",
+			config: Config{
+				NodeName:    "testnode", // nodename defaults to os.Hostname so we ignore for tests
+				QueueID:     99,
+				NFTableName: "kindnet-network-policies",
+			},
+			expected: Config{
+				FailOpen:                   false,
+				AdminNetworkPolicy:         false,
+				BaselineAdminNetworkPolicy: false,
+				QueueID:                    99,
+				NodeName:                   "testnode", // nodename defaults to os.Hostname so we ignore for tests
+				NetfilterBug1766Fix:        false,
+				NFTableName:                "kindnet-network-policies",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.config
+			if err := c.Defaults(); err != nil {
+				t.Errorf("Config.Defaults() error = %v", err)
+			}
+
+			if c != tt.expected {
+				t.Errorf("Config.Defaults() = %v, want %v", c, tt.expected)
+			}
+		})
 	}
 }
