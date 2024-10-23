@@ -3,6 +3,7 @@ package networkpolicy
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	nfqueue "github.com/florianl/go-nfqueue"
@@ -67,6 +68,24 @@ type Config struct {
 	QueueID                    int
 	NodeName                   string
 	NetfilterBug1766Fix        bool
+	NFTableName                string // if other projects use this controllers they need to be able to use their own table name
+}
+
+func (c *Config) Defaults() error {
+	var err error
+	if c.QueueID == 0 {
+		c.QueueID = 100
+	}
+	if c.NodeName == "" {
+		c.NodeName, err = os.Hostname()
+		if err != nil {
+			return err
+		}
+	}
+	if c.NFTableName == "" {
+		c.NFTableName = "kube-network-policies"
+	}
+	return nil
 }
 
 // NewController returns a new *Controller.
@@ -80,8 +99,12 @@ func NewController(client clientset.Interface,
 	baselineAdminNetworkPolicyInformer policyinformers.BaselineAdminNetworkPolicyInformer,
 	config Config,
 ) (*Controller, error) {
+	err := config.Defaults()
+	if err != nil {
+		return nil, err
+	}
 	klog.V(2).Info("Initializing nftables")
-	nft, err := knftables.New(knftables.InetFamily, "kube-network-policies")
+	nft, err := knftables.New(knftables.InetFamily, config.NFTableName)
 	if err != nil {
 		return nil, err
 	}
