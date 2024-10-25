@@ -42,7 +42,7 @@ spec:
             - /bin/netpol
             - --hostname-override=$(MY_NODE_NAME)
             - --v=2
-            {{- if .Values.baselineAdminNetworkPolicy }}
+            {{- if .Values.adminNetworkPolicy }}
             - --nfqueue-id=99
             - --admin-network-policy=true
             - --baseline-admin-network-policy=true

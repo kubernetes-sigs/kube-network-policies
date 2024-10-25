@@ -6,16 +6,19 @@ Implementation of Kubernetes Network Policies:
 
 ## Install
 
+### Manual Installation
+
 There are two manifest in the current repository:
 
 1. For "traditional" Kubernetes Network policies just do:
 
-```
+```sh
 kubectl apply -f install.yaml
 ```
 
 2. For the Admin Network Policies and Baseline Admin Network Policies the CRDs has to be installed first:
-```
+
+```sh
 kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
 
 kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
@@ -23,9 +26,24 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-polic
 
 and then install the daemonset enabling the features with the corresponding flags:
 
-```
+```sh
 kubectl apply -f install-anp.yaml
 ```
+
+### Helm
+
+To install kube-network-policies via Helm run:
+
+```sh
+helm install kube-network-policies -n kube-system charts/kube-network-policies
+```
+
+Admin Network Policies and Baseline Admin Network Policies features are controlled by `Values.adminNetworkPolicy` and
+they are enabled by default. Disable them if needed in values.yaml or use `--set adminNetworkPolicy=false` when running
+`helm install` command. 
+
+NOTE: the corresponding CRDs must be installed first.
+
 
 ## Metrics
 
