@@ -1,0 +1,31 @@
+image:
+  repository: registry.k8s.io/networking/kube-network-policies
+  pullPolicy: IfNotPresent
+  tag: "v0.6.0"
+
+nameOverride: ""
+fullnameOverride: ""
+
+baselineAdminNetworkPolicy: true
+
+serviceAccount:
+  annotations: {}
+  name: kube-network-policies
+
+daemonset:
+  annotations: {}
+  labels: {}
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations:
+    - operator: Exists
+      effect: NoSchedule
+  extraEnv: []
+  securityContext:
+    privileged: true
+    capabilities:
+      add: ["NET_ADMIN"]
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "50Mi"
