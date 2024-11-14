@@ -460,8 +460,9 @@ func (c *Controller) Run(ctx context.Context) error {
 			processingTime := float64(time.Since(startTime).Microseconds())
 			packetProcessingHist.WithLabelValues(string(packet.proto), string(packet.family)).Observe(processingTime)
 			packetProcessingSum.Observe(processingTime)
-			packetCounterVec.WithLabelValues(string(packet.proto), string(packet.family)).Inc()
-			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime), "accepted", verdict == nfqueue.NfAccept)
+			verdictStr := verdictString(verdict)
+			packetCounterVec.WithLabelValues(string(packet.proto), string(packet.family), verdictStr).Inc()
+			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime), "verdict", verdictStr)
 		}()
 
 		if c.evaluatePacket(ctx, packet) {
@@ -491,6 +492,19 @@ func (c *Controller) Run(ctx context.Context) error {
 	<-ctx.Done()
 
 	return nil
+}
+
+// verifctString coverts nfqueue int vericts to strings for metrics/logging
+// it does not cover all of them because we should only use a subset.
+func verdictString(verdict int) string {
+	switch verdict {
+	case nfqueue.NfDrop:
+		return "drop"
+	case nfqueue.NfAccept:
+		return "accept"
+	default:
+		return "unknonw"
+	}
 }
 
 // evaluatePacket evalute the network policies using the following order:
