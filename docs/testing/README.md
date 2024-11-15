@@ -103,7 +103,7 @@ Check the current max number of conntrack entries allowed and tune accordenly
 ```
 
 
-4. Observe the metrics in prometheus or graphana
+4. Observe the metrics in prometheus or grafana
 
 
 ![Packet Processing Latency](network_policies_latency.png "Packet Processing Latency")
