@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
+	"sigs.k8s.io/kube-network-policies/pkg/nfqinterceptor"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 	"sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
@@ -148,6 +148,20 @@ func run() int {
 		utilruntime.HandleError(err)
 	}()
 
+	err = cfg.Defaults()
+	if err != nil {
+		logger.Error(err, "could not default config")
+		return 1
+	}
+
+	//TODO log config?
+
+	interceptor, err := nfqinterceptor.New(cfg)
+	if err != nil {
+		logger.Error(err, "could not start nfq interceptror")
+		return 1
+	}
+
 	networkPolicyController, err := networkpolicy.NewController(
 		clientset,
 		informersFactory.Networking().V1().NetworkPolicies(),
@@ -155,6 +169,7 @@ func run() int {
 		informersFactory.Core().V1().Pods(),
 		nodeInformer,
 		npaClient,
+		interceptor,
 		anpInformer,
 		banpInformer,
 		cfg,
@@ -163,19 +178,19 @@ func run() int {
 		logger.Error(err, "Can not start network policy controller")
 		return 1
 	}
-	go func() {
-		err := networkPolicyController.Run(ctx)
-		utilruntime.HandleError(err)
-	}()
+	err = networkPolicyController.Run(ctx)
+	if err != nil {
+		logger.Error(err, "Can not start network policy controller")
+		return 1
+	}
 
 	informersFactory.Start(ctx.Done())
 	if adminNetworkPolicy || baselineAdminNetworkPolicy {
 		npaInformerFactory.Start(ctx.Done())
 	}
 
-	<-ctx.Done()
+	//should block till its resources are cleane up.
+	interceptor.Run(ctx, networkPolicyController.EvaluatePacket)
 
-	// grace period to cleanup resources
-	time.Sleep(5 * time.Second)
 	return 0
 }

@@ -1,14 +1,15 @@
 package networkpolicy
 
 import (
+	"context"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
-	"sigs.k8s.io/knftables"
 	npaclientfake "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned/fake"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 )
@@ -87,6 +88,12 @@ type networkpolicyController struct {
 	nodeStore                       cache.Store
 }
 
+type mockInterceptor struct{}
+
+func (mockInterceptor) Sync(ctx context.Context, podV4IPs sets.Set[string], podV6IPs sets.Set[string]) (_ error) {
+	return nil
+}
+
 func newTestController() *networkpolicyController {
 	client := fake.NewSimpleClientset()
 	informersFactory := informers.NewSharedInformerFactory(client, 0)
@@ -94,14 +101,14 @@ func newTestController() *networkpolicyController {
 	npaClient := npaclientfake.NewSimpleClientset()
 	npaInformerFactory := npainformers.NewSharedInformerFactory(npaClient, 0)
 
-	controller, err := newController(
+	controller, err := NewController(
 		client,
-		knftables.NewFake(knftables.InetFamily, "kube-network-policies"),
 		informersFactory.Networking().V1().NetworkPolicies(),
 		informersFactory.Core().V1().Namespaces(),
 		informersFactory.Core().V1().Pods(),
 		informersFactory.Core().V1().Nodes(),
 		npaClient,
+		mockInterceptor{},
 		npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies(),
 		npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies(),
 		Config{

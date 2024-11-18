@@ -6,9 +6,6 @@ import (
 	"os"
 	"time"
 
-	nfqueue "github.com/florianl/go-nfqueue"
-	"github.com/mdlayher/netlink"
-
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -28,9 +25,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	netutils "k8s.io/utils/net"
-	"k8s.io/utils/ptr"
 
-	"sigs.k8s.io/knftables"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	policyinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
@@ -95,41 +90,7 @@ func NewController(client clientset.Interface,
 	podInformer coreinformers.PodInformer,
 	nodeInformer coreinformers.NodeInformer,
 	npaClient npaclient.Interface,
-	adminNetworkPolicyInformer policyinformers.AdminNetworkPolicyInformer,
-	baselineAdminNetworkPolicyInformer policyinformers.BaselineAdminNetworkPolicyInformer,
-	config Config,
-) (*Controller, error) {
-	err := config.Defaults()
-	if err != nil {
-		return nil, err
-	}
-	klog.V(2).Info("Initializing nftables")
-	nft, err := knftables.New(knftables.InetFamily, config.NFTableName)
-	if err != nil {
-		return nil, err
-	}
-
-	return newController(
-		client,
-		nft,
-		networkpolicyInformer,
-		namespaceInformer,
-		podInformer,
-		nodeInformer,
-		npaClient,
-		adminNetworkPolicyInformer,
-		baselineAdminNetworkPolicyInformer,
-		config,
-	)
-}
-
-func newController(client clientset.Interface,
-	nft knftables.Interface,
-	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
-	namespaceInformer coreinformers.NamespaceInformer,
-	podInformer coreinformers.PodInformer,
-	nodeInformer coreinformers.NodeInformer,
-	npaClient npaclient.Interface,
+	interceptor interceptor,
 	adminNetworkPolicyInformer policyinformers.AdminNetworkPolicyInformer,
 	baselineAdminNetworkPolicyInformer policyinformers.BaselineAdminNetworkPolicyInformer,
 	config Config,
@@ -144,11 +105,11 @@ func newController(client clientset.Interface,
 	c := &Controller{
 		client: client,
 		config: config,
-		nft:    nft,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: controllerName},
 		),
+		interceptor: interceptor,
 	}
 
 	err := podInformer.Informer().AddIndexers(cache.Indexers{
@@ -347,13 +308,23 @@ type Controller struct {
 	// if an error or not found it returns nil
 	getPodAssignedToIP func(podIP string) *v1.Pod
 
-	nft     knftables.Interface // install the necessary nftables rules
-	nfq     *nfqueue.Nfqueue
-	flushed bool
+	interceptor interceptor
 }
 
-// Run will not return until stopCh is closed. workers determines how many
-// endpoints will be handled in parallel.
+//go:generate stringer -type=Verdict
+type Verdict int
+
+// Verdicts
+const (
+	Drop Verdict = iota
+	Accept
+)
+
+type interceptor interface {
+	Sync(ctx context.Context, podV4IPs, podV6IPs sets.Set[string]) error
+}
+
+// Run will return after caches are synced but otherwise does not block
 func (c *Controller) Run(ctx context.Context) error {
 	defer utilruntime.HandleCrash()
 	defer c.queue.ShutDown()
@@ -380,131 +351,37 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	// add metrics
 	registerMetrics(ctx)
-	// collect metrics periodically
-	go wait.UntilWithContext(ctx, func(ctx context.Context) {
-		logger := klog.FromContext(ctx)
-		queues, err := readNfnetlinkQueueStats()
-		if err != nil {
-			logger.Error(err, "reading nfqueue stats")
-			return
-		}
-		logger.V(4).Info("Obtained metrics for queues", "nqueues", len(queues))
-		for _, q := range queues {
-			logger.V(4).Info("Updating metrics", "queue", q.id_sequence)
-			nfqueueQueueTotal.WithLabelValues(q.queue_number).Set(float64(q.queue_total))
-			nfqueueQueueDropped.WithLabelValues(q.queue_number).Set(float64(q.queue_dropped))
-			nfqueueUserDropped.WithLabelValues(q.queue_number).Set(float64(q.user_dropped))
-			nfqueuePacketID.WithLabelValues(q.queue_number).Set(float64(q.id_sequence))
-		}
-
-	}, 30*time.Second)
 
 	// Start the workers after the repair loop to avoid races
-	logger.Info("Syncing nftables rules")
-	_ = c.syncNFTablesRules(ctx)
-	defer c.cleanNFTablesRules(ctx)
 	go wait.Until(c.runWorker, time.Second, ctx.Done())
-
-	var flags uint32
-	// https://netfilter.org/projects/libnetfilter_queue/doxygen/html/group__Queue.html
-	// the kernel will not normalize offload packets,
-	// i.e. your application will need to be able to handle packets larger than the mtu.
-	// Normalization is expensive, so this flag should always be set.
-	// This also solves a bug with SCTP
-	// https://github.com/aojea/kube-netpol/issues/8
-	// https://bugzilla.netfilter.org/show_bug.cgi?id=1742
-	flags = nfqueue.NfQaCfgFlagGSO
-	if c.config.FailOpen {
-		flags += nfqueue.NfQaCfgFlagFailOpen
-	}
-
-	// Set configuration options for nfqueue
-	config := nfqueue.Config{
-		NfQueue:      uint16(c.config.QueueID),
-		Flags:        flags,
-		MaxPacketLen: 128, // only interested in the headers
-		MaxQueueLen:  1024,
-		Copymode:     nfqueue.NfQnlCopyPacket, // headers
-		WriteTimeout: 100 * time.Millisecond,
-	}
-
-	nf, err := nfqueue.Open(&config)
-	if err != nil {
-		logger.Info("could not open nfqueue socket", "error", err)
-		return err
-	}
-	defer nf.Close()
-
-	c.nfq = nf
-
-	// Parse the packet and check if it should be accepted
-	// Packets should be evaludated independently in each direction
-	fn := func(a nfqueue.Attribute) int {
-		verdict := nfqueue.NfDrop
-		if c.config.FailOpen {
-			verdict = nfqueue.NfAccept
-		}
-
-		startTime := time.Now()
-		logger.V(2).Info("Processing sync for packet", "id", *a.PacketID)
-
-		packet, err := parsePacket(*a.Payload)
-		if err != nil {
-			logger.Error(err, "Can not process packet, applying default policy", "id", *a.PacketID, "failOpen", c.config.FailOpen)
-			c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
-			return 0
-		}
-		packet.id = *a.PacketID
-
-		defer func() {
-			processingTime := float64(time.Since(startTime).Microseconds())
-			packetProcessingHist.WithLabelValues(string(packet.proto), string(packet.family)).Observe(processingTime)
-			packetProcessingSum.Observe(processingTime)
-			verdictStr := verdictString(verdict)
-			packetCounterVec.WithLabelValues(string(packet.proto), string(packet.family), verdictStr).Inc()
-			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime), "verdict", verdictStr)
-		}()
-
-		if c.evaluatePacket(ctx, packet) {
-			verdict = nfqueue.NfAccept
-		} else {
-			verdict = nfqueue.NfDrop
-		}
-		c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
-		return 0
-	}
-
-	// Register your function to listen on nflog group 100
-	err = nf.RegisterWithErrorFunc(ctx, fn, func(err error) int {
-		if opError, ok := err.(*netlink.OpError); ok {
-			if opError.Timeout() || opError.Temporary() {
-				return 0
-			}
-		}
-		logger.Info("Could not receive message", "error", err)
-		return 0
-	})
-	if err != nil {
-		logger.Info("could not open nfqueue socket", "error", err)
-		return err
-	}
-
-	<-ctx.Done()
 
 	return nil
 }
 
-// verifctString coverts nfqueue int vericts to strings for metrics/logging
-// it does not cover all of them because we should only use a subset.
-func verdictString(verdict int) string {
-	switch verdict {
-	case nfqueue.NfDrop:
-		return "drop"
-	case nfqueue.NfAccept:
-		return "accept"
-	default:
-		return "unknown"
+// Parse the packet and check if it should be accepted
+// Packets should be evaludated independently in each direction
+func (c *Controller) EvaluatePacket(ctx context.Context, packet Packet) Verdict {
+
+	startTime := time.Now()
+	logger := klog.FromContext(ctx)
+
+	logger.V(2).Info("Processing sync for packet", "id", packet.Id)
+	verdict := Accept
+	defer func() {
+		processingTime := float64(time.Since(startTime).Microseconds())
+		packetProcessingHist.WithLabelValues(string(packet.proto), string(packet.family)).Observe(processingTime)
+		packetProcessingSum.Observe(processingTime)
+		verdictStr := verdict.String()
+		packetCounterVec.WithLabelValues(string(packet.proto), string(packet.family), verdictStr).Inc()
+		logger.V(2).Info("Finished syncing packet", "id", packet.Id, "duration", time.Since(startTime), "verdict", verdictStr)
+	}()
+
+	if c.evaluatePacket(ctx, packet) {
+		verdict = Accept
+	} else {
+		verdict = Drop
 	}
+	return verdict
 }
 
 // evaluatePacket evalute the network policies using the following order:
@@ -514,7 +391,7 @@ func verdictString(verdict int) string {
 // 4. AdminNetworkPolicies in Ingress for the destination Pod/IP
 // 5. NetworkPolicies in Ingress (if needed) for the destination Pod/IP
 // 6. BaselineAdminNetworkPolicies in Ingress (if needed) for the destination Pod/IP
-func (c *Controller) evaluatePacket(ctx context.Context, p packet) bool {
+func (c *Controller) evaluatePacket(ctx context.Context, p Packet) bool {
 	logger := klog.FromContext(ctx)
 	srcIP := p.srcIP
 	srcPod := c.getPodAssignedToIP(srcIP.String())
@@ -530,7 +407,7 @@ func (c *Controller) evaluatePacket(ctx context.Context, p packet) bool {
 	tlogger := logger.V(2)
 	if tlogger.Enabled() {
 		tlogger.Info("Evaluating packet", "packet", p)
-		tlogger = tlogger.WithValues("id", p.id)
+		tlogger = tlogger.WithValues("id", p.Id)
 	}
 
 	// Evalute Egress Policies
@@ -637,7 +514,28 @@ func (c *Controller) processNextItem() bool {
 	defer c.queue.Done(key)
 
 	// Invoke the method containing the business logic
-	err := c.syncNFTablesRules(context.Background())
+
+	networkPolicies, err := c.networkpolicyLister.List(labels.Everything())
+	if err != nil {
+		c.handleErr(err, key)
+		return true
+	}
+	podV4IPs := sets.New[string]()
+	podV6IPs := sets.New[string]()
+	for _, networkPolicy := range networkPolicies {
+		pods := c.getLocalPodsForNetworkPolicy(networkPolicy)
+		for _, pod := range pods {
+			for _, ip := range pod.Status.PodIPs {
+				if netutils.IsIPv4String(ip.IP) {
+					podV4IPs.Insert(ip.IP)
+				} else {
+					podV6IPs.Insert(ip.IP)
+				}
+			}
+		}
+	}
+
+	err = c.interceptor.Sync(context.Background(), podV4IPs, podV6IPs)
 	// Handle the error if something went wrong during the execution of the business logic
 	c.handleErr(err, key)
 	return true
@@ -667,262 +565,4 @@ func (c *Controller) handleErr(err error, key string) {
 	// Report to an external entity that, even after several retries, we could not successfully process this key
 	utilruntime.HandleError(err)
 	klog.InfoS("Dropping out of the queue", "error", err, "key", key)
-}
-
-// syncNFTablesRules adds the necessary rules to process the first connection packets in userspace
-// and check if network policies must apply.
-// TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
-func (c *Controller) syncNFTablesRules(ctx context.Context) error {
-	table := &knftables.Table{
-		Comment: knftables.PtrTo("rules for kubernetes NetworkPolicy"),
-	}
-	tx := c.nft.NewTransaction()
-	// do it once to delete the existing table
-	if !c.flushed {
-		tx.Add(table)
-		tx.Delete(table)
-		c.flushed = true
-	}
-	tx.Add(table)
-
-	// only if no admin network policies are used
-	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		// add set with Local Pod IPs impacted by network policies
-		tx.Add(&knftables.Set{
-			Name:    podV4IPsSet,
-			Type:    "ipv4_addr",
-			Comment: ptr.To("Local V4 Pod IPs with Network Policies"),
-		})
-		tx.Flush(&knftables.Set{
-			Name: podV4IPsSet,
-		})
-		tx.Add(&knftables.Set{
-			Name:    podV6IPsSet,
-			Type:    "ipv6_addr",
-			Comment: ptr.To("Local V6 Pod IPs with Network Policies"),
-		})
-		tx.Flush(&knftables.Set{
-			Name: podV6IPsSet,
-		})
-
-		networkPolicies, err := c.networkpolicyLister.List(labels.Everything())
-		if err != nil {
-			return err
-		}
-		podV4IPs := sets.New[string]()
-		podV6IPs := sets.New[string]()
-		for _, networkPolicy := range networkPolicies {
-			pods := c.getLocalPodsForNetworkPolicy(networkPolicy)
-			for _, pod := range pods {
-				for _, ip := range pod.Status.PodIPs {
-					if netutils.IsIPv4String(ip.IP) {
-						podV4IPs.Insert(ip.IP)
-					} else {
-						podV6IPs.Insert(ip.IP)
-					}
-				}
-			}
-		}
-
-		for _, ip := range podV4IPs.UnsortedList() {
-			tx.Add(&knftables.Element{
-				Set: podV4IPsSet,
-				Key: []string{ip},
-			})
-		}
-		for _, ip := range podV6IPs.UnsortedList() {
-			tx.Add(&knftables.Element{
-				Set: podV6IPsSet,
-				Key: []string{ip},
-			})
-		}
-	}
-	// Process the packets that are, usually on the FORWARD hook, but
-	// IPVS packets follow a different path in netfilter, so we process
-	// everything in the POSTROUTING hook before SNAT happens.
-	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/46
-	hook := knftables.PostroutingHook
-	chainName := string(hook)
-	tx.Add(&knftables.Chain{
-		Name:     chainName,
-		Type:     knftables.PtrTo(knftables.FilterType),
-		Hook:     knftables.PtrTo(hook),
-		Priority: knftables.PtrTo(knftables.SNATPriority + "-5"),
-	})
-	tx.Flush(&knftables.Chain{
-		Name: chainName,
-	})
-
-	// DNS is processed by addDNSRacersWorkaroundRules()
-	// TODO: remove once kernel fix is on most distros
-	if c.config.NetfilterBug1766Fix {
-		tx.Add(&knftables.Rule{
-			Chain:   chainName,
-			Rule:    "udp dport 53 accept",
-			Comment: ptr.To("process DNS traffic on PREROUTING hook with network policy enforcement to avoid netfilter race condition bug"),
-		})
-	}
-
-	// IPv6 needs ICMP Neighbor Discovery to work
-	tx.Add(&knftables.Rule{
-		Chain: chainName,
-		Rule: knftables.Concat(
-			"icmpv6", "type", "{", "nd-neighbor-solicit, nd-neighbor-advert", "}", "accept"),
-	})
-	// Don't process traffic generated from the root user in the Node, it can block kubelet probes
-	// or system daemons that depend on the internal node traffic to not be blocked.
-	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/65
-	tx.Add(&knftables.Rule{
-		Chain: chainName,
-		Rule:  "meta skuid 0 accept",
-	})
-	// instead of aggregating all the expresion in one rule, use two different
-	// rules to understand if is causing issues with UDP packets with the same
-	// tuple (https://github.com/kubernetes-sigs/kube-network-policies/issues/12)
-	tx.Add(&knftables.Rule{
-		Chain: chainName,
-		Rule: knftables.Concat(
-			"ct", "state", "established,related", "accept"),
-	})
-
-	action := fmt.Sprintf("queue num %d", c.config.QueueID)
-	if c.config.FailOpen {
-		action += " bypass"
-	}
-
-	// only if no admin network policies are used
-	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip", "saddr", "@", podV4IPsSet, action,
-			),
-			Comment: ptr.To("process IPv4 traffic with network policy enforcement"),
-		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip", "daddr", "@", podV4IPsSet, action,
-			),
-			Comment: ptr.To("process IPv4 traffic with network policy enforcement"),
-		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip6", "saddr", "@", podV6IPsSet, action,
-			),
-			Comment: ptr.To("process IPv6 traffic with network policy enforcement"),
-		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip6", "daddr", "@", podV6IPsSet, action,
-			),
-			Comment: ptr.To("process IPv6 traffic with network policy enforcement"),
-		})
-	} else {
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule:  action,
-		})
-	}
-
-	if c.config.NetfilterBug1766Fix {
-		c.addDNSRacersWorkaroundRules(ctx, tx)
-	}
-
-	if err := c.nft.Run(ctx, tx); err != nil {
-		klog.FromContext(ctx).Info("syncing nftables rules", "error", err)
-		return err
-	}
-	return nil
-}
-
-// To avoid a kernel bug caused by UDP DNS request racing with conntrack
-// process the DNS packets only on the PREROUTING hook after DNAT happens
-// so we can see the resolved destination IPs, typically the ones of the Pods
-// that are used for the Kubernetes DNS Service.
-// xref: https://github.com/kubernetes-sigs/kube-network-policies/issues/12
-// This can be removed once all kernels contain the fix in
-// https://github.com/torvalds/linux/commit/8af79d3edb5fd2dce35ea0a71595b6d4f9962350
-// TODO: remove once kernel fix is on most distros
-func (c *Controller) addDNSRacersWorkaroundRules(ctx context.Context, tx *knftables.Transaction) {
-	hook := knftables.PreroutingHook
-	chainName := string(hook)
-	tx.Add(&knftables.Chain{
-		Name:     chainName,
-		Type:     knftables.PtrTo(knftables.FilterType),
-		Hook:     knftables.PtrTo(hook),
-		Priority: knftables.PtrTo(knftables.DNATPriority + "+5"),
-	})
-	tx.Flush(&knftables.Chain{
-		Name: chainName,
-	})
-
-	action := fmt.Sprintf("queue num %d", c.config.QueueID)
-	if c.config.FailOpen {
-		action += " bypass"
-	}
-
-	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip", "saddr", "@", podV4IPsSet, "udp dport 53", action,
-			),
-			Comment: ptr.To("process IPv4 traffic destined to a DNS server with network policy enforcement"),
-		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip", "daddr", "@", podV4IPsSet, "udp dport 53", action,
-			),
-			Comment: ptr.To("process IPv4 traffic destined to a DNS server with network policy enforcement"),
-		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip6", "saddr", "@", podV6IPsSet, "udp dport 53", action,
-			),
-			Comment: ptr.To("process IPv6 traffic destined to a DNS server with network policy enforcement"),
-		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip6", "daddr", "@", podV6IPsSet, "udp dport 53", action,
-			),
-			Comment: ptr.To("process IPv6 traffic destined to a DNS server with network policy enforcement"),
-		})
-	} else {
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"udp dport 53", action,
-			),
-		})
-	}
-}
-
-func (c *Controller) cleanNFTablesRules(ctx context.Context) {
-	tx := c.nft.NewTransaction()
-	// Add+Delete is idempotent and won't return an error if the table doesn't already
-	// exist.
-	tx.Add(&knftables.Table{})
-	tx.Delete(&knftables.Table{})
-
-	// When this function is called, the ctx is likely cancelled. So
-	// we only use it for logging, and create a context with timeout
-	// for nft.Run. There is a grace period of 5s in main, so we keep
-	// this timeout shorter
-	nctx, cancel := context.WithTimeout(context.Background(), time.Second*4)
-	defer cancel()
-	if err := c.nft.Run(nctx, tx); err != nil {
-		klog.FromContext(ctx).Error(err, "deleting nftables rules")
-	}
 }
