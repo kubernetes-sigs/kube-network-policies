@@ -28,6 +28,27 @@ func (p packet) String() string {
 	return fmt.Sprintf("[%d] %s:%d %s:%d %s\n%s", p.id, p.srcIP.String(), p.srcPort, p.dstIP.String(), p.dstPort, p.proto, hex.Dump(p.payload))
 }
 
+// This function is used for JSON output (interface logr.Marshaler)
+func (p packet) MarshalLog() any {
+	return &struct {
+		ID      uint32
+		Family  v1.IPFamily
+		SrcIP   net.IP
+		DstIP   net.IP
+		Proto   v1.Protocol
+		SrcPort int
+		DstPort int
+	}{
+		p.id,
+		p.family,
+		p.srcIP,
+		p.dstIP,
+		p.proto,
+		p.srcPort,
+		p.dstPort,
+	}
+}
+
 // https://en.wikipedia.org/wiki/Internet_Protocol_version_4#Packet_structure
 // https://en.wikipedia.org/wiki/IPv6_packet
 // https://github.com/golang/net/blob/master/ipv4/header.go
