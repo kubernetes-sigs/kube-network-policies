@@ -33,7 +33,7 @@ var (
 	packetCounterVec = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "packet_count",
 		Help: "Number of packets",
-	}, []string{"protocol", "family"})
+	}, []string{"protocol", "family", "verdict"})
 
 	nfqueueQueueTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "nfqueue_queue_total",
