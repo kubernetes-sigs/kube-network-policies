@@ -503,7 +503,7 @@ func verdictString(verdict int) string {
 	case nfqueue.NfAccept:
 		return "accept"
 	default:
-		return "unknonw"
+		return "unknown"
 	}
 }
 
