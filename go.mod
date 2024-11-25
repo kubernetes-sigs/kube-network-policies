@@ -7,8 +7,8 @@ require (
 	github.com/mdlayher/netlink v1.7.2
 	github.com/prometheus/client_golang v1.20.5
 	golang.org/x/sys v0.27.0
-	k8s.io/api v0.31.2
-	k8s.io/apimachinery v0.31.2
+	k8s.io/api v0.31.3
+	k8s.io/apimachinery v0.31.3
 	k8s.io/client-go v0.31.2
 	k8s.io/component-base v0.31.2
 	k8s.io/component-helpers v0.31.2
