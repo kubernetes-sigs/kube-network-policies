@@ -13,8 +13,8 @@ on:
 
 env:
   GO_VERSION: "1.23"
-  K8S_VERSION: "v1.31.2"
-  KIND_VERSION: "v0.25.0"
+  K8S_VERSION: "v1.32.0"
+  KIND_VERSION: "v0.26.0"
   IMAGE_NAME: registry.k8s.io/networking/kube-network-policies
   KIND_CLUSTER_NAME: kind
 
@@ -26,13 +26,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v4
       with:
         go-version: ${{ env.GO_VERSION }}
       id: go
 
     - name: Check out code
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Build
       run: |
@@ -61,7 +61,7 @@ jobs:
       IP_FAMILY: ${{ matrix.ipFamily }}
     steps:
     - name: Check out code
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Enable ipv4 and ipv6 forwarding
       run: |
@@ -143,7 +143,7 @@ jobs:
     - name: Export logs
       if: always()
       run: |
-        /usr/local/bin/kind export logs --name ${KIND_CLUSTER_NAME} --loglevel=debug ./_artifacts/logs
+        /usr/local/bin/kind export logs --name ${KIND_CLUSTER_NAME} ./_artifacts/logs
 
     - name: Upload logs
       if: always()
