@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.22 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23 AS builder
 
 WORKDIR /src
 
@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -o /go/bin/netpol ./cmd
 
 # STEP 2: Build small image
-FROM registry.k8s.io/build-image/distroless-iptables:v0.5.5
+FROM registry.k8s.io/build-image/distroless-iptables:v0.6.5
 COPY --from=builder --chown=root:root /go/bin/netpol /bin/netpol
 
 CMD ["/bin/netpol"]
