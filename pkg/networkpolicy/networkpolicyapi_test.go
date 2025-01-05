@@ -456,7 +456,13 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller := newTestController()
+			controller := newTestController(Config{
+				AdminNetworkPolicy:         true,
+				BaselineAdminNetworkPolicy: true,
+				NetfilterBug1766Fix:        true,
+				QueueID:                    102,
+				NFTableName:                "kube-network-policies",
+			})
 			// Add objects to the Store
 			for _, n := range tt.networkpolicy {
 				err := controller.adminNetworkpolicyStore.Add(n)
@@ -721,7 +727,13 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller := newTestController()
+			controller := newTestController(Config{
+				AdminNetworkPolicy:         true,
+				BaselineAdminNetworkPolicy: true,
+				NetfilterBug1766Fix:        true,
+				QueueID:                    102,
+				NFTableName:                "kube-network-policies",
+			})
 			// Add objects to the Store
 			err := controller.adminNetworkpolicyStore.Add(tt.networkpolicy)
 			if err != nil {

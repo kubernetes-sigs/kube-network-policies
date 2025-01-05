@@ -3,11 +3,16 @@ package networkpolicy
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"time"
 
 	nfqueue "github.com/florianl/go-nfqueue"
+	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
+	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
+	"golang.org/x/sys/unix"
 
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -28,9 +33,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	netutils "k8s.io/utils/net"
-	"k8s.io/utils/ptr"
 
-	"sigs.k8s.io/knftables"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	policyinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
@@ -103,15 +106,9 @@ func NewController(client clientset.Interface,
 	if err != nil {
 		return nil, err
 	}
-	klog.V(2).Info("Initializing nftables")
-	nft, err := knftables.New(knftables.InetFamily, config.NFTableName)
-	if err != nil {
-		return nil, err
-	}
 
 	return newController(
 		client,
-		nft,
 		networkpolicyInformer,
 		namespaceInformer,
 		podInformer,
@@ -124,7 +121,6 @@ func NewController(client clientset.Interface,
 }
 
 func newController(client clientset.Interface,
-	nft knftables.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
@@ -144,7 +140,6 @@ func newController(client clientset.Interface,
 	c := &Controller{
 		client: client,
 		config: config,
-		nft:    nft,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: controllerName},
@@ -347,7 +342,6 @@ type Controller struct {
 	// if an error or not found it returns nil
 	getPodAssignedToIP func(podIP string) *v1.Pod
 
-	nft     knftables.Interface // install the necessary nftables rules
 	nfq     *nfqueue.Nfqueue
 	flushed bool
 }
@@ -400,7 +394,6 @@ func (c *Controller) Run(ctx context.Context) error {
 	}, 30*time.Second)
 
 	// Start the workers after the repair loop to avoid races
-	logger.Info("Syncing nftables rules")
 	_ = c.syncNFTablesRules(ctx)
 	defer c.cleanNFTablesRules(ctx)
 	go wait.Until(c.runWorker, time.Second, ctx.Done())
@@ -673,37 +666,34 @@ func (c *Controller) handleErr(err error, key string) {
 // and check if network policies must apply.
 // TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
 func (c *Controller) syncNFTablesRules(ctx context.Context) error {
-	table := &knftables.Table{
-		Comment: knftables.PtrTo("rules for kubernetes NetworkPolicy"),
+	klog.FromContext(ctx).Info("Syncing nftables rules")
+	nft, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("can not start nftables:%v", err)
 	}
-	tx := c.nft.NewTransaction()
-	// do it once to delete the existing table
-	if !c.flushed {
-		tx.Add(table)
-		tx.Delete(table)
-		c.flushed = true
+	// add + delete + add for flushing all the table
+	table := &nftables.Table{
+		Name:   c.config.NFTableName,
+		Family: nftables.TableFamilyINet,
 	}
-	tx.Add(table)
+
+	nft.AddTable(table)
+	nft.DelTable(table)
+	nft.AddTable(table)
 
 	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
 		// add set with Local Pod IPs impacted by network policies
-		tx.Add(&knftables.Set{
+		v4Set := &nftables.Set{
+			Table:   table,
 			Name:    podV4IPsSet,
-			Type:    "ipv4_addr",
-			Comment: ptr.To("Local V4 Pod IPs with Network Policies"),
-		})
-		tx.Flush(&knftables.Set{
-			Name: podV4IPsSet,
-		})
-		tx.Add(&knftables.Set{
+			KeyType: nftables.TypeIPAddr,
+		}
+		v6Set := &nftables.Set{
+			Table:   table,
 			Name:    podV6IPsSet,
-			Type:    "ipv6_addr",
-			Comment: ptr.To("Local V6 Pod IPs with Network Policies"),
-		})
-		tx.Flush(&knftables.Set{
-			Name: podV6IPsSet,
-		})
+			KeyType: nftables.TypeIP6Addr,
+		}
 
 		networkPolicies, err := c.networkpolicyLister.List(labels.Everything())
 		if err != nil {
@@ -724,117 +714,172 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			}
 		}
 
+		var elementsV4, elementsV6 []nftables.SetElement
 		for _, ip := range podV4IPs.UnsortedList() {
-			tx.Add(&knftables.Element{
-				Set: podV4IPsSet,
-				Key: []string{ip},
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			elementsV4 = append(elementsV4, nftables.SetElement{
+				Key: addr.AsSlice(),
 			})
 		}
 		for _, ip := range podV6IPs.UnsortedList() {
-			tx.Add(&knftables.Element{
-				Set: podV6IPsSet,
-				Key: []string{ip},
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			elementsV6 = append(elementsV6, nftables.SetElement{
+				Key: addr.AsSlice(),
 			})
 		}
+
+		if err := nft.AddSet(v4Set, elementsV4); err != nil {
+			return fmt.Errorf("failed to add Set %s : %v", v4Set.Name, err)
+		}
+		if err := nft.AddSet(v6Set, elementsV6); err != nil {
+			return fmt.Errorf("failed to add Set %s : %v", v6Set.Name, err)
+		}
 	}
+
 	// Process the packets that are, usually on the FORWARD hook, but
 	// IPVS packets follow a different path in netfilter, so we process
 	// everything in the POSTROUTING hook before SNAT happens.
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/46
-	hook := knftables.PostroutingHook
-	chainName := string(hook)
-	tx.Add(&knftables.Chain{
-		Name:     chainName,
-		Type:     knftables.PtrTo(knftables.FilterType),
-		Hook:     knftables.PtrTo(hook),
-		Priority: knftables.PtrTo(knftables.SNATPriority + "-5"),
-	})
-	tx.Flush(&knftables.Chain{
-		Name: chainName,
+	chain := nft.AddChain(&nftables.Chain{
+		Name:     "postrouting",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookPostrouting,
+		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATSource - 5),
 	})
 
 	// DNS is processed by addDNSRacersWorkaroundRules()
 	// TODO: remove once kernel fix is on most distros
 	if c.config.NetfilterBug1766Fix {
-		tx.Add(&knftables.Rule{
-			Chain:   chainName,
-			Rule:    "udp dport 53 accept",
-			Comment: ptr.To("process DNS traffic on PREROUTING hook with network policy enforcement to avoid netfilter race condition bug"),
+		//  udp dport 53 accept
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: binaryutil.BigEndian.PutUint16(53)},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			},
 		})
 	}
 
 	// IPv6 needs ICMP Neighbor Discovery to work
-	tx.Add(&knftables.Rule{
-		Chain: chainName,
-		Rule: knftables.Concat(
-			"icmpv6", "type", "{", "nd-neighbor-solicit, nd-neighbor-advert", "}", "accept"),
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
 	})
+
 	// Don't process traffic generated from the root user in the Node, it can block kubelet probes
 	// or system daemons that depend on the internal node traffic to not be blocked.
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/65
-	tx.Add(&knftables.Rule{
-		Chain: chainName,
-		Rule:  "meta skuid 0 accept",
-	})
-	// instead of aggregating all the expresion in one rule, use two different
-	// rules to understand if is causing issues with UDP packets with the same
-	// tuple (https://github.com/kubernetes-sigs/kube-network-policies/issues/12)
-	tx.Add(&knftables.Rule{
-		Chain: chainName,
-		Rule: knftables.Concat(
-			"ct", "state", "established,related", "accept"),
+	// meta skuid 0 accept
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeySKUID, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
 	})
 
-	action := fmt.Sprintf("queue num %d", c.config.QueueID)
+	// ct state established,related accept
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeySTATE},
+			&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	queue := &expr.Queue{Num: uint16(c.config.QueueID)}
 	if c.config.FailOpen {
-		action += " bypass"
+		queue.Flag = expr.QueueFlagBypass
 	}
 
 	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip", "saddr", "@", podV4IPsSet, action,
-			),
-			Comment: ptr.To("process IPv4 traffic with network policy enforcement"),
+		// ip saddr @podips-v4 queue flags bypass to 102
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v4"},
+				queue,
+			},
 		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip", "daddr", "@", podV4IPsSet, action,
-			),
-			Comment: ptr.To("process IPv4 traffic with network policy enforcement"),
+		// ip daddr @podips-v4 queue flags bypass to 102
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v4"},
+				queue,
+			},
 		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip6", "saddr", "@", podV6IPsSet, action,
-			),
-			Comment: ptr.To("process IPv6 traffic with network policy enforcement"),
+		// ip6 saddr @podips-v6 queue flags bypass to 102
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
+				queue,
+			},
 		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip6", "daddr", "@", podV6IPsSet, action,
-			),
-			Comment: ptr.To("process IPv6 traffic with network policy enforcement"),
+		// ip6 daddr @podips-v6 queue flags bypass to 102
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
+				queue,
+			},
 		})
 	} else {
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule:  action,
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				queue,
+			},
 		})
 	}
 
 	if c.config.NetfilterBug1766Fix {
-		c.addDNSRacersWorkaroundRules(ctx, tx)
+		c.addDNSRacersWorkaroundRules(nft, table)
 	}
 
-	if err := c.nft.Run(ctx, tx); err != nil {
+	if err := nft.Flush(); err != nil {
 		klog.FromContext(ctx).Info("syncing nftables rules", "error", err)
 		return err
 	}
@@ -849,80 +894,117 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 // This can be removed once all kernels contain the fix in
 // https://github.com/torvalds/linux/commit/8af79d3edb5fd2dce35ea0a71595b6d4f9962350
 // TODO: remove once kernel fix is on most distros
-func (c *Controller) addDNSRacersWorkaroundRules(ctx context.Context, tx *knftables.Transaction) {
-	hook := knftables.PreroutingHook
-	chainName := string(hook)
-	tx.Add(&knftables.Chain{
-		Name:     chainName,
-		Type:     knftables.PtrTo(knftables.FilterType),
-		Hook:     knftables.PtrTo(hook),
-		Priority: knftables.PtrTo(knftables.DNATPriority + "+5"),
-	})
-	tx.Flush(&knftables.Chain{
-		Name: chainName,
+func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nftables.Table) {
+	chain := nft.AddChain(&nftables.Chain{
+		Name:     "prerouting",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 5),
 	})
 
-	action := fmt.Sprintf("queue num %d", c.config.QueueID)
+	// meta l4proto != udp
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+	// udp dport != 53 accept
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: binaryutil.BigEndian.PutUint16(53)},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	queue := &expr.Queue{Num: uint16(c.config.QueueID)}
 	if c.config.FailOpen {
-		action += " bypass"
+		queue.Flag = expr.QueueFlagBypass
 	}
 
+	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip", "saddr", "@", podV4IPsSet, "udp dport 53", action,
-			),
-			Comment: ptr.To("process IPv4 traffic destined to a DNS server with network policy enforcement"),
+		// ip saddr @podips-v4 queue flags bypass to 102
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v4"},
+				queue,
+			},
 		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip", "daddr", "@", podV4IPsSet, "udp dport 53", action,
-			),
-			Comment: ptr.To("process IPv4 traffic destined to a DNS server with network policy enforcement"),
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v4"},
+				queue,
+			},
 		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip6", "saddr", "@", podV6IPsSet, "udp dport 53", action,
-			),
-			Comment: ptr.To("process IPv6 traffic destined to a DNS server with network policy enforcement"),
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
+				queue,
+			},
 		})
-
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"ip6", "daddr", "@", podV6IPsSet, "udp dport 53", action,
-			),
-			Comment: ptr.To("process IPv6 traffic destined to a DNS server with network policy enforcement"),
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
+				queue,
+			},
 		})
 	} else {
-		tx.Add(&knftables.Rule{
-			Chain: chainName,
-			Rule: knftables.Concat(
-				"udp dport 53", action,
-			),
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				queue,
+			},
 		})
 	}
 }
 
 func (c *Controller) cleanNFTablesRules(ctx context.Context) {
-	tx := c.nft.NewTransaction()
+	nft, err := nftables.New()
+	if err != nil {
+		klog.Infof("network policies cleanup failure, can not start nftables:%v", err)
+		return
+	}
 	// Add+Delete is idempotent and won't return an error if the table doesn't already
 	// exist.
-	tx.Add(&knftables.Table{})
-	tx.Delete(&knftables.Table{})
+	table := &nftables.Table{
+		Name:   c.config.NFTableName,
+		Family: nftables.TableFamilyINet,
+	}
+	nft.DelTable(table)
 
-	// When this function is called, the ctx is likely cancelled. So
-	// we only use it for logging, and create a context with timeout
-	// for nft.Run. There is a grace period of 5s in main, so we keep
-	// this timeout shorter
-	nctx, cancel := context.WithTimeout(context.Background(), time.Second*4)
-	defer cancel()
-	if err := c.nft.Run(nctx, tx); err != nil {
-		klog.FromContext(ctx).Error(err, "deleting nftables rules")
+	err = nft.Flush()
+	if err != nil {
+		klog.Infof("error deleting nftables rules %v", err)
 	}
 }
