@@ -16,40 +16,51 @@ import (
 
 var (
 	packetProcessingHist = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "packet_process_time",
-		Help:    "Time it has taken to process each packet (microseconds)",
-		Buckets: []float64{1, 10, 50, 200, 500, 750, 1000, 2000, 5000, 10000, 100000},
+		Namespace: "kube_network_policies",
+		Name:      "packet_process_time",
+		Help:      "Time it has taken to process each packet (microseconds)",
+		Buckets:   []float64{1, 10, 50, 200, 500, 750, 1000, 2000, 5000, 10000, 100000},
 	}, []string{"protocol", "family"})
 
 	packetProcessingSum = prometheus.NewSummary(prometheus.SummaryOpts{
-		Name: "packet_process_duration_microseconds",
-		Help: "A summary of the packet processing durations in microseconds.",
+		Namespace: "kube_network_policies",
+		Name:      "packet_process_duration_microseconds",
+		Help:      "A summary of the packet processing durations in microseconds.",
 		Objectives: map[float64]float64{
 			0.5:  0.05,  // 50th percentile with a max. absolute error of 0.05.
 			0.9:  0.01,  // 90th percentile with a max. absolute error of 0.01.
 			0.99: 0.001, // 99th percentile with a max. absolute error of 0.001.
 		},
 	})
+
 	packetCounterVec = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "packet_count",
-		Help: "Number of packets",
+		Namespace: "kube_network_policies",
+		Name:      "packet_count",
+		Help:      "Number of packets",
 	}, []string{"protocol", "family", "verdict"})
 
 	nfqueueQueueTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "nfqueue_queue_total",
-		Help: "The number of packets currently queued and waiting to be processed by the application",
+		Namespace: "kube_network_policies",
+		Name:      "nfqueue_queue_total",
+		Help:      "The number of packets currently queued and waiting to be processed by the application",
 	}, []string{"queue"})
+
 	nfqueueQueueDropped = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "nfqueue_queue_dropped",
-		Help: "Number of packets that had to be dropped by the kernel because too many packets are already waiting for user space to send back the mandatory accept/drop verdicts",
+		Namespace: "kube_network_policies",
+		Name:      "nfqueue_queue_dropped",
+		Help:      "Number of packets that had to be dropped by the kernel because too many packets are already waiting for user space to send back the mandatory accept/drop verdicts",
 	}, []string{"queue"})
+
 	nfqueueUserDropped = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "nfqueue_user_dropped",
-		Help: "Number of packets that were dropped within the netlink subsystem. Such drops usually happen when the corresponding socket buffer is full; that is, user space is not able to read 	messages fast enough",
+		Namespace: "kube_network_policies",
+		Name:      "nfqueue_user_dropped",
+		Help:      "Number of packets that were dropped within the netlink subsystem. Such drops usually happen when the corresponding socket buffer is full; that is, user space is not able to read 	messages fast enough",
 	}, []string{"queue"})
+
 	nfqueuePacketID = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "nfqueue_packet_id",
-		Help: "ID of the most recent packet queued.",
+		Namespace: "kube_network_policies",
+		Name:      "nfqueue_packet_id",
+		Help:      "ID of the most recent packet queued.",
 	}, []string{"queue"})
 )
 
