@@ -10,8 +10,8 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sys v0.29.0
-	k8s.io/api v0.32.0
-	k8s.io/apimachinery v0.32.0
+	k8s.io/api v0.32.1
+	k8s.io/apimachinery v0.32.1
 	k8s.io/client-go v0.32.0
 	k8s.io/component-base v0.32.0
 	k8s.io/component-helpers v0.32.0
