@@ -5,8 +5,8 @@ go 1.23.0
 require (
 	github.com/florianl/go-nfqueue v1.3.2
 	github.com/google/go-cmp v0.6.0
-	github.com/google/nftables v0.2.1-0.20241219092456-e99829fb4f26
-	github.com/mdlayher/netlink v1.7.2
+	github.com/google/nftables v0.3.0
+	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42
 	github.com/prometheus/client_golang v1.20.5
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sys v0.30.0
@@ -39,7 +39,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/josharian/native v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
