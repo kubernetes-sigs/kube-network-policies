@@ -11,7 +11,7 @@ require (
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sys v0.30.0
 	k8s.io/api v0.32.2
-	k8s.io/apimachinery v0.32.2
+	k8s.io/apimachinery v0.32.3
 	k8s.io/client-go v0.32.2
 	k8s.io/component-base v0.32.1
 	k8s.io/component-helpers v0.32.0
