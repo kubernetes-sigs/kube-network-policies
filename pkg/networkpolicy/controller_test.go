@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -19,6 +20,11 @@ import (
 	"k8s.io/client-go/tools/cache"
 	npaclientfake "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned/fake"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
+)
+
+var (
+	usernsEnabled bool
+	checkUserns   sync.Once
 )
 
 func makeNamespace(name string) *v1.Namespace {
@@ -238,8 +244,45 @@ func execInUserns(t *testing.T, f func(t *testing.T)) {
 		t.Fatal(err)
 	}
 }
+
+func unpriviledUserns() bool {
+	checkUserns.Do(func() {
+		cmd := exec.Command("sleep", "1")
+
+		// Map ourselves to root inside the userns.
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags:  syscall.CLONE_NEWUSER,
+			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+			GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		}
+		if err := cmd.Start(); err != nil {
+			// TODO: we can think userns is not supported if the "sleep" binary is not
+			// present. This is unlikely, we can do tricks like use /proc/self/exe as
+			// the binary to execute and ptrace, so it is never executed, but this seems
+			// good enough for the tests.
+			return
+		}
+		defer func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}()
+
+		usernsEnabled = true
+		return
+	})
+
+	return usernsEnabled
+}
+
 func TestNetworkPolicies_SyncRules(t *testing.T) {
-	execInUserns(t, testNetworkPolicies_SyncRules)
+	if unpriviledUserns() {
+		execInUserns(t, testNetworkPolicies_SyncRules)
+		return
+	}
+	if os.Getuid() != 0 {
+		t.Skip("Test requires root privileges or unprivileged user namespaces")
+	}
+	testNetworkPolicies_SyncRules(t)
 }
 
 func testNetworkPolicies_SyncRules(t *testing.T) {
