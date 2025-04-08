@@ -60,6 +60,12 @@ func (c *Controller) evaluateAdminEgress(adminNetworkPolices []*npav1alpha1.Admi
 						return rule.Action
 					}
 				}
+
+				for _, domain := range to.DomainNames {
+					if c.domainCache.ContainsIP(string(domain), ip) {
+						return rule.Action
+					}
+				}
 			}
 		}
 	}

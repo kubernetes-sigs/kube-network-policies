@@ -80,7 +80,7 @@ spec:
       - name: kube-network-policies
         image: registry.k8s.io/networking/kube-network-policies:v0.7.0
         command: ["/bin/netpol"]
-        args: ["-v=2", "-admin-network-policy=true", "-baseline-admin-network-policy=true","--hostname-override=$(MY_NODE_NAME)","--nfqueue-id=99"]
+        args: ["-v=4", "-admin-network-policy=true", "-baseline-admin-network-policy=true","--hostname-override=$(MY_NODE_NAME)","--nfqueue-id=99"]
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules

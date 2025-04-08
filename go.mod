@@ -3,12 +3,15 @@ module sigs.k8s.io/kube-network-policies
 go 1.23.0
 
 require (
+	github.com/armon/go-radix v1.0.0
+	github.com/florianl/go-nflog/v2 v2.1.0
 	github.com/florianl/go-nfqueue v1.3.2
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42
 	github.com/prometheus/client_golang v1.21.1
 	github.com/vishvananda/netns v0.0.5
+	golang.org/x/net v0.38.0
 	golang.org/x/sys v0.32.0
 	k8s.io/api v0.32.3
 	k8s.io/apimachinery v0.32.3
@@ -57,7 +60,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/oauth2 v0.29.0 // indirect
 	golang.org/x/sync v0.13.0 // indirect
 	golang.org/x/term v0.31.0 // indirect

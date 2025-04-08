@@ -697,6 +697,19 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "match namespace label",
+			networkpolicy: makeAdminNetworkPolicyCustom("anp", "bar",
+				func(networkPolicy *npav1alpha1.AdminNetworkPolicy) {
+					networkPolicy.Spec.Subject = npav1alpha1.AdminNetworkPolicySubject{
+						Pods: &npav1alpha1.NamespacedPod{
+							NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "foo"}},
+						},
+					}
+				},
+			),
+			want: true,
+		},
+		{
 			name: "match namespace and selectors",
 			networkpolicy: makeAdminNetworkPolicyCustom("anp", "bar",
 				func(networkPolicy *npav1alpha1.AdminNetworkPolicy) {
@@ -746,6 +759,242 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 
 			if got := controller.getAdminNetworkPoliciesForPod(context.TODO(), makePod("a", "foo", "192.168.1.11")); len(got) > 0 != tt.want {
 				t.Errorf("Controller.getAdminNetworkPoliciesForPod() = %v, want %v", len(got) > 0, tt.want)
+			}
+		})
+	}
+}
+
+func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
+	podA := makePod("a", "foo", "192.168.1.11")
+	ipAllow := net.ParseIP("10.0.0.1")
+	ipDeny := net.ParseIP("10.0.0.2")
+	ipOther := net.ParseIP("10.0.0.3")
+	domainAllow := "allow.example.com"
+	domainDeny := "deny.example.com"
+	domainWildcard := "*.wild.com"
+	domainSpecificWild := "test.wild.com"
+
+	tests := []struct {
+		name           string
+		policy         *npav1alpha1.AdminNetworkPolicy
+		dstIP          net.IP
+		expectedAction npav1alpha1.AdminNetworkPolicyRuleAction
+	}{
+		{
+			name: "Allow rule matches domain and IP",
+			policy: makeAdminNetworkPolicyCustom("allow-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{{
+						DomainNames: []npav1alpha1.DomainName{npav1alpha1.DomainName(domainAllow)},
+					}},
+				}}
+			}),
+			dstIP:          ipAllow,
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+		},
+		{
+			name: "Allow rule matches domain but not IP",
+			policy: makeAdminNetworkPolicyCustom("allow-domain-wrong-ip", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{{
+						DomainNames: []npav1alpha1.DomainName{npav1alpha1.DomainName(domainAllow)},
+					}},
+				}}
+			}),
+			dstIP:          ipOther,                                      // IP not in cache for domainAllow
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionPass, // Rule doesn't match, pass to next rule/policy
+		},
+		{
+			name: "Deny rule matches domain and IP",
+			policy: makeAdminNetworkPolicyCustom("deny-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionDeny,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{{
+						DomainNames: []npav1alpha1.DomainName{npav1alpha1.DomainName(domainDeny)},
+					}},
+				}}
+			}),
+			dstIP:          ipDeny,
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionDeny,
+		},
+		{
+			name: "Rule domain does not match cached domains",
+			policy: makeAdminNetworkPolicyCustom("nomatch-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{{
+						DomainNames: []npav1alpha1.DomainName{"other.example.com"},
+					}},
+				}}
+			}),
+			dstIP:          ipAllow,
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionPass, // Rule doesn't match
+		},
+		{
+			name: "Multiple domains in rule, one matches",
+			policy: makeAdminNetworkPolicyCustom("multi-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{{
+						DomainNames: []npav1alpha1.DomainName{
+							"other.example.com",
+							npav1alpha1.DomainName(domainAllow), // This one matches
+						},
+					}},
+				}}
+			}),
+			dstIP:          ipAllow,
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+		},
+		{
+			name: "Wildcard domain matches IP",
+			policy: makeAdminNetworkPolicyCustom("wildcard-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{{
+						// Simulate how the cache lookup might work for a wildcard
+						// The actual cache logic is more complex (reversed domains)
+						// Here we rely on the mock's ContainsIP behavior
+						DomainNames: []npav1alpha1.DomainName{npav1alpha1.DomainName(domainWildcard)},
+					}},
+				}}
+			}),
+			dstIP:          ipAllow, // This IP is associated with test.wild.com in the mock cache
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+		},
+		{
+			name: "Wildcard domain does not match IP",
+			policy: makeAdminNetworkPolicyCustom("wildcard-domain-no-ip", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{{
+						DomainNames: []npav1alpha1.DomainName{npav1alpha1.DomainName(domainWildcard)},
+					}},
+				}}
+			}),
+			dstIP:          ipOther, // This IP is not associated with any *.wild.com domain
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionPass,
+		},
+		{
+			name: "Rule with multiple peer types, domain matches",
+			policy: makeAdminNetworkPolicyCustom("multi-peer-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{
+						{Networks: []npav1alpha1.CIDR{"192.0.2.0/24"}},                               // Doesn't match dstIP
+						{DomainNames: []npav1alpha1.DomainName{npav1alpha1.DomainName(domainAllow)}}, // Matches dstIP
+					},
+				}}
+			}),
+			dstIP:          ipAllow,
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+		},
+		{
+			name: "Rule with multiple peer types, domain does not match",
+			policy: makeAdminNetworkPolicyCustom("multi-peer-no-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{
+						{Networks: []npav1alpha1.CIDR{"192.0.2.0/24"}},               // Doesn't match dstIP
+						{DomainNames: []npav1alpha1.DomainName{"other.example.com"}}, // Doesn't match dstIP
+					},
+				}}
+			}),
+			dstIP:          ipAllow,
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionPass, // No peer in the rule matches
+		},
+		{
+			name: "Rule with deny all, domain matches",
+			policy: makeAdminNetworkPolicyCustom("deny-all-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{
+						{DomainNames: []npav1alpha1.DomainName{npav1alpha1.DomainName(domainAllow)}}, // Doesn't match dstIP
+					},
+				}, {
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionDeny,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{
+						{Networks: []npav1alpha1.CIDR{"0.0.0.0/0"}}, // Doesn't match dstIP
+					},
+				}}
+			}),
+			dstIP:          ipAllow,
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow, // No peer in the rule matches
+		},
+		{
+			name: "Rule with deny all, domain does not match",
+			policy: makeAdminNetworkPolicyCustom("deny-all-no-domain", "foo", func(p *npav1alpha1.AdminNetworkPolicy) {
+				p.Spec.Priority = 10
+				p.Spec.Subject.Namespaces = &metav1.LabelSelector{}
+				p.Spec.Egress = []npav1alpha1.AdminNetworkPolicyEgressRule{{
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{
+						{DomainNames: []npav1alpha1.DomainName{npav1alpha1.DomainName(domainAllow)}}, // Doesn't match dstIP
+					},
+				}, {
+					Action: npav1alpha1.AdminNetworkPolicyRuleActionDeny,
+					To: []npav1alpha1.AdminNetworkPolicyEgressPeer{
+						{Networks: []npav1alpha1.CIDR{"0.0.0.0/0"}}, // Doesn't match dstIP
+					},
+				}}
+			}),
+			dstIP:          ipOther,
+			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionDeny, // No peer in the rule matches
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a controller instance and inject the mock cache
+			controller := newTestController(Config{AdminNetworkPolicy: true})
+			controller.domainCache.cache.add(domainAllow, []net.IP{ipAllow}, int(maxTTL.Seconds()))
+			controller.domainCache.cache.add(domainDeny, []net.IP{ipDeny}, int(maxTTL.Seconds()))
+			controller.domainCache.cache.add(domainSpecificWild, []net.IP{ipAllow}, int(maxTTL.Seconds()))
+
+			// Add necessary objects to stores (simplified for this test)
+			err := controller.namespaceStore.Add(makeNamespace("foo"))
+			if err != nil {
+				t.Fatalf("Failed to add namespace: %v", err)
+			}
+			err = controller.podStore.Add(podA)
+			if err != nil {
+				t.Fatalf("Failed to add pod: %v", err)
+			}
+
+			// Call the function under test
+			action := controller.evaluateAdminEgress(
+				[]*npav1alpha1.AdminNetworkPolicy{tt.policy}, // Pass the single policy
+				podA, // Source pod (can be nil if not needed for other peer types)
+				tt.dstIP,
+				80,             // Arbitrary port
+				v1.ProtocolTCP, // Arbitrary protocol
+			)
+
+			// Assert the result
+			if action != tt.expectedAction {
+				t.Errorf("evaluateAdminEgress() = %v, want %v", action, tt.expectedAction)
 			}
 		})
 	}

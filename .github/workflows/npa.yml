@@ -47,7 +47,7 @@ jobs:
 
   e2e_npa:
     name: e2e_npa
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 100
     needs:
       - build
@@ -78,7 +78,9 @@ jobs:
         # Install
         sudo cp ${TMP_DIR}/kubectl /usr/local/bin/kubectl
         sudo cp ${TMP_DIR}/kind /usr/local/bin/kind
-        sudo chmod +x /usr/local/bin/*
+        sudo chmod +x /usr/local/bin/kubectl
+        sudo chmod +x /usr/local/bin/kind
+
 
     - name: Create multi node cluster
       run: |

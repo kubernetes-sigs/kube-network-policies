@@ -294,6 +294,7 @@ func newController(client clientset.Interface,
 		c.npaClient = npaClient
 		c.nodeLister = nodeInformer.Lister()
 		c.nodesSynced = nodeInformer.Informer().HasSynced
+		c.domainCache = NewDomainCache()
 	}
 
 	if config.AdminNetworkPolicy {
@@ -344,6 +345,9 @@ type Controller struct {
 
 	nfq     *nfqueue.Nfqueue
 	flushed bool
+
+	// Passively obtain the Domain A and AAAA records from the network
+	domainCache *DomainCache
 }
 
 // Run will not return until stopCh is closed. workers determines how many
@@ -364,6 +368,12 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 	if c.config.AdminNetworkPolicy {
 		caches = append(caches, c.adminNetworkPolicySynced)
+		go func() {
+			err := c.domainCache.Run(ctx)
+			if err != nil {
+				klog.Infof("domain cache controller exited: %v", err)
+			}
+		}()
 	}
 	if c.config.BaselineAdminNetworkPolicy {
 		caches = append(caches, c.baselineAdminNetworkPolicySynced)
