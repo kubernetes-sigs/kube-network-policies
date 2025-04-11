@@ -59,7 +59,7 @@ EOF
 apiVersion: policy.networking.k8s.io/v1alpha1
 kind: AdminNetworkPolicy
 metadata:
-  name: allow-private-egress
+  name: allow-internal-egress
 spec:
   priority: 45
   subject:
@@ -78,7 +78,7 @@ spec:
 apiVersion: policy.networking.k8s.io/v1alpha1
 kind: AdminNetworkPolicy
 metadata:
-  name: allow-my-service-egress
+  name: allow-domains-egress
 spec:
   priority: 55
   subject:
@@ -126,6 +126,6 @@ EOF
   test "$output" = "ok"
 
   # cleanup
-  kubectl delete adminnetworkpolicy allow-private-egress
-  kubectl delete adminnetworkpolicy allow-to-my-service
+  kubectl delete adminnetworkpolicy allow-internal-egress
+  kubectl delete adminnetworkpolicy allow-domains-egress
 }

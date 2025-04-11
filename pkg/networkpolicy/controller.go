@@ -72,6 +72,7 @@ type Config struct {
 	NodeName                   string
 	NetfilterBug1766Fix        bool
 	NFTableName                string // if other projects use this controllers they need to be able to use their own table name
+	NRIdisabled                bool   // use NRI to get the Pod IPs information locally instead of waiting to be published by the apiserver
 }
 
 func (c *Config) Defaults() error {
@@ -146,6 +147,15 @@ func newController(client clientset.Interface,
 		),
 	}
 
+	if !config.NRIdisabled {
+		nriPlugin, err := NewNriPlugin()
+		if err != nil {
+			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
+		} else {
+			c.nriPlugin = nriPlugin
+		}
+	}
+
 	err := podInformer.Informer().AddIndexers(cache.Indexers{
 		podIPIndex: func(obj interface{}) ([]string, error) {
 			pod, ok := obj.(*v1.Pod)
@@ -175,8 +185,14 @@ func newController(client clientset.Interface,
 		if err != nil {
 			return nil
 		}
+		// check if we have the local information from nri
 		if len(objs) == 0 {
-			return nil
+			podKey := c.nriPlugin.GetPodFromIP(podIP)
+			obj, ok, err := podIndexer.GetByKey(podKey)
+			if err != nil || !ok {
+				return nil
+			}
+			return obj.(*v1.Pod)
 		}
 		// if there are multiple pods use the one that is running
 		for _, obj := range objs {
@@ -348,6 +364,7 @@ type Controller struct {
 
 	// Passively obtain the Domain A and AAAA records from the network
 	domainCache *DomainCache
+	nriPlugin   *nriPlugin
 }
 
 // Run will not return until stopCh is closed. workers determines how many
@@ -365,6 +382,14 @@ func (c *Controller) Run(ctx context.Context) error {
 	caches := []cache.InformerSynced{c.networkpoliciesSynced, c.namespacesSynced, c.podsSynced}
 	if c.config.AdminNetworkPolicy || c.config.BaselineAdminNetworkPolicy {
 		caches = append(caches, c.nodesSynced)
+	}
+	if !c.config.NRIdisabled {
+		go func() {
+			err := c.nriPlugin.stub.Run(ctx)
+			if err != nil {
+				klog.Infof("nri plugin exited: %v", err)
+			}
+		}()
 	}
 	if c.config.AdminNetworkPolicy {
 		caches = append(caches, c.adminNetworkPolicySynced)
@@ -532,7 +557,14 @@ func (c *Controller) evaluatePacket(ctx context.Context, p packet) bool {
 	// rather than evaluating the all parameters make an unnecessary logger call
 	tlogger := logger.V(2)
 	if tlogger.Enabled() {
-		tlogger.Info("Evaluating packet", "srcPod", srcPod, "dstPod", dstPod, "packet", p)
+		srcPodStr, dstPodStr := "none", "none"
+		if srcPod != nil {
+			srcPodStr = srcPod.GetNamespace() + "/" + srcPod.GetName()
+		}
+		if dstPod != nil {
+			dstPodStr = dstPod.GetNamespace() + "/" + dstPod.GetName()
+		}
+		tlogger.Info("Evaluating packet", "srcPod", srcPodStr, "dstPod", dstPodStr, "packet", p)
 		tlogger = tlogger.WithValues("id", p.id)
 	}
 

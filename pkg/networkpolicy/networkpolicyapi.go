@@ -13,6 +13,7 @@ import (
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 )
 
+// evaluateAdminEgress assume the list of network policies is ordered
 func (c *Controller) evaluateAdminEgress(adminNetworkPolices []*npav1alpha1.AdminNetworkPolicy, pod *v1.Pod, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.AdminNetworkPolicyRuleAction {
 	for _, policy := range adminNetworkPolices {
 		for _, rule := range policy.Spec.Egress {
@@ -73,6 +74,7 @@ func (c *Controller) evaluateAdminEgress(adminNetworkPolices []*npav1alpha1.Admi
 	return npav1alpha1.AdminNetworkPolicyRuleActionPass
 }
 
+// evaluateAdminIngress assume the list of network policies is ordered
 func (c *Controller) evaluateAdminIngress(adminNetworkPolices []*npav1alpha1.AdminNetworkPolicy, pod *v1.Pod, port int, protocol v1.Protocol) npav1alpha1.AdminNetworkPolicyRuleAction {
 	// Ingress rules only apply to pods
 	if pod == nil {
