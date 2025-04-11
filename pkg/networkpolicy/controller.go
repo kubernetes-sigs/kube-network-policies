@@ -294,7 +294,7 @@ func newController(client clientset.Interface,
 		c.npaClient = npaClient
 		c.nodeLister = nodeInformer.Lister()
 		c.nodesSynced = nodeInformer.Informer().HasSynced
-		c.domainCache = NewDomainCache()
+		c.domainCache = NewDomainCache(config.QueueID + 1)
 	}
 
 	if config.AdminNetworkPolicy {
@@ -532,7 +532,7 @@ func (c *Controller) evaluatePacket(ctx context.Context, p packet) bool {
 	// rather than evaluating the all parameters make an unnecessary logger call
 	tlogger := logger.V(2)
 	if tlogger.Enabled() {
-		tlogger.Info("Evaluating packet", "packet", p)
+		tlogger.Info("Evaluating packet", "srcPod", srcPod, "dstPod", dstPod, "packet", p)
 		tlogger = tlogger.WithValues("id", p.id)
 	}
 

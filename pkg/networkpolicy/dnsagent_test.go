@@ -33,11 +33,11 @@ func TestDomainCache_syncRules(t *testing.T) {
 table inet kube-network-policies-dnscache {
         chain postrouting {
                 type filter hook postrouting priority 2147483647; policy accept;
-                udp sport 53 counter packets 0 bytes 0 log group 111
+                udp sport 53 counter packets 0 bytes 0 queue flags bypass to 121
         }
 }
 `
-	n := NewDomainCache()
+	n := NewDomainCache(121)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 

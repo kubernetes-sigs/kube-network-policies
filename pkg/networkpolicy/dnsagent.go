@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/armon/go-radix"
-	"github.com/florianl/go-nflog/v2"
+	nfqueue "github.com/florianl/go-nfqueue"
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
@@ -31,15 +31,15 @@ const (
 	// https://github.com/kubernetes/dns/blob/c0fa2d1128d42c9b13e08a6a7e3ee8c635b9acd5/cmd/node-cache/Corefile#L3
 	expireTimeout = 30 * time.Second
 	maxTTL        = 300 * time.Second // expire entries that are older than 300 seconds independently of the TTL
-	nfLogGroup    = 111
 	// It was 512 byRFC1035 for UDP until EDNS, but large packets can be fragmented ...
 	// it seems bind uses 1232 as maximum size
 	// https://kb.isc.org/docs/behavior-dig-versions-edns-bufsize
 	maxDNSSize = 1232
 )
 
-func NewDomainCache() *DomainCache {
+func NewDomainCache(id int) *DomainCache {
 	return &DomainCache{
+		nfQueueID: id,
 		cache: &domainMap{
 			clock: clock.RealClock{},
 			tree:  radix.New(),
@@ -48,54 +48,67 @@ func NewDomainCache() *DomainCache {
 }
 
 type DomainCache struct {
-	cache *domainMap
+	cache     *domainMap
+	nfq       *nfqueue.Nfqueue
+	nfQueueID int
 }
 
 func (n *DomainCache) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 
-	config := nflog.Config{
-		Group:    nfLogGroup,
-		Copymode: nflog.CopyPacket,
-		Bufsize:  4096,
+	// Set configuration options for nfqueue
+	config := nfqueue.Config{
+		NfQueue:      uint16(n.nfQueueID),
+		Flags:        uint32(nfqueue.NfQaCfgFlagGSO + nfqueue.NfQaCfgFlagFailOpen),
+		MaxPacketLen: maxDNSSize,
+		MaxQueueLen:  1024,
+		Copymode:     nfqueue.NfQnlCopyPacket,
+		WriteTimeout: 100 * time.Millisecond,
 	}
 
-	nf, err := nflog.Open(&config)
+	nf, err := nfqueue.Open(&config)
 	if err != nil {
-		return fmt.Errorf("could not open nflog socket: %v", err)
+		logger.Info("could not open nfqueue socket", "error", err)
+		return err
 	}
 	defer nf.Close()
 
-	// Avoid receiving ENOBUFS errors.
-	if err := nf.SetOption(netlink.NoENOBUFS, true); err != nil {
-		return fmt.Errorf("failed to set netlink option %v: %v",
-			netlink.NoENOBUFS, err)
-	}
-
+	n.nfq = nf
 	// hook that is called for every received packet by the nflog group
-	hook := func(attrs nflog.Attribute) int {
-		packet, err := parsePacket(*attrs.Payload)
+	fn := func(a nfqueue.Attribute) int {
+
+		verdict := nfqueue.NfAccept
+		startTime := time.Now()
+		logger.V(2).Info("Processing sync for packet", "id", *a.PacketID)
+
+		packet, err := parsePacket(*a.Payload)
 		if err != nil {
 			logger.Error(err, "Can not process packet")
 			return 0
 		}
+		defer logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime))
+
 		// Just print out the payload of the nflog packet
 		logger.V(4).Info("Evaluating packet", "packet", packet)
 		n.handleDNSPacket(ctx, packet)
-		return 0
-	}
+		n.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
 
-	// errFunc that is called for every error on the registered hook
-	errFunc := func(e error) int {
-		// Just log the error and return 0 to continue receiving packets
-		klog.Infof("received error on hook: %v", e)
 		return 0
 	}
 
 	// Register your function to listen on nflog group 100
-	err = nf.RegisterWithErrorFunc(ctx, hook, errFunc)
+	err = nf.RegisterWithErrorFunc(ctx, fn, func(err error) int {
+		if opError, ok := err.(*netlink.OpError); ok {
+			if opError.Timeout() || opError.Temporary() {
+				return 0
+			}
+		}
+		logger.Info("Could not receive message", "error", err)
+		return 0
+	})
 	if err != nil {
-		return fmt.Errorf("failed to register hook function: %v", err)
+		logger.Info("could not open nfqueue socket", "error", err)
+		return err
 	}
 
 	ticker := time.NewTicker(expireTimeout)
@@ -143,8 +156,7 @@ func (n *DomainCache) syncRules() error {
 		Hooknum:  nftables.ChainHookPostrouting,
 		Priority: nftables.ChainPriorityLast,
 	})
-	logFlags := expr.LogFlagsIPOpt + expr.LogFlagsTCPOpt + expr.LogFlagsUID
-	snaplen := uint32(maxDNSSize)
+
 	// Log UDP DNS answers
 	// TODO(tcp)
 	/*
@@ -163,7 +175,7 @@ func (n *DomainCache) syncRules() error {
 			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 2},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: binaryutil.BigEndian.PutUint16(53)},
 			&expr.Counter{},
-			&expr.Log{Flags: logFlags, Key: 0x2, Snaplen: snaplen, Group: nfLogGroup},
+			&expr.Queue{Num: uint16(n.nfQueueID), Flag: expr.QueueFlagBypass},
 		},
 	})
 	err = nft.Flush()

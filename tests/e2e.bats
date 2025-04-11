@@ -106,7 +106,7 @@ spec:
       - "0.0.0.0/0"
 EOF
   # propagation delay
-  sleep 1
+  sleep 2
   # query should be blocked
   output=$(kubectl run test-$RANDOM --namespace=dev --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --restart=Never -i --command -- bash -c "curl -q -s --connect-timeout 5 --output /dev/null http://go.dev/ && echo ok || echo fail")
   echo "Connect to webserver should fail: $output"

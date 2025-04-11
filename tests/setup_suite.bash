@@ -9,9 +9,8 @@ function setup_suite {
   # Build the image
   docker build -t "$IMAGE_NAME":test -f Dockerfile "$BATS_TEST_DIRNAME"/.. --load
 
-
-
   mkdir -p _artifacts
+  rm -rf _artifacts/*
   # create cluster
   cat <<EOF | kind create cluster \
   --name $CLUSTER_NAME           \
