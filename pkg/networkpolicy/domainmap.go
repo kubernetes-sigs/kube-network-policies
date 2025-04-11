@@ -10,13 +10,9 @@ import (
 
 	"github.com/armon/go-radix"
 	"k8s.io/utils/clock"
-	utilsnet "k8s.io/utils/net"
 )
 
-type ipEntry struct {
-	expireTime time.Time
-	ips        utilsnet.IPSet
-}
+type ipEntries map[string]time.Time // ip : expire time
 
 type domainMap struct {
 	mu    sync.RWMutex
@@ -49,39 +45,36 @@ func (i *domainMap) add(domain string, ips []net.IP, ttl int) {
 	if finalTTL > maxTTL {
 		finalTTL = maxTTL
 	}
-
-	now := i.clock.Now()
-
-	ipset := make(utilsnet.IPSet)
-	ipset.Insert(ips...)
-
-	i.tree.Insert(domain, ipEntry{
-		expireTime: now.Add(finalTTL),
-		ips:        ipset,
-	})
+	expireTime := i.clock.Now().Add(finalTTL)
+	var entries ipEntries
+	v, ok := i.tree.Get(domain)
+	if !ok {
+		entries = make(ipEntries)
+	} else {
+		entries = v.(ipEntries)
+	}
+	for _, ip := range ips {
+		entries[ip.String()] = expireTime
+	}
+	i.tree.Insert(domain, entries)
 }
 
 // contains returns true if the given domain contains the specified IP
 func (i *domainMap) containsIP(domain string, ip net.IP) bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	var entry ipEntry
-	var ok bool
+
 	// reverse the domain since the radix tree match on prefixes
 	domain = reverseDomain(domain)
 	// wildcard
 	var foundInWildcard bool
 	if strings.HasSuffix(domain, "*") {
 		i.tree.WalkPrefix(strings.TrimSuffix(domain, "*"), func(d string, v interface{}) bool {
-			entry, ok = v.(ipEntry)
+			entries, ok := v.(ipEntries)
 			if !ok {
 				return false
 			}
-			// check if the entry is still valid
-			if entry.expireTime.Before(i.clock.Now()) {
-				return false
-			}
-			if entry.ips.Has(ip) {
+			if v, ok := entries[ip.String()]; ok && v.After(i.clock.Now()) {
 				foundInWildcard = true
 				return true
 			}
@@ -95,31 +88,41 @@ func (i *domainMap) containsIP(domain string, ip net.IP) bool {
 			return false
 		}
 
-		entry, ok = v.(ipEntry)
+		entries, ok := v.(ipEntries)
 		if !ok {
 			return false
 		}
 
 		// check if the entry is still valid
-		if entry.expireTime.Before(i.clock.Now()) {
-			return false
+		if v, ok := entries[ip.String()]; ok && v.After(i.clock.Now()) {
+			return true
 		}
-		return entry.ips.Has(ip)
+		return false
 	}
 }
 
 func (i *domainMap) gc() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	expiredDomains := []string{}
+	now := i.clock.Now()
+	newTree := radix.New()
 	i.tree.Walk(func(domain string, v interface{}) bool {
-		if entry, ok := v.(ipEntry); ok && entry.expireTime.Before(i.clock.Now()) {
-			expiredDomains = append(expiredDomains, domain)
+		entries, ok := v.(ipEntries)
+		if !ok {
+			return false
+		}
+		newEntries := make(ipEntries)
+		for ip, expiredTime := range entries {
+			if expiredTime.After(now) {
+				newEntries[ip] = expiredTime
+			}
+		}
+		if len(newEntries) > 0 {
+			newTree.Insert(domain, newEntries)
 		}
 		return false
 	})
 
-	for _, domain := range expiredDomains {
-		i.tree.Delete(domain)
-	}
+	i.tree = nil
+	i.tree = newTree
 }
