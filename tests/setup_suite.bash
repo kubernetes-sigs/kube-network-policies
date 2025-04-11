@@ -3,6 +3,7 @@
 set -eu
 
 function setup_suite {
+  export BATS_TEST_TIMEOUT=120
   # Define the name of the kind cluster
   export CLUSTER_NAME="netpol-test-cluster"
   export IMAGE_NAME="registry.k8s.io/networking/kube-network-policies"

@@ -14,6 +14,62 @@ teardown() {
   kubectl delete namespace dev
 }
 
+# https://github.com/kubernetes-sigs/kube-network-policies/issues/150
+@test "liveness probes" {
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: dev
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+EOF
+  # propagation delay
+  sleep 1
+
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+  namespace: dev
+  labels:
+    app: myapp
+spec:
+  containers:
+    - name: agnhost
+      image: registry.k8s.io/e2e-test-images/agnhost:2.39
+      args:
+        - netexec
+        - --http-port=1234
+      livenessProbe:
+        failureThreshold: 5
+        periodSeconds: 2
+        tcpSocket:
+          port: 1234
+      readinessProbe:
+        failureThreshold: 5
+        periodSeconds: 2
+        tcpSocket:
+          port: 1234
+      ports:
+        - containerPort: 1234
+          name: tcp1234
+EOF
+
+  kubectl -n dev wait --for=condition=ready pod/myapp-pod --timeout=20s
+  echo "Pod is ready."
+  restart_count=$(kubectl get pod myapp-pod -n dev -o jsonpath='{.status.containerStatuses[0].restartCount}')
+  echo "Pod restarted $restart_count times"
+  test "$restart_count" = "0"
+  # cleanup
+  kubectl -n dev delete pod myapp-pod
+  kubectl -n dev delete networkpolicy default-deny-all
+}
 
 @test "allow traffic from a namespace" {
   # https://github.com/ahmetb/kubernetes-network-policy-recipes/blob/master/06-allow-traffic-from-a-namespace.md

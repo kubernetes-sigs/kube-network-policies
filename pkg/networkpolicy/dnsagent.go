@@ -290,8 +290,10 @@ func (n *DomainCache) handleDNSPacket(ctx context.Context, pkt packet) {
 		}
 
 		// take the minimum ttl value
-		if h.TTL > 0 && int(h.TTL) < ttl {
+		if ttl == 0 {
 			ttl = int(h.TTL)
+		} else {
+			ttl = min(ttl, int(h.TTL))
 		}
 	}
 	if len(ips) > 0 {
