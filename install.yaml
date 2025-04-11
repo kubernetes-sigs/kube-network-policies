@@ -76,9 +76,11 @@ spec:
         - --v=2
         - --nfqueue-id=98
         volumeMounts:
-        - name: lib-modules
-          mountPath: /lib/modules
-          readOnly: true
+        - name: nri-plugin
+          mountPath: /var/run/nri
+        - name: netns
+          mountPath: /var/run/netns
+          mountPropagation: HostToContainer
         resources:
           requests:
             cpu: "100m"
@@ -93,7 +95,10 @@ spec:
             fieldRef:
               fieldPath: spec.nodeName
       volumes:
-      - name: lib-modules
+      - name: nri-plugin
         hostPath:
-          path: /lib/modules
+          path: /var/run/nri
+      - name: netns
+        hostPath:
+          path: /var/run/netns
 ---
