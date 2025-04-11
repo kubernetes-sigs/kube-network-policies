@@ -86,7 +86,9 @@ func (n *DomainCache) Run(ctx context.Context) error {
 			logger.Error(err, "Can not process packet")
 			return 0
 		}
-		defer logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime))
+		defer func() {
+			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime))
+		}()
 
 		// Just print out the payload of the nflog packet
 		logger.V(4).Info("Evaluating packet", "packet", packet)
