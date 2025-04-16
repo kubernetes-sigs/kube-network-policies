@@ -1032,6 +1032,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 }
 
 func (c *Controller) cleanNFTablesRules(ctx context.Context) {
+	klog.Infof("cleaning up nftable %s", c.config.NFTableName)
 	nft, err := nftables.New()
 	if err != nil {
 		klog.Infof("network policies cleanup failure, can not start nftables:%v", err)
@@ -1049,4 +1050,5 @@ func (c *Controller) cleanNFTablesRules(ctx context.Context) {
 	if err != nil {
 		klog.Infof("error deleting nftables rules %v", err)
 	}
+	klog.Infof("cleaned up nftable %s", c.config.NFTableName)
 }

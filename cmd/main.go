@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -26,8 +27,6 @@ import (
 	_ "k8s.io/component-base/logs/json/register"
 	nodeutil "k8s.io/component-helpers/node/util"
 	"k8s.io/klog/v2"
-
-	"golang.org/x/sys/unix"
 )
 
 var (
@@ -61,6 +60,7 @@ func init() {
 func main() {
 	os.Exit(run())
 }
+
 func run() int {
 	// Enable logging in the Kubernetes core package way (support json output)
 	// https://github.com/kubernetes/component-base/tree/master
@@ -75,7 +75,7 @@ func run() int {
 
 	// Create a context for structured logging, and catch termination signals
 	ctx, cancel := signal.NotifyContext(
-		context.Background(), os.Interrupt, unix.SIGINT)
+		context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	logger := klog.FromContext(ctx)
@@ -176,8 +176,9 @@ func run() int {
 	}
 
 	<-ctx.Done()
-
+	logger.Info("Received termination signal, starting cleanup...")
 	// grace period to cleanup resources
 	time.Sleep(5 * time.Second)
+	logger.Info("Cleanup completed, exiting...")
 	return 0
 }
