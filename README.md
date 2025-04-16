@@ -44,6 +44,35 @@ they are enabled by default. Disable them if needed in values.yaml or use `--set
 
 NOTE: the corresponding CRDs must be installed first.
 
+## Uninstall
+
+### Manual Uninstallation
+
+To uninstall the components installed manually:
+
+1. Remove the "traditional" Kubernetes Network Policies:
+
+```sh
+kubectl delete -f install.yaml
+```
+
+2. For the Admin Network Policies and Baseline Admin Network Policies, remove the CRDs and the daemonset:
+```sh
+kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
+
+kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+```
+
+### Helm Uninstallation
+To uninstall kube-network-policies if installed via Helm:
+```sh
+helm uninstall kube-network-policies -n kube-system
+```
+### Nftables Cleanup
+Note: the nftables rules created on the machine are not automatically removed. Verify and clean them up manually if needed.
+```sh
+nft delete table inet kube-network-policies
+```
 
 ## Metrics
 
