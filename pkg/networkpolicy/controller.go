@@ -33,7 +33,6 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	netutils "k8s.io/utils/net"
-
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	policyinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
@@ -57,13 +56,16 @@ import (
 // https://netfilter.org/projects/libnetfilter_queue/doxygen/html/
 
 const (
-	controllerName = "kube-network-policies"
-	podIPIndex     = "podIPKeyIndex"
-	syncKey        = "dummy-key" // use the same key to sync to aggregate the events
-	podV4IPsSet    = "podips-v4"
-	podV6IPsSet    = "podips-v6"
-	tcpPortSet     = "tcp-ports"
-	udpPortSet     = "udp-ports"
+	controllerName    = "kube-network-policies"
+	podIPIndex        = "podIPKeyIndex"
+	syncKey           = "dummy-key" // use the same key to sync to aggregate the events
+	destPodV4IPsSet   = "dpodips-v4"
+	sourcePodV4IPsSet = "spodips-v4"
+	podV6IPsSet       = "podips-v6"
+	ingressTCPPortSet = "itcp-ports"
+	egressTCPPortSet  = "etcp-ports"
+	ingressUDPPortSet = "iudp-ports"
+	egressUDPPortSet  = "eudp-ports"
 )
 
 type Config struct {
@@ -727,9 +729,14 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
 		// add set with Local Pod IPs impacted by network policies
-		v4Set := &nftables.Set{
+		destV4Set := &nftables.Set{
 			Table:   table,
-			Name:    podV4IPsSet,
+			Name:    destPodV4IPsSet,
+			KeyType: nftables.TypeIPAddr,
+		}
+		sourceV4Set := &nftables.Set{
+			Table:   table,
+			Name:    sourcePodV4IPsSet,
 			KeyType: nftables.TypeIPAddr,
 		}
 		v6Set := &nftables.Set{
@@ -738,14 +745,27 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			KeyType: nftables.TypeIP6Addr,
 		}
 
-		tcpPortSet := &nftables.Set{
+		iTCPPortSet := &nftables.Set{
 			Table:   table,
-			Name:    tcpPortSet,
+			Name:    ingressTCPPortSet,
 			KeyType: nftables.TypeInetService,
 		}
-		udpPortSet := &nftables.Set{
+
+		eTCPPortSet := &nftables.Set{
 			Table:   table,
-			Name:    udpPortSet,
+			Name:    egressTCPPortSet,
+			KeyType: nftables.TypeInetService,
+		}
+
+		iUDPPortSet := &nftables.Set{
+			Table:   table,
+			Name:    ingressUDPPortSet,
+			KeyType: nftables.TypeInetService,
+		}
+
+		eUDPPortSet := &nftables.Set{
+			Table:   table,
+			Name:    egressUDPPortSet,
 			KeyType: nftables.TypeInetService,
 		}
 
@@ -753,73 +773,113 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		podV4IPs := sets.New[string]()
+		destPodV4IPs := sets.New[string]()
+		sourcePodV4IPs := sets.New[string]()
 		podV6IPs := sets.New[string]()
+
+		ingressTCPPorts := sets.New[int]()
+		egressTCPPorts := sets.New[int]()
+		ingressUDPPorts := sets.New[int]()
+		egressUDPPorts := sets.New[int]()
+
 		for _, networkPolicy := range networkPolicies {
-			pods := c.getLocalPodsForNetworkPolicy(networkPolicy)
-			for _, pod := range pods {
-				for _, ip := range pod.Status.PodIPs {
-					if netutils.IsIPv4String(ip.IP) {
-						podV4IPs.Insert(ip.IP)
-					} else {
-						podV6IPs.Insert(ip.IP)
-					}
+			var ingress, egress bool
+			for _, policyType := range networkPolicy.Spec.PolicyTypes {
+				if policyType == networkingv1.PolicyTypeIngress {
+					ingress = true
+				}
+				if policyType == networkingv1.PolicyTypeEgress {
+					egress = true
 				}
 			}
-			tcpPortMap := make(map[int]struct{})
-			udpPortMap := make(map[int]struct{})
-			if networkPolicy.Spec.PolicyTypes != nil {
-				for _, policyType := range networkPolicy.Spec.PolicyTypes {
-					if policyType == networkingv1.PolicyTypeIngress {
-						for _, rule := range networkPolicy.Spec.Ingress {
-							if rule.From != nil && len(rule.From) > 0 {
-								for _, port := range rule.Ports {
-									if port.Protocol != nil && *port.Protocol == v1.ProtocolTCP {
-										tcpPortMap[int(port.Port.IntVal)] = struct{}{}
-									}
-									if port.Protocol != nil && *port.Protocol == v1.ProtocolUDP {
-										udpPortMap[int(port.Port.IntVal)] = struct{}{}
-									}
+			if !ingress && !egress {
+				continue
+			}
+
+			if ingress {
+				for _, rule := range networkPolicy.Spec.Ingress {
+					if rule.From != nil && len(rule.From) > 0 {
+						for _, port := range rule.Ports {
+							if port.Protocol != nil && *port.Protocol == v1.ProtocolTCP {
+								if port.Port.IntVal != 0 {
+									ingressTCPPorts.Insert(int(port.Port.IntVal))
+								}
+							}
+							if port.Protocol != nil && *port.Protocol == v1.ProtocolUDP {
+								if port.Port.IntVal != 0 {
+									ingressUDPPorts.Insert(int(port.Port.IntVal))
 								}
 							}
 						}
 					}
 				}
 			}
-			if tcpPortMap != nil {
-				portElements := make([]nftables.SetElement, 0)
-				for port := range tcpPortMap {
-					portElements = append(portElements, nftables.SetElement{
-						Key: binaryutil.BigEndian.PutUint16(uint16(port)),
-					})
-				}
-				if err := nft.AddSet(tcpPortSet, portElements); err != nil {
-					return fmt.Errorf("failed to add tcp port Set: %v", err)
+
+			if egress {
+				for _, rule := range networkPolicy.Spec.Egress {
+					if rule.To != nil && len(rule.To) > 0 {
+						for _, port := range rule.Ports {
+							if port.Protocol != nil && *port.Protocol == v1.ProtocolTCP {
+								if port.Port.IntVal != 0 {
+									egressTCPPorts.Insert(int(port.Port.IntVal))
+								}
+							}
+							if port.Protocol != nil && *port.Protocol == v1.ProtocolUDP {
+								if port.Port.IntVal != 0 {
+									egressUDPPorts.Insert(int(port.Port.IntVal))
+								}
+							}
+						}
+					}
 				}
 			}
-			if udpPortMap != nil {
-				portElements := make([]nftables.SetElement, 0)
-				for port := range udpPortMap {
-					portElements = append(portElements, nftables.SetElement{
-						Key: binaryutil.BigEndian.PutUint16(uint16(port)),
-					})
-				}
-				if err := nft.AddSet(udpPortSet, portElements); err != nil {
-					return fmt.Errorf("failed to add udp port Set: %v", err)
+
+			pods := c.getLocalPodsForNetworkPolicy(networkPolicy)
+			for _, pod := range pods {
+				for _, ip := range pod.Status.PodIPs {
+					if netutils.IsIPv4String(ip.IP) {
+						if ingress {
+							destPodV4IPs.Insert(ip.IP)
+						}
+						if egress {
+							sourcePodV4IPs.Insert(ip.IP)
+						}
+					} else {
+						podV6IPs.Insert(ip.IP)
+					}
 				}
 			}
 		}
 
-		var elementsV4, elementsV6 []nftables.SetElement
-		for _, ip := range podV4IPs.UnsortedList() {
+		var destElementsV4, sourceElementsV4, elementsV6, ingressElementsTCP, ingressElementsUDP, egressElementsTCP, egressElementsUDP []nftables.SetElement
+		for _, ip := range destPodV4IPs.UnsortedList() {
 			addr, err := netip.ParseAddr(ip)
 			if err != nil {
 				continue
 			}
-			elementsV4 = append(elementsV4, nftables.SetElement{
+			destElementsV4 = append(destElementsV4, nftables.SetElement{
 				Key: addr.AsSlice(),
 			})
 		}
+		if err := nft.AddSet(destV4Set, destElementsV4); err != nil {
+			return fmt.Errorf("failed to add Set %s : %v", destV4Set.Name, err)
+		}
+		klog.InfoS("Added Set", "set", destV4Set.Name, "elements", len(destElementsV4))
+
+		for _, ip := range sourcePodV4IPs.UnsortedList() {
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			sourceElementsV4 = append(sourceElementsV4, nftables.SetElement{
+				Key: addr.AsSlice(),
+			})
+		}
+		if err := nft.AddSet(sourceV4Set, sourceElementsV4); err != nil {
+			return fmt.Errorf("failed to add Set %s : %v", sourceV4Set.Name, err)
+		}
+		klog.InfoS("Added Set", "set", sourceV4Set.Name, "elements", len(sourceElementsV4))
+
 		for _, ip := range podV6IPs.UnsortedList() {
 			addr, err := netip.ParseAddr(ip)
 			if err != nil {
@@ -829,13 +889,50 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				Key: addr.AsSlice(),
 			})
 		}
-
-		if err := nft.AddSet(v4Set, elementsV4); err != nil {
-			return fmt.Errorf("failed to add Set %s : %v", v4Set.Name, err)
-		}
 		if err := nft.AddSet(v6Set, elementsV6); err != nil {
 			return fmt.Errorf("failed to add Set %s : %v", v6Set.Name, err)
 		}
+		klog.InfoS("Added Set", "set", v6Set.Name, "elements", len(elementsV6))
+
+		for _, port := range ingressTCPPorts.UnsortedList() {
+			ingressElementsTCP = append(ingressElementsTCP, nftables.SetElement{
+				Key: binaryutil.BigEndian.PutUint16(uint16(port)),
+			})
+		}
+		if err := nft.AddSet(iTCPPortSet, ingressElementsTCP); err != nil {
+			return fmt.Errorf("failed to add Set %s : %v", iTCPPortSet.Name, err)
+		}
+		klog.InfoS("Added Set", "set", iTCPPortSet.Name, "elements", len(ingressElementsTCP))
+
+		for _, port := range ingressUDPPorts.UnsortedList() {
+			ingressElementsUDP = append(ingressElementsUDP, nftables.SetElement{
+				Key: binaryutil.BigEndian.PutUint16(uint16(port)),
+			})
+		}
+		if err := nft.AddSet(iUDPPortSet, ingressElementsUDP); err != nil {
+			return fmt.Errorf("failed to add Set %s : %v", iUDPPortSet.Name, err)
+		}
+		klog.InfoS("Added Set", "set", iUDPPortSet.Name, "elements", len(ingressElementsUDP))
+
+		for _, port := range egressTCPPorts.UnsortedList() {
+			egressElementsTCP = append(egressElementsTCP, nftables.SetElement{
+				Key: binaryutil.BigEndian.PutUint16(uint16(port)),
+			})
+		}
+		if err := nft.AddSet(eTCPPortSet, egressElementsTCP); err != nil {
+			return fmt.Errorf("failed to add Set %s : %v", eTCPPortSet.Name, err)
+		}
+		klog.InfoS("Added Set", "set", eTCPPortSet.Name, "elements", len(egressElementsTCP))
+
+		for _, port := range egressUDPPorts.UnsortedList() {
+			egressElementsUDP = append(egressElementsUDP, nftables.SetElement{
+				Key: binaryutil.BigEndian.PutUint16(uint16(port)),
+			})
+		}
+		if err := nft.AddSet(eUDPPortSet, egressElementsUDP); err != nil {
+			return fmt.Errorf("failed to add Set %s : %v", eUDPPortSet.Name, err)
+		}
+		klog.InfoS("Added Set", "set", eUDPPortSet.Name, "elements", len(egressElementsUDP))
 	}
 
 	// Process the packets that are, usually on the FORWARD hook, but
@@ -913,7 +1010,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 
 	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		// ip saddr @podips-v4 queue flags bypass to 102
+		// ip saddr @source-podips-v4 tcp dport @egress-tcp-ports queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -921,29 +1018,35 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV4IPsSet},
-				queue,
-			},
-		})
-		// ip daddr @podips-v4 tcp dport @tcp-ports queue num 98 bypass
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
-				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV4IPsSet},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: sourcePodV4IPsSet},
 				// filter out non-monitored tcp ports
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_TCP}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: tcpPortSet},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: egressTCPPortSet},
 				queue,
 			},
 		})
-
-		// ip daddr @podips-v4 ucp dport @tcp-ports queue num 98 bypass
+		klog.FromContext(ctx).Info("AddRule: ip saddr @source-podips-v4 tcp dport @egress-tcp-ports queue num 98 bypass")
+		// ip saddr @source-podips-v4 udp dport @egress-udp-ports queue num 98 bypass
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: sourcePodV4IPsSet},
+				// filter out non-monitored udp ports
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: egressUDPPortSet},
+				queue,
+			},
+		})
+		klog.FromContext(ctx).Info("AddRule: ip saddr @source-podips-v4 udp dport @egress-udp-ports queue num 98 bypass")
+		// ip daddr @dest-podips-v4 tcp dport @ingress-tcp-ports queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -951,16 +1054,34 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV4IPsSet},
-				// filter out non-monitored ucp ports
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: destPodV4IPsSet},
+				// filter out non-monitored tcp ports
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_TCP}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: udpPortSet},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ingressTCPPortSet},
 				queue,
 			},
 		})
-
+		klog.FromContext(ctx).Info("AddRule: ip daddr @dest-podips-v4 tcp dport @ingress-tcp-ports queue num 98 bypass")
+		// ip daddr @dest-podips-v4 udp dport @ingress-udp-ports queue num 98 bypass
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: destPodV4IPsSet},
+				// filter out non-monitored udp ports
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ingressUDPPortSet},
+				queue,
+			},
+		})
+		klog.FromContext(ctx).Info("AddRule: ip daddr @dest-podips-v4 udp dport @ingress-udp-ports queue num 98 bypass")
 		// ip6 saddr @podips-v6 queue flags bypass to 102
 		nft.AddRule(&nftables.Rule{
 			Table: table,
@@ -969,7 +1090,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV6IPsSet},
 				queue,
 			},
 		})
@@ -981,7 +1102,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV6IPsSet},
 				queue,
 			},
 		})
@@ -1053,7 +1174,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 
 	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		// ip saddr @podips-v4 queue flags bypass to 102
+		// ip saddr @source-podips-v4 tcp dport @egress-tcp-ports queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1061,10 +1182,35 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v4"},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: sourcePodV4IPsSet},
+				// filter out non-monitored tcp ports
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_TCP}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: egressTCPPortSet},
 				queue,
 			},
 		})
+		klog.Infof("AddRule: ip saddr @source-podips-v4 tcp dport @egress-tcp-ports queue num 98 bypass for %s", chain.Name)
+		// ip saddr @source-podips-v4 udp dport @egress-udp-ports queue num 98 bypass
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: sourcePodV4IPsSet},
+				// filter out non-monitored udp ports
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: egressUDPPortSet},
+				queue,
+			},
+		})
+		klog.Infof("AddRule: ip saddr @source-podips-v4 udp dport @egress-udp-ports queue num 98 bypass for %s", chain.Name)
+		// ip daddr @dest-podips-v4 tcp dport @ingress-tcp-ports queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1072,10 +1218,35 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v4"},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: destPodV4IPsSet},
+				// filter out non-monitored tcp ports
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_TCP}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ingressTCPPortSet},
 				queue,
 			},
 		})
+		klog.Infof("AddRule: ip daddr @dest-podips-v4 tcp dport @ingress-tcp-ports queue num 98 bypass for %s", chain.Name)
+		// ip daddr @dest-podips-v4 udp dport @ingress-udp-ports queue num 98 bypass
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: destPodV4IPsSet},
+				// filter out non-monitored udp ports
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ingressUDPPortSet},
+				queue,
+			},
+		})
+		klog.Infof("AddRule: ip daddr @dest-podips-v4 udp dport @ingress-udp-ports queue num 98 bypass for %s", chain.Name)
+		// ip6 saddr @podips-v6 queue flags bypass to 102
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1083,10 +1254,11 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV6IPsSet},
 				queue,
 			},
 		})
+		// ip6 daddr @podips-v6 queue flags bypass to 102
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1094,7 +1266,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV6IPsSet},
 				queue,
 			},
 		})
