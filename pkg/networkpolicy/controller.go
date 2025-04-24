@@ -754,17 +754,17 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		destPodV4IPs := sets.New[string]()
-		sourcePodV4IPs := sets.New[string]()
-		podV6IPs := sets.New[string]()
-
-		iPortsForFilter := sets.New[int]()
-		ePortsForFilter := sets.New[int]()
-
-		iPortAccept := make(map[int]struct{})
-		ePortAccept := make(map[int]struct{})
 
 		for _, networkPolicy := range networkPolicies {
+			destPodV4IPs := sets.New[string]()
+			sourcePodV4IPs := sets.New[string]()
+			podV6IPs := sets.New[string]()
+
+			iPortsForFilter := sets.New[int]()
+			ePortsForFilter := sets.New[int]()
+
+			iPortAccept := make(map[int]struct{})
+			ePortAccept := make(map[int]struct{})
 			var ingress, egress bool
 			for _, policyType := range networkPolicy.Spec.PolicyTypes {
 				if policyType == networkingv1.PolicyTypeIngress {
@@ -843,58 +843,58 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 					}
 				}
 			}
-		}
 
-		var destElementsV4, sourceElementsV4, elementsV6 []nftables.SetElement
-		for _, ip := range destPodV4IPs.UnsortedList() {
-			addr, err := netip.ParseAddr(ip)
-			if err != nil {
-				continue
+			var destElementsV4, sourceElementsV4, elementsV6 []nftables.SetElement
+			for _, ip := range destPodV4IPs.UnsortedList() {
+				addr, err := netip.ParseAddr(ip)
+				if err != nil {
+					continue
+				}
+				for _, port := range iPortsForFilter.UnsortedList() {
+					klog.InfoS("Adding IP to Set", "set", destV4IPPortSet.Name, "ip", ip, "port", port)
+					concat := []byte{}
+					concat = append(concat, addr.AsSlice()...)
+					portBytes := make([]byte, 4)
+					copy(portBytes, binaryutil.BigEndian.PutUint16(uint16(port)))
+					concat = append(concat, portBytes...)
+					destElementsV4 = append(destElementsV4, nftables.SetElement{
+						Key: concat,
+					})
+				}
 			}
-			for _, port := range iPortsForFilter.UnsortedList() {
-				klog.InfoS("Adding IP to Set", "set", destV4IPPortSet.Name, "ip", ip, "port", port)
-				concat := []byte{}
-				concat = append(concat, addr.AsSlice()...)
-				portBytes := make([]byte, 4)
-				copy(portBytes, binaryutil.BigEndian.PutUint16(uint16(port)))
-				concat = append(concat, portBytes...)
-				destElementsV4 = append(destElementsV4, nftables.SetElement{
-					Key: concat,
+			if err := nft.AddSet(destV4IPPortSet, destElementsV4); err != nil {
+				return fmt.Errorf("failed to add Set %s : %v", destV4IPPortSet.Name, err)
+			}
+			klog.InfoS("Added Set", "set", destV4IPPortSet.Name, "elements", len(destElementsV4))
+
+			for _, ip := range sourcePodV4IPs.UnsortedList() {
+				addr, err := netip.ParseAddr(ip)
+				if err != nil {
+					continue
+				}
+				sourceElementsV4 = append(sourceElementsV4, nftables.SetElement{
+					Key: addr.AsSlice(),
 				})
 			}
-		}
-		if err := nft.AddSet(destV4IPPortSet, destElementsV4); err != nil {
-			return fmt.Errorf("failed to add Set %s : %v", destV4IPPortSet.Name, err)
-		}
-		klog.InfoS("Added Set", "set", destV4IPPortSet.Name, "elements", len(destElementsV4))
-
-		for _, ip := range sourcePodV4IPs.UnsortedList() {
-			addr, err := netip.ParseAddr(ip)
-			if err != nil {
-				continue
+			if err := nft.AddSet(sourceV4IPPortSet, sourceElementsV4); err != nil {
+				return fmt.Errorf("failed to add Set %s : %v", sourceV4IPPortSet.Name, err)
 			}
-			sourceElementsV4 = append(sourceElementsV4, nftables.SetElement{
-				Key: addr.AsSlice(),
-			})
-		}
-		if err := nft.AddSet(sourceV4IPPortSet, sourceElementsV4); err != nil {
-			return fmt.Errorf("failed to add Set %s : %v", sourceV4IPPortSet.Name, err)
-		}
-		klog.InfoS("Added Set", "set", sourceV4IPPortSet.Name, "elements", len(sourceElementsV4))
+			klog.InfoS("Added Set", "set", sourceV4IPPortSet.Name, "elements", len(sourceElementsV4))
 
-		for _, ip := range podV6IPs.UnsortedList() {
-			addr, err := netip.ParseAddr(ip)
-			if err != nil {
-				continue
+			for _, ip := range podV6IPs.UnsortedList() {
+				addr, err := netip.ParseAddr(ip)
+				if err != nil {
+					continue
+				}
+				elementsV6 = append(elementsV6, nftables.SetElement{
+					Key: addr.AsSlice(),
+				})
 			}
-			elementsV6 = append(elementsV6, nftables.SetElement{
-				Key: addr.AsSlice(),
-			})
+			if err := nft.AddSet(v6Set, elementsV6); err != nil {
+				return fmt.Errorf("failed to add Set %s : %v", v6Set.Name, err)
+			}
+			klog.InfoS("Added Set", "set", v6Set.Name, "elements", len(elementsV6))
 		}
-		if err := nft.AddSet(v6Set, elementsV6); err != nil {
-			return fmt.Errorf("failed to add Set %s : %v", v6Set.Name, err)
-		}
-		klog.InfoS("Added Set", "set", v6Set.Name, "elements", len(elementsV6))
 	}
 
 	// Process the packets that are, usually on the FORWARD hook, but
