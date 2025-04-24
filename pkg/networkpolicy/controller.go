@@ -60,7 +60,7 @@ const (
 	podIPIndex     = "podIPKeyIndex"
 	syncKey        = "dummy-key" // use the same key to sync to aggregate the events
 	dAddrDportSet  = "daddr_dport_set"
-	sAddrDportSet  = "saddr_dport_set"
+	sAddrIPV4Set   = "saddr_ipv4_set"
 	podV6IPsSet    = "podips-v6"
 )
 
@@ -741,8 +741,8 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		}
 		sourceV4IPPortSet := &nftables.Set{
 			Table:   table,
-			Name:    sAddrDportSet,
-			KeyType: concatType,
+			Name:    sAddrIPV4Set,
+			KeyType: nftables.TypeIPAddr,
 		}
 		v6Set := &nftables.Set{
 			Table:   table,
@@ -873,16 +873,9 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			if err != nil {
 				continue
 			}
-			for _, port := range ePortsForFilter.UnsortedList() {
-				concat := []byte{}
-				concat = append(concat, addr.AsSlice()...)
-				portBytes := make([]byte, 4)
-				copy(portBytes, binaryutil.BigEndian.PutUint16(uint16(port)))
-				concat = append(concat, portBytes...)
-				sourceElementsV4 = append(sourceElementsV4, nftables.SetElement{
-					Key: concat,
-				})
-			}
+			sourceElementsV4 = append(sourceElementsV4, nftables.SetElement{
+				Key: addr.AsSlice(),
+			})
 		}
 		if err := nft.AddSet(sourceV4IPPortSet, sourceElementsV4); err != nil {
 			return fmt.Errorf("failed to add Set %s : %v", sourceV4IPPortSet.Name, err)
@@ -993,39 +986,19 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	   	[ queue num 100 ]
 	*/
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		// ip saddr. tcp dport @saddr_dport_set queue num 98 bypass
+		// ip saddr @podips-v4 queue flags bypass to 98
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
 			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 1, SetName: sAddrDportSet},
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: sAddrIPV4Set},
 				queue,
 			},
 		})
-		klog.Info("AddRule: ip saddr . tcp dport @saddr_dport_set queue num 98 bypass")
-
-		// ip saddr. udp dport @saddr_dport_set queue num 98 bypass
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 1, SetName: sAddrDportSet},
-				queue,
-			},
-		})
-		klog.Info("AddRule: ip saddr . udp dport @saddr_dport_set queue num 98 bypass")
+		klog.Info("AddRule: ip saddr @podips-v4 queue flags bypass to 98")
 
 		// ip daddr . tcp dport @daddr_dport_set queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
@@ -1153,39 +1126,19 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 
 	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		// ip saddr. tcp dport @saddr_dport_set queue num 98 bypass
+		// ip saddr @podips-v4 queue flags bypass to 98
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
 			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 1, SetName: sAddrDportSet},
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: sAddrIPV4Set},
 				queue,
 			},
 		})
-		klog.Info("AddRule: ip saddr . tcp dport @saddr_dport_set queue num 98 bypass")
-
-		// ip saddr. udp dport @saddr_dport_set queue num 98 bypass
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 1, SetName: sAddrDportSet},
-				queue,
-			},
-		})
-		klog.Info("AddRule: ip saddr . udp dport @saddr_dport_set queue num 98 bypass")
+		klog.Info("AddRule: ip saddr @podips-v4 queue flags bypass to 98")
 
 		// ip daddr . tcp dport @daddr_dport_set queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
