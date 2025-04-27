@@ -13,7 +13,6 @@ import (
 	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
 	"golang.org/x/sys/unix"
-
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -56,12 +55,13 @@ import (
 // https://netfilter.org/projects/libnetfilter_queue/doxygen/html/
 
 const (
-	controllerName = "kube-network-policies"
-	podIPIndex     = "podIPKeyIndex"
-	syncKey        = "dummy-key" // use the same key to sync to aggregate the events
-	dAddrDportSet  = "daddr_dport_set"
-	sAddrIPV4Set   = "saddr_ipv4_set"
-	podV6IPsSet    = "podips-v6"
+	controllerName    = "kube-network-policies"
+	podIPIndex        = "podIPKeyIndex"
+	syncKey           = "dummy-key" // use the same key to sync to aggregate the events
+	ipv4DaddrDportSet = "v4_dadp_set"
+	ipv4SIPSet        = "v4_sip_set"
+	ipv6DaddrDportSet = "v6_dadp_set"
+	ipv6SIPSet        = "v6_sip_set"
 )
 
 type Config struct {
@@ -365,6 +365,8 @@ type Controller struct {
 	// Passively obtain the Domain A and AAAA records from the network
 	domainCache *DomainCache
 	nriPlugin   *nriPlugin
+	// use for tracking if the controller is initialized
+	initialized bool
 }
 
 // Run will not return until stopCh is closed. workers determines how many
@@ -705,8 +707,28 @@ func (c *Controller) handleErr(err error, key string) {
 
 // syncNFTablesRules adds the necessary rules to process the first connection packets in userspace
 // and check if network policies must apply.
-// TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
 func (c *Controller) syncNFTablesRules(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
+
+	if !c.initialized {
+		// Perform complete initialization on first run
+		logger.Info("First time initializing nftables rules")
+		if err := c.initializeNFTablesRules(ctx); err != nil {
+			return err
+		}
+		c.initialized = true
+		return nil
+	}
+
+	// Only update set contents for subsequent runs
+	logger.Info("Only updating nftables sets content")
+	return c.updateNFTablesSets(ctx)
+}
+
+// syncNFTablesRules adds the necessary rules to process the first connection packets in userspace
+// and check if network policies must apply.
+// We can divert only the traffic affected by network policies using a set in nftables or an IPset.
+func (c *Controller) initializeNFTablesRules(ctx context.Context) error {
 	klog.FromContext(ctx).Info("Syncing nftables rules")
 	nft, err := nftables.New()
 	if err != nil {
@@ -724,177 +746,51 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 
 	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		concatType, err := nftables.ConcatSetType(
+		v4ConcatType, err := nftables.ConcatSetType(
 			nftables.TypeIPAddr,
 			nftables.TypeInetService,
 		)
 		if err != nil {
-			klog.ErrorS(err, "can not create concat type")
+			klog.ErrorS(err, "can not create v4 concat type")
+			return err
+		}
+
+		v6ConcatType, err := nftables.ConcatSetType(
+			nftables.TypeIP6Addr,
+			nftables.TypeInetService,
+		)
+		if err != nil {
+			klog.ErrorS(err, "can not create v4 concat type")
 			return err
 		}
 
 		// add set with Local Pod IPs impacted by network policies
 		destV4IPPortSet := &nftables.Set{
 			Table:   table,
-			Name:    dAddrDportSet,
-			KeyType: concatType,
+			Name:    ipv4DaddrDportSet,
+			KeyType: v4ConcatType,
 		}
-		sourceV4IPPortSet := &nftables.Set{
+		srcV4IPSet := &nftables.Set{
 			Table:   table,
-			Name:    sAddrIPV4Set,
+			Name:    ipv4SIPSet,
 			KeyType: nftables.TypeIPAddr,
 		}
-		v6Set := &nftables.Set{
+
+		destV6IPPortSet := &nftables.Set{
 			Table:   table,
-			Name:    podV6IPsSet,
+			Name:    ipv6DaddrDportSet,
+			KeyType: v6ConcatType,
+		}
+		srcV6IPSet := &nftables.Set{
+			Table:   table,
+			Name:    ipv6SIPSet,
 			KeyType: nftables.TypeIP6Addr,
 		}
-
-		networkPolicies, err := c.networkpolicyLister.List(labels.Everything())
-		if err != nil {
+		// 填充 sets
+		if err := c.populateNFTablesSets(ctx, nft, table, destV4IPPortSet, srcV4IPSet, destV6IPPortSet, srcV6IPSet); err != nil {
 			return err
 		}
 
-		for _, networkPolicy := range networkPolicies {
-			destPodV4IPs := sets.New[string]()
-			sourcePodV4IPs := sets.New[string]()
-			podV6IPs := sets.New[string]()
-
-			iPortsForFilter := sets.New[int]()
-			ePortsForFilter := sets.New[int]()
-
-			iPortAccept := make(map[int]struct{})
-			ePortAccept := make(map[int]struct{})
-			var ingress, egress bool
-			for _, policyType := range networkPolicy.Spec.PolicyTypes {
-				if policyType == networkingv1.PolicyTypeIngress {
-					ingress = true
-				}
-				if policyType == networkingv1.PolicyTypeEgress {
-					egress = true
-				}
-			}
-			if !ingress && !egress {
-				continue
-			}
-
-			if ingress {
-				for _, rule := range networkPolicy.Spec.Ingress {
-					if rule.From != nil && len(rule.From) > 0 {
-						for _, port := range rule.Ports {
-							if port.Port.IntVal != 0 {
-								iPortsForFilter.Insert(int(port.Port.IntVal))
-							}
-						}
-					} else {
-						for _, port := range rule.Ports {
-							if port.Port.IntVal != 0 {
-								iPortAccept[int(port.Port.IntVal)] = struct{}{}
-							}
-						}
-					}
-				}
-			}
-
-			if egress {
-				for _, rule := range networkPolicy.Spec.Egress {
-					if rule.To != nil && len(rule.To) > 0 {
-						for _, port := range rule.Ports {
-							if port.Port.IntVal != 0 {
-								ePortsForFilter.Insert(int(port.Port.IntVal))
-							}
-						}
-					} else {
-						for _, port := range rule.Ports {
-							if port.Port.IntVal != 0 {
-								ePortAccept[int(port.Port.IntVal)] = struct{}{}
-							}
-						}
-					}
-				}
-			}
-
-			pods := c.getLocalPodsForNetworkPolicy(networkPolicy)
-			for _, pod := range pods {
-				for _, container := range pod.Spec.Containers {
-					for _, port := range container.Ports {
-						if ingress {
-							if _, ok := iPortAccept[int(port.ContainerPort)]; !ok {
-								iPortsForFilter.Insert(int(port.ContainerPort))
-							}
-						}
-						if egress {
-							if _, ok := ePortAccept[int(port.ContainerPort)]; !ok {
-								ePortsForFilter.Insert(int(port.ContainerPort))
-							}
-						}
-					}
-				}
-				for _, ip := range pod.Status.PodIPs {
-					if netutils.IsIPv4String(ip.IP) {
-						if ingress {
-							destPodV4IPs.Insert(ip.IP)
-						}
-						if egress {
-							sourcePodV4IPs.Insert(ip.IP)
-						}
-					} else {
-						podV6IPs.Insert(ip.IP)
-					}
-				}
-			}
-
-			var destElementsV4, sourceElementsV4, elementsV6 []nftables.SetElement
-			for _, ip := range destPodV4IPs.UnsortedList() {
-				addr, err := netip.ParseAddr(ip)
-				if err != nil {
-					continue
-				}
-				for _, port := range iPortsForFilter.UnsortedList() {
-					klog.InfoS("Adding IP to Set", "set", destV4IPPortSet.Name, "ip", ip, "port", port)
-					concat := []byte{}
-					concat = append(concat, addr.AsSlice()...)
-					portBytes := make([]byte, 4)
-					copy(portBytes, binaryutil.BigEndian.PutUint16(uint16(port)))
-					concat = append(concat, portBytes...)
-					destElementsV4 = append(destElementsV4, nftables.SetElement{
-						Key: concat,
-					})
-				}
-			}
-			if err := nft.AddSet(destV4IPPortSet, destElementsV4); err != nil {
-				return fmt.Errorf("failed to add Set %s : %v", destV4IPPortSet.Name, err)
-			}
-			klog.InfoS("Added Set", "set", destV4IPPortSet.Name, "elements", len(destElementsV4))
-
-			for _, ip := range sourcePodV4IPs.UnsortedList() {
-				addr, err := netip.ParseAddr(ip)
-				if err != nil {
-					continue
-				}
-				sourceElementsV4 = append(sourceElementsV4, nftables.SetElement{
-					Key: addr.AsSlice(),
-				})
-			}
-			if err := nft.AddSet(sourceV4IPPortSet, sourceElementsV4); err != nil {
-				return fmt.Errorf("failed to add Set %s : %v", sourceV4IPPortSet.Name, err)
-			}
-			klog.InfoS("Added Set", "set", sourceV4IPPortSet.Name, "elements", len(sourceElementsV4))
-
-			for _, ip := range podV6IPs.UnsortedList() {
-				addr, err := netip.ParseAddr(ip)
-				if err != nil {
-					continue
-				}
-				elementsV6 = append(elementsV6, nftables.SetElement{
-					Key: addr.AsSlice(),
-				})
-			}
-			if err := nft.AddSet(v6Set, elementsV6); err != nil {
-				return fmt.Errorf("failed to add Set %s : %v", v6Set.Name, err)
-			}
-			klog.InfoS("Added Set", "set", v6Set.Name, "elements", len(elementsV6))
-		}
 	}
 
 	// Process the packets that are, usually on the FORWARD hook, but
@@ -986,21 +882,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	   	[ queue num 100 ]
 	*/
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		// ip saddr @podips-v4 queue flags bypass to 98
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
-				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: sAddrIPV4Set},
-				queue,
-			},
-		})
-		klog.Info("AddRule: ip saddr @podips-v4 queue flags bypass to 98")
-
-		// ip daddr . tcp dport @daddr_dport_set queue num 98 bypass
+		// ip daddr . tcp dport @v4_dadp_set queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1011,13 +893,13 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
 				&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 1, SetName: dAddrDportSet},
+				&expr.Lookup{SourceRegister: 1, SetName: ipv4DaddrDportSet},
 				queue,
 			},
 		})
-		klog.Info("AddRule: ip daddr . tcp dport @saddr_dport_set queue num 98 bypass")
+		klog.Info("AddRule: ip daddr . tcp dport @v4_dadp_set queue num 98 bypass")
 
-		// ip daddr . udp dport @daddr_dport_set queue num 98 bypass
+		// ip daddr . udp dport @v4_dadp_set queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1028,11 +910,69 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
 				&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 1, SetName: dAddrDportSet},
+				&expr.Lookup{SourceRegister: 1, SetName: ipv4DaddrDportSet},
 				queue,
 			},
 		})
-		klog.Info("AddRule: ip daddr . udp dport @saddr_dport_set queue num 98 bypass")
+		klog.Info("AddRule: ip daddr . udp dport @v4_dadp_set queue num 98 bypass")
+
+		// ip saddr @podips-v4 queue flags bypass to 102
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ipv4SIPSet},
+				queue,
+			},
+		})
+		klog.Info("AddRule: ip saddr @podips-v4 queue flags bypass to 102")
+
+		// ip6 daddr . tcp dport @v6_dadp_set queue num 98 bypass
+		/*
+		  [ meta load nfproto => reg 1 ]
+		  [ cmp eq reg 1 0x0000000a ]
+		  [ meta load l4proto => reg 1 ]
+		  [ cmp eq reg 1 0x00000006 ]
+		  [ payload load 16b @ network header + 24 => reg 1 ]
+		  [ payload load 2b @ transport header + 2 => reg 2 ]
+		  [ lookup reg 1 set v6_dadp_set ]
+		  [ queue num 100 ]
+		*/
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
+				&expr.Payload{DestRegister: 2, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 1, SetName: ipv6DaddrDportSet},
+				queue,
+			},
+		})
+		klog.Info("AddRule: ip6 daddr . tcp dport @v6_dadp_set queue num 98 bypass")
+
+		// ip6 daddr . udp dport @v6_dadp_set queue num 98 bypass
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
+				&expr.Payload{DestRegister: 2, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 1, SetName: ipv6DaddrDportSet},
+				queue,
+			},
+		})
+		klog.Info("AddRule: ip6 daddr . udp dport @v6_dadp_set queue num 98 bypass")
 
 		// ip6 saddr @podips-v6 queue flags bypass to 102
 		nft.AddRule(&nftables.Rule{
@@ -1042,22 +982,11 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV6IPsSet},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ipv4SIPSet},
 				queue,
 			},
 		})
-		// ip6 daddr @podips-v6 queue flags bypass to 102
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
-				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV6IPsSet},
-				queue,
-			},
-		})
+		klog.Info("AddRule: ip6 saddr @podips-v6 queue flags bypass to 102")
 	} else {
 		nft.AddRule(&nftables.Rule{
 			Table: table,
@@ -1126,21 +1055,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 
 	// only if no admin network policies are used
 	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		// ip saddr @podips-v4 queue flags bypass to 98
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
-				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: sAddrIPV4Set},
-				queue,
-			},
-		})
-		klog.Info("AddRule: ip saddr @podips-v4 queue flags bypass to 98")
-
-		// ip daddr . tcp dport @daddr_dport_set queue num 98 bypass
+		// ip daddr . tcp dport @v4_dadp_set queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1151,13 +1066,13 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
 				&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 1, SetName: dAddrDportSet},
+				&expr.Lookup{SourceRegister: 1, SetName: ipv4DaddrDportSet},
 				queue,
 			},
 		})
-		klog.Info("AddRule: ip daddr . tcp dport @saddr_dport_set queue num 98 bypass")
+		klog.Info("AddRule: ip daddr . tcp dport @v4_dadp_set queue num 98 bypass")
 
-		// ip daddr . udp dport @daddr_dport_set queue num 98 bypass
+		// ip daddr . udp dport @v4_dadp_set queue num 98 bypass
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1168,11 +1083,69 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
 				&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Lookup{SourceRegister: 1, SetName: dAddrDportSet},
+				&expr.Lookup{SourceRegister: 1, SetName: ipv4DaddrDportSet},
 				queue,
 			},
 		})
-		klog.Info("AddRule: ip daddr . udp dport @saddr_dport_set queue num 98 bypass")
+		klog.Info("AddRule: ip daddr . udp dport @v4_dadp_set queue num 98 bypass")
+
+		// ip saddr @podips-v4 queue flags bypass to 102
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ipv4SIPSet},
+				queue,
+			},
+		})
+		klog.Info("AddRule: ip saddr @podips-v4 queue flags bypass to 102")
+
+		// ip6 daddr . tcp dport @v6_dadp_set queue num 98 bypass
+		/*
+		  [ meta load nfproto => reg 1 ]
+		  [ cmp eq reg 1 0x0000000a ]
+		  [ meta load l4proto => reg 1 ]
+		  [ cmp eq reg 1 0x00000006 ]
+		  [ payload load 16b @ network header + 24 => reg 1 ]
+		  [ payload load 2b @ transport header + 2 => reg 2 ]
+		  [ lookup reg 1 set v6_dadp_set ]
+		  [ queue num 100 ]
+		*/
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
+				&expr.Payload{DestRegister: 2, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 1, SetName: ipv6DaddrDportSet},
+				queue,
+			},
+		})
+		klog.Info("AddRule: ip6 daddr . tcp dport @v6_dadp_set queue num 98 bypass")
+
+		// ip6 daddr . udp dport @v6_dadp_set queue num 98 bypass
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
+				&expr.Payload{DestRegister: 2, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Lookup{SourceRegister: 1, SetName: ipv6DaddrDportSet},
+				queue,
+			},
+		})
+		klog.Info("AddRule: ip6 daddr . udp dport @v6_dadp_set queue num 98 bypass")
 
 		// ip6 saddr @podips-v6 queue flags bypass to 102
 		nft.AddRule(&nftables.Rule{
@@ -1182,22 +1155,11 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV6IPsSet},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ipv4SIPSet},
 				queue,
 			},
 		})
-		// ip6 daddr @podips-v6 queue flags bypass to 102
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
-				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: podV6IPsSet},
-				queue,
-			},
-		})
+		klog.Info("AddRule: ip6 saddr @podips-v6 queue flags bypass to 102")
 	} else {
 		nft.AddRule(&nftables.Rule{
 			Table: table,
@@ -1229,4 +1191,287 @@ func (c *Controller) cleanNFTablesRules(ctx context.Context) {
 		klog.Infof("error deleting nftables rules %v", err)
 	}
 	klog.Infof("cleaned up nftable %s", c.config.NFTableName)
+}
+
+// updateNFTablesSets only updates the content of nftables sets
+func (c *Controller) updateNFTablesSets(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
+	logger.Info("Updating nftables sets content")
+
+	nft, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("can not start nftables:%v", err)
+	}
+
+	table := &nftables.Table{
+		Name:   c.config.NFTableName,
+		Family: nftables.TableFamilyINet,
+	}
+
+	// 获取现有表
+	tables, err := nft.ListTables()
+	if err != nil {
+		return fmt.Errorf("failed to list tables: %v", err)
+	}
+
+	tableExists := false
+	for _, t := range tables {
+		if t.Name == c.config.NFTableName && t.Family == nftables.TableFamilyINet {
+			tableExists = true
+			break
+		}
+	}
+
+	if !tableExists {
+		// 如果表不存在，需要重新初始化
+		logger.Info("Table does not exist, performing full initialization")
+		c.initialized = false
+		return c.syncNFTablesRules(ctx)
+	}
+
+	// 获取现有 sets
+	sets, err := nft.GetSets(table)
+	if err != nil {
+		return fmt.Errorf("failed to get sets: %v", err)
+	}
+
+	// 检查并删除现有 sets
+	var destV4IPPortSet, srcV4IPSet, destV6IPPortSet, srcV6IPSet *nftables.Set
+	var destV4IPPortSetExists, sourceV4IPSetExists, destV6IPPortSetExists, sourceV6IPSetExists bool
+	for _, set := range sets {
+		if set.Name == ipv4DaddrDportSet {
+			destV4IPPortSetExists = true
+			destV4IPPortSet = set
+			nft.FlushSet(destV4IPPortSet)
+
+		} else if set.Name == ipv4SIPSet {
+			sourceV4IPSetExists = true
+			srcV4IPSet = set
+			nft.FlushSet(srcV4IPSet)
+
+		} else if set.Name == ipv6DaddrDportSet {
+			destV6IPPortSetExists = true
+			destV6IPPortSet = set
+			nft.FlushSet(destV6IPPortSet)
+		} else if set.Name == ipv6SIPSet {
+			sourceV6IPSetExists = true
+			srcV6IPSet = set
+			nft.FlushSet(srcV6IPSet)
+		}
+	}
+
+	// If any set does not exist, need to reinitialize
+	concatType, err := nftables.ConcatSetType(
+		nftables.TypeIPAddr,
+		nftables.TypeInetService,
+	)
+	if err != nil {
+		logger.Error(err, "can not create concat type for recreate sets")
+		return err
+	}
+
+	if !destV4IPPortSetExists {
+		logger.Info("daddr_dport_set does not exist, recreating")
+		destV4IPPortSet = &nftables.Set{
+			Table:   table,
+			Name:    ipv4DaddrDportSet,
+			KeyType: concatType,
+		}
+	}
+	if !sourceV4IPSetExists {
+		logger.Info("saddr_ipv4_set does not exist, recreating")
+		srcV4IPSet = &nftables.Set{
+			Table:   table,
+			Name:    ipv4SIPSet,
+			KeyType: nftables.TypeIPAddr,
+		}
+	}
+	if !destV6IPPortSetExists {
+		logger.Info("daddr_dport_set does not exist, recreating")
+		destV6IPPortSet = &nftables.Set{
+			Table:   table,
+			Name:    ipv6DaddrDportSet,
+			KeyType: concatType,
+		}
+	}
+	if !sourceV6IPSetExists {
+		logger.Info("saddr_ipv6_set does not exist, recreating")
+		srcV6IPSet = &nftables.Set{
+			Table:   table,
+			Name:    ipv6SIPSet,
+			KeyType: nftables.TypeIP6Addr,
+		}
+	}
+
+	// Fill in sets
+	if err := c.populateNFTablesSets(ctx, nft, table, destV4IPPortSet, srcV4IPSet, destV6IPPortSet, srcV6IPSet); err != nil {
+		return err
+	}
+
+	if err := nft.Flush(); err != nil {
+		logger.Info("Failed to update nftables sets", "error", err)
+		return err
+	}
+
+	return nil
+}
+
+// populateNFTablesSets populates nftables sets
+func (c *Controller) populateNFTablesSets(ctx context.Context, nft *nftables.Conn, table *nftables.Table,
+	destV4IPPortSet, srcV4IPSet, destV6IPPortSet, srcV6IPSet *nftables.Set,
+) error {
+	networkPolicies, err := c.networkpolicyLister.List(labels.Everything())
+	if err != nil {
+		return err
+	}
+
+	var destElementsV4, sourceElementsV4, destElementsV6, sourceElementsV6 []nftables.SetElement
+	for _, networkPolicy := range networkPolicies {
+		destPodV4IPs := sets.New[string]()
+		sourcePodV4IPs := sets.New[string]()
+		destPodV6IPs := sets.New[string]()
+		sourcePodV6IPs := sets.New[string]()
+
+		iPortsForFilter := sets.New[int]()
+		iPortAccept := make(map[int]struct{})
+		var ingress, egress bool
+		for _, policyType := range networkPolicy.Spec.PolicyTypes {
+			if policyType == networkingv1.PolicyTypeIngress {
+				ingress = true
+			}
+			if policyType == networkingv1.PolicyTypeEgress {
+				egress = true
+			}
+		}
+		if !ingress && !egress {
+			continue
+		}
+
+		if ingress {
+			for _, rule := range networkPolicy.Spec.Ingress {
+				if rule.From != nil && len(rule.From) > 0 {
+					for _, port := range rule.Ports {
+						if port.Port.IntVal != 0 {
+							iPortsForFilter.Insert(int(port.Port.IntVal))
+						}
+					}
+				} else {
+					for _, port := range rule.Ports {
+						if port.Port.IntVal != 0 {
+							iPortAccept[int(port.Port.IntVal)] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+
+		pods := c.getLocalPodsForNetworkPolicy(networkPolicy)
+		for _, pod := range pods {
+			for _, container := range pod.Spec.Containers {
+				for _, port := range container.Ports {
+					if ingress {
+						if _, ok := iPortAccept[int(port.ContainerPort)]; !ok {
+							iPortsForFilter.Insert(int(port.ContainerPort))
+						}
+					}
+				}
+			}
+
+			for _, ip := range pod.Status.PodIPs {
+				if netutils.IsIPv4String(ip.IP) {
+					if ingress {
+						destPodV4IPs.Insert(ip.IP)
+					}
+					if egress {
+						sourcePodV4IPs.Insert(ip.IP)
+					}
+				}
+				if netutils.IsIPv6String(ip.IP) {
+					if ingress {
+						destPodV6IPs.Insert(ip.IP)
+					}
+					if egress {
+						sourcePodV6IPs.Insert(ip.IP)
+					}
+				}
+			}
+		}
+
+		for _, ip := range destPodV4IPs.UnsortedList() {
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			for _, port := range iPortsForFilter.UnsortedList() {
+				klog.InfoS("Adding IP to Set", "set", destV4IPPortSet.Name, "ip", ip, "port", port)
+				concat := []byte{}
+				concat = append(concat, addr.AsSlice()...)
+				portBytes := make([]byte, 4)
+				copy(portBytes, binaryutil.BigEndian.PutUint16(uint16(port)))
+				concat = append(concat, portBytes...)
+				destElementsV4 = append(destElementsV4, nftables.SetElement{
+					Key: concat,
+				})
+			}
+		}
+
+		for _, ip := range sourcePodV4IPs.UnsortedList() {
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			sourceElementsV4 = append(sourceElementsV4, nftables.SetElement{
+				Key: addr.AsSlice(),
+			})
+		}
+
+		for _, ip := range destPodV6IPs.UnsortedList() {
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			for _, port := range iPortsForFilter.UnsortedList() {
+				klog.InfoS("Adding IP to Set", "set", destV6IPPortSet.Name, "ip", ip, "port", port)
+				concat := []byte{}
+				concat = append(concat, addr.AsSlice()...)
+				portBytes := make([]byte, 4)
+				copy(portBytes, binaryutil.BigEndian.PutUint16(uint16(port)))
+				concat = append(concat, portBytes...)
+				destElementsV6 = append(destElementsV6, nftables.SetElement{
+					Key: concat,
+				})
+			}
+		}
+
+		for _, ip := range sourcePodV6IPs.UnsortedList() {
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			sourceElementsV6 = append(sourceElementsV6, nftables.SetElement{
+				Key: addr.AsSlice(),
+			})
+		}
+	}
+
+	if err := nft.AddSet(destV4IPPortSet, destElementsV4); err != nil {
+		return fmt.Errorf("failed to add Set %s : %v", destV4IPPortSet.Name, err)
+	}
+	klog.InfoS("Added Set", "set", destV4IPPortSet.Name, "elements", len(destElementsV4))
+
+	if err := nft.AddSet(srcV4IPSet, sourceElementsV4); err != nil {
+		return fmt.Errorf("failed to add Set %s : %v", srcV4IPSet.Name, err)
+	}
+	klog.InfoS("Added Set", "set", srcV4IPSet.Name, "elements", len(sourceElementsV4))
+
+	if err := nft.AddSet(destV6IPPortSet, destElementsV6); err != nil {
+		return fmt.Errorf("failed to add Set %s : %v", destV6IPPortSet.Name, err)
+	}
+	klog.InfoS("Added Set", "set", destV6IPPortSet.Name, "elements", len(destElementsV6))
+
+	if err := nft.AddSet(srcV6IPSet, sourceElementsV6); err != nil {
+		return fmt.Errorf("failed to add Set %s : %v", srcV6IPSet.Name, err)
+	}
+	klog.InfoS("Added Set", "set", srcV6IPSet.Name, "elements", len(sourceElementsV6))
+	return nil
 }
