@@ -982,7 +982,7 @@ func (c *Controller) initializeNFTablesRules(ctx context.Context) error {
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ipv4SIPSet},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ipv6SIPSet},
 				queue,
 			},
 		})
@@ -1155,7 +1155,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ipv4SIPSet},
+				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: ipv6SIPSet},
 				queue,
 			},
 		})
