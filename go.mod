@@ -1,6 +1,7 @@
 module sigs.k8s.io/kube-network-policies
 
 go 1.23.0
+toolchain go1.24.1
 
 require (
 	github.com/armon/go-radix v1.0.0
@@ -14,8 +15,8 @@ require (
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/net v0.39.0
 	golang.org/x/sys v0.32.0
-	k8s.io/api v0.32.3
-	k8s.io/apimachinery v0.32.3
+	k8s.io/api v0.33.0
+	k8s.io/apimachinery v0.33.0
 	k8s.io/client-go v0.32.3
 	k8s.io/component-base v0.32.3
 	k8s.io/component-helpers v0.32.3
@@ -41,7 +42,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/gnostic-models v0.6.9 // indirect
-	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
