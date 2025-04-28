@@ -946,7 +946,7 @@ func (c *Controller) initializeNFTablesRules(ctx context.Context) error {
 			Chain: chain,
 			Exprs: []expr.Any{
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
@@ -963,7 +963,7 @@ func (c *Controller) initializeNFTablesRules(ctx context.Context) error {
 			Chain: chain,
 			Exprs: []expr.Any{
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
@@ -1119,7 +1119,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 			Chain: chain,
 			Exprs: []expr.Any{
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
@@ -1136,7 +1136,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 			Chain: chain,
 			Exprs: []expr.Any{
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
@@ -1270,6 +1270,15 @@ func (c *Controller) updateNFTablesSets(ctx context.Context) error {
 		return err
 	}
 
+	v6ConcatType, err := nftables.ConcatSetType(
+		nftables.TypeIP6Addr,
+		nftables.TypeInetService,
+	)
+	if err != nil {
+		klog.ErrorS(err, "can not create v4 concat type")
+		return err
+	}
+
 	if !destV4IPPortSetExists {
 		logger.Info("daddr_dport_set does not exist, recreating")
 		destV4IPPortSet = &nftables.Set{
@@ -1291,7 +1300,7 @@ func (c *Controller) updateNFTablesSets(ctx context.Context) error {
 		destV6IPPortSet = &nftables.Set{
 			Table:   table,
 			Name:    ipv6DaddrDportSet,
-			KeyType: concatType,
+			KeyType: v6ConcatType,
 		}
 	}
 	if !sourceV6IPSetExists {
