@@ -786,7 +786,7 @@ func (c *Controller) initializeNFTablesRules(ctx context.Context) error {
 			Name:    ipv6SIPSet,
 			KeyType: nftables.TypeIP6Addr,
 		}
-		// 填充 sets
+		// populate sets
 		if err := c.populateNFTablesSets(ctx, nft, table, destV4IPPortSet, srcV4IPSet, destV6IPPortSet, srcV6IPSet); err != nil {
 			return err
 		}
@@ -1208,7 +1208,7 @@ func (c *Controller) updateNFTablesSets(ctx context.Context) error {
 		Family: nftables.TableFamilyINet,
 	}
 
-	// 获取现有表
+	// get tables
 	tables, err := nft.ListTables()
 	if err != nil {
 		return fmt.Errorf("failed to list tables: %v", err)
@@ -1221,21 +1221,20 @@ func (c *Controller) updateNFTablesSets(ctx context.Context) error {
 			break
 		}
 	}
-
+	// If the table does not exist, it needs to be reinitialized
 	if !tableExists {
-		// 如果表不存在，需要重新初始化
 		logger.Info("Table does not exist, performing full initialization")
 		c.initialized = false
 		return c.syncNFTablesRules(ctx)
 	}
 
-	// 获取现有 sets
+	// Get existing sets
 	sets, err := nft.GetSets(table)
 	if err != nil {
 		return fmt.Errorf("failed to get sets: %v", err)
 	}
 
-	// 检查并删除现有 sets
+	// Check and delete existing sets
 	var destV4IPPortSet, srcV4IPSet, destV6IPPortSet, srcV6IPSet *nftables.Set
 	var destV4IPPortSetExists, sourceV4IPSetExists, destV6IPPortSetExists, sourceV6IPSetExists bool
 	for _, set := range sets {
@@ -1275,7 +1274,7 @@ func (c *Controller) updateNFTablesSets(ctx context.Context) error {
 		nftables.TypeInetService,
 	)
 	if err != nil {
-		klog.ErrorS(err, "can not create v4 concat type")
+		klog.ErrorS(err, "can not create v6 concat type for recreate sets")
 		return err
 	}
 
