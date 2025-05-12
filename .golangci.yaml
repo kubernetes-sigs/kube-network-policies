@@ -1,22 +1,33 @@
+version: "2"
 run:
-  timeout: 30m
-  tests: false # TODO lint tests too
-
+  tests: false
 linters:
-  disable-all: true
+  default: none
   enable:
-    - gocritic
-    - gosimple
-    - govet
     - errcheck
+    - gocritic
+    - govet
     - ineffassign
     - staticcheck
-    - stylecheck
-    - typecheck
-
-issues:
-  exclude-rules:
-    # metrics use the names of the kernel variables using snake case format
-    - path: pkg/networkpolicy/metrics.go
-      linters:
-        - stylecheck
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - staticcheck
+        path: pkg/networkpolicy/metrics.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
