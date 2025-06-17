@@ -68,11 +68,6 @@ To uninstall kube-network-policies if installed via Helm:
 ```sh
 helm uninstall kube-network-policies -n kube-system
 ```
-### Nftables Cleanup
-Note: the nftables rules created on the machine are not automatically removed. Verify and clean them up manually if needed.
-```sh
-nft delete table inet kube-network-policies
-```
 
 ## Metrics
 
