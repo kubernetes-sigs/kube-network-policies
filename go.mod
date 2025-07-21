@@ -17,7 +17,7 @@ require (
 	golang.org/x/net v0.40.0
 	golang.org/x/sys v0.33.0
 	k8s.io/api v0.33.0
-	k8s.io/apimachinery v0.33.0
+	k8s.io/apimachinery v0.33.3
 	k8s.io/client-go v0.33.0
 	k8s.io/component-base v0.33.0
 	k8s.io/component-helpers v0.33.0
