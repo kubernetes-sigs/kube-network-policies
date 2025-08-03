@@ -12,7 +12,7 @@ ARG TARGETOS TARGETARCH
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -o /go/bin/netpol ./cmd
+    go build -o /go/bin/netpol ./cmd/kube-network-policies
 
 # STEP 2: Build small image
 FROM gcr.io/distroless/static-debian12
