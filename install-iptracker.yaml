@@ -1,0 +1,72 @@
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-ip-tracker
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - namespaces
+    verbs:
+      - list
+      - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-ip-tracker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-ip-tracker
+subjects:
+- kind: ServiceAccount
+  name: kube-ip-tracker
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-ip-tracker
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-ip-tracker
+  namespace: kube-system
+  labels:
+    tier: node
+    app: kube-ip-tracker
+    k8s-app: kube-ip-tracker
+spec:
+  selector:
+    matchLabels:
+      app: kube-ip-tracker
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: kube-ip-tracker
+        k8s-app: kube-ip-tracker
+    spec:
+      hostNetwork: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      serviceAccountName: kube-ip-tracker
+      containers:
+      - name: kube-ip-tracker
+        image: registry.k8s.io/networking/kube-ip-tracker:v0.1.0
+        args:
+        - /bin/ip-tracker
+        - --bind-address=0.0.0.0:10999
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "50Mi"
+---
