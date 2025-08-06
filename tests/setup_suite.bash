@@ -18,6 +18,8 @@ function setup_suite {
   -v7 --wait 1m --retain --config=-
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  ipFamily: dual
 nodes:
 - role: control-plane
 - role: worker

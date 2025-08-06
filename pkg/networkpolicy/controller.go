@@ -813,7 +813,12 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		})
 	}
 
-	// IPv6 needs ICMP Neighbor Discovery to work
+	// IPv6 needs essential ICMP types for Neighbor Discovery to work
+	// Allow essential ICMPv6 types before queue processing, but let other types
+	// (like ping6) be processed by network policies
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/191
+
+	// Allow Router Solicitation (RS) - Type 133
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
@@ -822,6 +827,68 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
+			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{133}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	// Allow Router Advertisement (RA) - Type 134
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
+			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{134}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	// Allow Neighbor Solicitation (NS) - Type 135
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
+			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{135}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	// Allow Neighbor Advertisement (NA) - Type 136
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
+			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{136}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	// Allow Neighbor Redirect - Type 137
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
+			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{137}},
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})

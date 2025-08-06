@@ -185,3 +185,76 @@ EOF
   kubectl delete adminnetworkpolicy allow-internal-egress
   kubectl delete adminnetworkpolicy allow-domains-egress
 }
+
+@test "ICMPv6 ping6 with network policies" {
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: dev
+  name: client-pod
+spec:
+  containers:
+    - name: busybox
+      image: registry.k8s.io/busybox:1.27
+      command:
+        - sleep
+        - "3600"
+      securityContext:
+        privileged: true
+EOF
+
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: prod
+  name: target-pod
+spec:
+  containers:
+    - name: busybox
+      image: registry.k8s.io/busybox:1.27
+      command:
+        - sleep
+        - "3600"
+      securityContext:
+        privileged: true
+EOF
+
+  kubectl -n dev wait --for=condition=ready pod/client-pod --timeout=30s
+  kubectl -n prod wait --for=condition=ready pod/target-pod --timeout=30s
+
+  TARGET_IPv6=$(kubectl get pod target-pod -n prod -o jsonpath='{.status.podIPs[1].ip}' 2>/dev/null || echo "")
+  test -n "$TARGET_IPv6"
+
+  # query should work
+  output=$(kubectl exec client-pod -n dev -- ping6 -c 2 -W 5 "$TARGET_IPv6" > /dev/null 2>&1 && echo ok || echo fail)
+  test "$output" = "ok"
+
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: prod
+  name: allow-same-namespace
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: {}
+EOF
+
+  # propagation delay
+  sleep 2
+
+  # query should be blocked
+  output=$(kubectl exec client-pod -n dev -- ping6 -c 2 -W 5 "$TARGET_IPv6" > /dev/null 2>&1 && echo ok || echo fail)
+  test "$output" = "fail"
+
+  # cleanup
+  kubectl -n dev delete pod client-pod
+  kubectl -n prod delete pod target-pod
+  kubectl -n prod delete networkpolicy allow-same-namespace
+}
