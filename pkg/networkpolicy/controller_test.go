@@ -314,11 +314,7 @@ table inet kube-network-policies {
         chain postrouting {
                 type filter hook postrouting priority srcnat - 5; policy accept;
                 udp dport 53 accept
-                icmpv6 type nd-router-solicit accept
-                icmpv6 type nd-router-advert accept
-                icmpv6 type nd-neighbor-solicit accept
-                icmpv6 type nd-neighbor-advert accept
-                icmpv6 type nd-redirect accept
+                icmpv6 type != echo-request icmpv6 type != echo-reply accept
                 meta skuid 0 accept
                 ct state established,related accept
                 ip saddr @podips-v4 queue flags bypass to 102
@@ -354,11 +350,7 @@ table inet kube-network-policies {
         chain postrouting {
                 type filter hook postrouting priority srcnat - 5; policy accept;
                 udp dport 53 accept
-                icmpv6 type nd-router-solicit accept
-                icmpv6 type nd-router-advert accept
-                icmpv6 type nd-neighbor-solicit accept
-                icmpv6 type nd-neighbor-advert accept
-                icmpv6 type nd-redirect accept
+                icmpv6 type != echo-request icmpv6 type != echo-reply accept
                 meta skuid 0 accept
                 ct state established,related accept
                 queue to 102
@@ -395,11 +387,7 @@ table inet kube-network-policies {
 
         chain postrouting {
                 type filter hook postrouting priority srcnat - 5; policy accept;
-                icmpv6 type nd-router-solicit accept
-                icmpv6 type nd-router-advert accept
-                icmpv6 type nd-neighbor-solicit accept
-                icmpv6 type nd-neighbor-advert accept
-                icmpv6 type nd-redirect accept
+                icmpv6 type != echo-request icmpv6 type != echo-reply accept
                 meta skuid 0 accept
                 ct state established,related accept
                 ip saddr @podips-v4 queue flags bypass to 102
