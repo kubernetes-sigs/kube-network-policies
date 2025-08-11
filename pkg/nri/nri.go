@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: APACHE-2.0
 
-package networkpolicy
+package nri
 
 import (
 	"context"
@@ -19,14 +19,14 @@ const (
 	pluginIdx  = "10"
 )
 
-type nriPlugin struct {
+type Plugin struct {
 	stub     stub.Stub
 	mu       sync.Mutex
 	podIPMap map[string]string // podIP : podName
 }
 
-func NewNriPlugin() (*nriPlugin, error) {
-	p := &nriPlugin{
+func New() (*Plugin, error) {
+	p := &Plugin{
 		podIPMap: map[string]string{},
 	}
 	opts := []stub.Option{
@@ -42,17 +42,17 @@ func NewNriPlugin() (*nriPlugin, error) {
 	return p, nil
 }
 
-func (p *nriPlugin) Run(ctx context.Context) error {
+func (p *Plugin) Run(ctx context.Context) error {
 	return p.stub.Run(ctx)
 }
 
-func (p *nriPlugin) GetPodFromIP(ip string) string {
+func (p *Plugin) GetPodFromIP(ip string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.podIPMap[ip]
 }
 
-func (p *nriPlugin) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, containers []*nriapi.Container) ([]*nriapi.ContainerUpdate, error) {
+func (p *Plugin) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, containers []*nriapi.Container) ([]*nriapi.ContainerUpdate, error) {
 	klog.Infof("Synchronized state with the runtime (%d pods, %d containers)...",
 		len(pods), len(containers))
 
@@ -70,11 +70,11 @@ func (p *nriPlugin) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, co
 	return nil, nil
 }
 
-func (p *nriPlugin) Shutdown(_ context.Context) {
+func (p *Plugin) Shutdown(_ context.Context) {
 	klog.Info("Runtime shutting down...")
 }
 
-func (p *nriPlugin) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
+func (p *Plugin) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
 	ips := getPodIPs(pod)
 	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
 	klog.V(4).Infof("Starting Pod %s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
@@ -86,7 +86,7 @@ func (p *nriPlugin) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) err
 	return nil
 }
 
-func (p *nriPlugin) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
+func (p *Plugin) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
 	// because of this bug in https://github.com/containerd/containerd/pull/11331
 	// PodIPs may not be present, but since the pod is going to be deleted
 	// we just remove it from the cache
@@ -101,7 +101,7 @@ func (p *nriPlugin) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox) 
 	return nil
 }
 
-func (p *nriPlugin) onClose() {
+func (p *Plugin) onClose() {
 	klog.Infof("Connection to the runtime lost, exiting...")
 }
 
