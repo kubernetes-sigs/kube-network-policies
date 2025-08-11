@@ -225,7 +225,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 		namespace     []*v1.Namespace
 		pod           []*v1.Pod
 		node          []*v1.Node
-		p             packet
+		p             Packet
 		expect        bool
 	}{
 		{
@@ -233,7 +233,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -247,7 +247,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyIngress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -261,7 +261,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.2.22"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.1.11"),
@@ -275,7 +275,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyIngress, npaAllowAllIngress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -289,7 +289,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaAllowAllIngressPod},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("10.0.0.1"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -303,7 +303,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaAllowMultiPortEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -317,7 +317,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaAllowMultiPortEgressNode},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -331,7 +331,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaAllowMultiPortEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -345,7 +345,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaAllowMultiPortEgressCIDR},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -359,7 +359,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaAllowMultiPortEgressPodSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -373,7 +373,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaMultiPortEgressNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -387,7 +387,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaMultiPortEgressNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.3.33"),
@@ -401,7 +401,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaMultiPortEgressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -415,7 +415,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyEgress, npaMultiPortEgressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.3.33"),
@@ -429,7 +429,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyIngress, npaMultiPortIngressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -443,7 +443,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			networkpolicy: []*npav1alpha1.AdminNetworkPolicy{npaDefaultDenyIngress, npaMultiPortIngressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.4.44"),

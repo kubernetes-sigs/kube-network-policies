@@ -25,12 +25,12 @@ func TestUDPFragmentIPv6(t *testing.T) {
 		name     string
 		input    []byte
 		err      bool
-		expected packet
+		expected Packet
 	}{
 		{
 			name:  "UDP first fragment",
 			input: packetsUDPFragIPv6[0],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv6Protocol,
 				proto:   v1.ProtocolUDP,
 				dstIP:   net.ParseIP("fd00::c0a8:101"),
@@ -40,7 +40,7 @@ func TestUDPFragmentIPv6(t *testing.T) {
 		{
 			name:  "UDP not-first fragment",
 			input: packetsUDPFragIPv6[1],
-			expected: packet{
+			expected: Packet{
 				family: v1.IPv6Protocol,
 				dstIP:  net.ParseIP("fd00::c0a8:101"),
 			},
@@ -48,7 +48,7 @@ func TestUDPFragmentIPv6(t *testing.T) {
 		{
 			name:  "UDP packet (un-fragmented)",
 			input: packetsUDPFragIPv6[2],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv6Protocol,
 				proto:   v1.ProtocolUDP,
 				srcIP:   net.ParseIP("fd00::c0a8:101"),
@@ -74,12 +74,12 @@ func TestTCPIPv4(t *testing.T) {
 		name     string
 		input    []byte
 		err      bool
-		expected packet
+		expected Packet
 	}{
 		{
 			name:  "SYN",
 			input: packetsTCPIPv4[0],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
@@ -90,7 +90,7 @@ func TestTCPIPv4(t *testing.T) {
 		{
 			name:  "SYN, ACK",
 			input: packetsTCPIPv4[1],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
 				dstIP:   net.ParseIP("192.168.1.201"),
@@ -101,7 +101,7 @@ func TestTCPIPv4(t *testing.T) {
 		{
 			name:  "ACK 1",
 			input: packetsTCPIPv4[2],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
@@ -112,7 +112,7 @@ func TestTCPIPv4(t *testing.T) {
 		{
 			name:  "PSH, ACK",
 			input: packetsTCPIPv4[3],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
 				dstIP:   net.ParseIP("192.168.1.201"),
@@ -123,7 +123,7 @@ func TestTCPIPv4(t *testing.T) {
 		{
 			name:  "ACK 7",
 			input: packetsTCPIPv4[4],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
@@ -134,7 +134,7 @@ func TestTCPIPv4(t *testing.T) {
 		{
 			name:  "FIN, ACK 7",
 			input: packetsTCPIPv4[5],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
@@ -145,7 +145,7 @@ func TestTCPIPv4(t *testing.T) {
 		{
 			name:  "FIN, ACK 2",
 			input: packetsTCPIPv4[6],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
 				dstIP:   net.ParseIP("192.168.1.201"),
@@ -156,7 +156,7 @@ func TestTCPIPv4(t *testing.T) {
 		{
 			name:  "ACK 8",
 			input: packetsTCPIPv4[7],
-			expected: packet{
+			expected: Packet{
 				family:  v1.IPv4Protocol,
 				proto:   v1.ProtocolTCP,
 				dstIP:   net.ParseIP("192.168.1.1"),
@@ -198,7 +198,7 @@ func TestTooShortPackets(t *testing.T) {
 	}
 }
 
-func comparePacket(t *testing.T, tc string, expected, got packet) {
+func comparePacket(t *testing.T, tc string, expected, got Packet) {
 	if got.family != expected.family {
 		t.Fatalf("%s: family: expected=%v, got=%v", tc, expected.family, got.family)
 	}
