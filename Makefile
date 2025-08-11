@@ -12,7 +12,8 @@ export GOROOT GO111MODULE CGO_ENABLED
 
 
 build:
-	go build -v -o "$(OUT_DIR)/$(BINARY_NAME)" $(KIND_CLOUD_BUILD_FLAGS) cmd/main.go
+	go build -v -o "$(OUT_DIR)/$(BINARY_NAME)" $(KIND_CLOUD_BUILD_FLAGS) cmd/kube-network-policies/main.go
+	go build -v -o "$(OUT_DIR)/kube-ip-tracker" $(KIND_CLOUD_BUILD_FLAGS) cmd/kube-ip-tracker/main.go
 
 clean:
 	rm -rf "$(OUT_DIR)/"
@@ -25,7 +26,11 @@ lint:
 	hack/lint.sh
 
 update:
-	go mod tidy && go mod vendor
+	go mod tidy
+
+# Generate Go code from the proto definition
+proto:
+	hack/generate-proto.sh
 
 # get image name from directory we're building
 IMAGE_NAME=kube-network-policies
