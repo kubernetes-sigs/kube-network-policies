@@ -22,6 +22,7 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 	v1 "k8s.io/api/core/v1"
 	testingclock "k8s.io/utils/clock/testing"
+	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
 
 func TestDomainCache_syncRules(t *testing.T) {
@@ -216,27 +217,27 @@ func TestDomainCache_HandleDNSPacket(t *testing.T) {
 			rawPacketBytes := append(ipHeader, append(udpHeader, dnsPayload...)...)
 
 			// 3. Parse the Raw Packet
-			parsedPacket, err := parsePacket(rawPacketBytes)
+			parsedPacket, err := network.ParsePacket(rawPacketBytes)
 			if err != nil {
 				t.Fatalf("parsePacket() failed: %v", err)
 			}
-			if parsedPacket.proto != v1.ProtocolUDP {
-				t.Errorf("Parsed protocol mismatch: got %v, want %v", parsedPacket.proto, v1.ProtocolUDP)
+			if parsedPacket.Proto != v1.ProtocolUDP {
+				t.Errorf("Parsed protocol mismatch: got %v, want %v", parsedPacket.Proto, v1.ProtocolUDP)
 			}
-			if parsedPacket.srcPort != 53 {
-				t.Errorf("Parsed source port mismatch: got %d, want %d", parsedPacket.srcPort, 53)
+			if parsedPacket.SrcPort != 53 {
+				t.Errorf("Parsed source port mismatch: got %d, want %d", parsedPacket.SrcPort, 53)
 			}
-			if parsedPacket.dstPort != int(tt.dstPort) {
-				t.Errorf("Parsed destination port mismatch: got %d, want %d", parsedPacket.dstPort, tt.dstPort)
+			if parsedPacket.DstPort != int(tt.dstPort) {
+				t.Errorf("Parsed destination port mismatch: got %d, want %d", parsedPacket.DstPort, tt.dstPort)
 			}
-			if !srcIP.Equal(parsedPacket.srcIP) {
-				t.Errorf("Parsed source IP mismatch: got %v, want %v", parsedPacket.srcIP, srcIP)
+			if !srcIP.Equal(parsedPacket.SrcIP) {
+				t.Errorf("Parsed source IP mismatch: got %v, want %v", parsedPacket.SrcIP, srcIP)
 			}
-			if !dstIP.Equal(parsedPacket.dstIP) {
-				t.Errorf("Parsed destination IP mismatch: got %v, want %v", parsedPacket.dstIP, dstIP)
+			if !dstIP.Equal(parsedPacket.DstIP) {
+				t.Errorf("Parsed destination IP mismatch: got %v, want %v", parsedPacket.DstIP, dstIP)
 			}
-			if !bytes.Equal(dnsPayload, parsedPacket.payload) {
-				t.Errorf("Parsed payload mismatch: got %x, want %x", parsedPacket.payload, dnsPayload)
+			if !bytes.Equal(dnsPayload, parsedPacket.Payload) {
+				t.Errorf("Parsed payload mismatch: got %x, want %x", parsedPacket.Payload, dnsPayload)
 			}
 
 			// 4. Process with handleDNSPacket

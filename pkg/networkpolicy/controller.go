@@ -34,6 +34,7 @@ import (
 	"k8s.io/klog/v2"
 	netutils "k8s.io/utils/net"
 
+	"sigs.k8s.io/kube-network-policies/pkg/network"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	policyinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
@@ -476,20 +477,20 @@ func (c *Controller) Run(ctx context.Context) error {
 		startTime := time.Now()
 		logger.V(2).Info("Processing sync for packet", "id", *a.PacketID)
 
-		packet, err := parsePacket(*a.Payload)
+		packet, err := network.ParsePacket(*a.Payload)
 		if err != nil {
 			logger.Error(err, "Can not process packet, applying default policy", "id", *a.PacketID, "failOpen", c.config.FailOpen)
 			c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
 			return 0
 		}
-		packet.id = *a.PacketID
+		packet.ID = *a.PacketID
 
 		defer func() {
 			processingTime := float64(time.Since(startTime).Microseconds())
-			packetProcessingHist.WithLabelValues(string(packet.proto), string(packet.family)).Observe(processingTime)
+			packetProcessingHist.WithLabelValues(string(packet.Proto), string(packet.Family)).Observe(processingTime)
 			packetProcessingSum.Observe(processingTime)
 			verdictStr := verdictString(verdict)
-			packetCounterVec.WithLabelValues(string(packet.proto), string(packet.family), verdictStr).Inc()
+			packetCounterVec.WithLabelValues(string(packet.Proto), string(packet.Family), verdictStr).Inc()
 			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime), "verdict", verdictStr)
 		}()
 
@@ -542,15 +543,15 @@ func verdictString(verdict int) string {
 // 4. AdminNetworkPolicies in Ingress for the destination Pod/IP
 // 5. NetworkPolicies in Ingress (if needed) for the destination Pod/IP
 // 6. BaselineAdminNetworkPolicies in Ingress (if needed) for the destination Pod/IP
-func (c *Controller) evaluatePacket(ctx context.Context, p Packet) bool {
+func (c *Controller) evaluatePacket(ctx context.Context, p network.Packet) bool {
 	logger := klog.FromContext(ctx)
-	srcIP := p.srcIP
+	srcIP := p.SrcIP
 	srcPod := c.getPodAssignedToIP(srcIP.String())
-	srcPort := p.srcPort
-	dstIP := p.dstIP
+	srcPort := p.SrcPort
+	dstIP := p.DstIP
 	dstPod := c.getPodAssignedToIP(dstIP.String())
-	dstPort := p.dstPort
-	protocol := p.proto
+	dstPort := p.DstPort
+	protocol := p.Proto
 
 	// evaluatePacket() should be fast unless trace logging is enabled.
 	// Logging optimization: We check if V(2) is enabled before hand,
@@ -565,7 +566,7 @@ func (c *Controller) evaluatePacket(ctx context.Context, p Packet) bool {
 			dstPodStr = dstPod.GetNamespace() + "/" + dstPod.GetName()
 		}
 		tlogger.Info("Evaluating packet", "srcPod", srcPodStr, "dstPod", dstPodStr, "packet", p)
-		tlogger = tlogger.WithValues("id", p.id)
+		tlogger = tlogger.WithValues("id", p.ID)
 	}
 
 	// Evalute Egress Policies

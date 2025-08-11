@@ -16,6 +16,7 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
+	"sigs.k8s.io/kube-network-policies/pkg/network"
 
 	"golang.org/x/net/dns/dnsmessage"
 
@@ -81,7 +82,7 @@ func (n *DomainCache) Run(ctx context.Context) error {
 		startTime := time.Now()
 		logger.V(2).Info("Processing sync for packet", "id", *a.PacketID)
 
-		packet, err := parsePacket(*a.Payload)
+		packet, err := network.ParsePacket(*a.Payload)
 		if err != nil {
 			logger.Error(err, "Can not process packet")
 			return 0
@@ -211,22 +212,22 @@ func (n *DomainCache) ContainsIP(domain string, ip net.IP) bool {
 	return n.cache.containsIP(domain, ip)
 }
 
-func (n *DomainCache) handleDNSPacket(ctx context.Context, pkt Packet) {
+func (n *DomainCache) handleDNSPacket(ctx context.Context, pkt network.Packet) {
 	logger := klog.FromContext(ctx)
 	// sanity check, the nftables rules should only queue UDP packets destined to port 53
-	if pkt.proto != v1.ProtocolUDP || pkt.srcPort != 53 {
-		logger.Info("SHOULD NOT HAPPEN expected udp src port 53", "protocol", pkt.proto, "src port", pkt.srcPort)
+	if pkt.Proto != v1.ProtocolUDP || pkt.SrcPort != 53 {
+		logger.Info("SHOULD NOT HAPPEN expected udp src port 53", "protocol", pkt.Proto, "src port", pkt.SrcPort)
 		return
 	}
 
-	if len(pkt.payload) > maxDNSSize {
+	if len(pkt.Payload) > maxDNSSize {
 		logger.Info("dns request size unsupported", "packet", pkt, "maxSize", maxDNSSize)
 		return
 	}
 
 	logger.V(7).Info("starting parsing packet")
 	var p dnsmessage.Parser
-	hdr, err := p.Start(pkt.payload)
+	hdr, err := p.Start(pkt.Payload)
 	if err != nil {
 		logger.Error(err, "can not parse DNS message", "packet", pkt)
 		return

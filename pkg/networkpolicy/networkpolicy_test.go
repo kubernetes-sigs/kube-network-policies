@@ -12,6 +12,7 @@ import (
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
 
 type netpolTweak func(networkPolicy *networkingv1.NetworkPolicy)
@@ -160,7 +161,7 @@ func TestSyncPacket(t *testing.T) {
 		networkpolicy []*networkingv1.NetworkPolicy
 		namespace     []*v1.Namespace
 		pod           []*v1.Pod
-		p             Packet
+		p             network.Packet
 		expect        bool
 	}{
 		{
@@ -168,12 +169,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -182,12 +183,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
@@ -196,12 +197,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.2.22"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.1.11"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.2.22"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.1.11"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
@@ -210,12 +211,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -224,12 +225,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress, npAllowAllIngress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -238,12 +239,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress, npAllowAllIngressIPBlock},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -252,12 +253,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npAllowAllIngressIPBlock},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("10.0.0.1"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("10.0.0.1"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
@@ -266,12 +267,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
@@ -280,12 +281,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 30080,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 30080,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -294,12 +295,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressIPBlock},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -308,12 +309,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressPodSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
@@ -322,12 +323,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressPodSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.3.33"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.3.33"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
@@ -336,12 +337,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -350,12 +351,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.3.33"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.3.33"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
@@ -364,12 +365,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -378,12 +379,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.3.33"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.3.33"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
@@ -392,12 +393,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress, npMultiPortIngressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.2.22"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: true,
 		},
@@ -406,12 +407,12 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress, npMultiPortIngressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: Packet{
-				srcIP:   net.ParseIP("192.168.1.11"),
-				srcPort: 52345,
-				dstIP:   net.ParseIP("192.168.4.44"),
-				dstPort: 80,
-				proto:   v1.ProtocolTCP,
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				SrcPort: 52345,
+				DstIP:   net.ParseIP("192.168.4.44"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
 			},
 			expect: false,
 		},
