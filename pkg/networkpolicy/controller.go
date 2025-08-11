@@ -542,7 +542,7 @@ func verdictString(verdict int) string {
 // 4. AdminNetworkPolicies in Ingress for the destination Pod/IP
 // 5. NetworkPolicies in Ingress (if needed) for the destination Pod/IP
 // 6. BaselineAdminNetworkPolicies in Ingress (if needed) for the destination Pod/IP
-func (c *Controller) evaluatePacket(ctx context.Context, p packet) bool {
+func (c *Controller) evaluatePacket(ctx context.Context, p Packet) bool {
 	logger := klog.FromContext(ctx)
 	srcIP := p.srcIP
 	srcPod := c.getPodAssignedToIP(srcIP.String())

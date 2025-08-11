@@ -211,7 +211,7 @@ func (n *DomainCache) ContainsIP(domain string, ip net.IP) bool {
 	return n.cache.containsIP(domain, ip)
 }
 
-func (n *DomainCache) handleDNSPacket(ctx context.Context, pkt packet) {
+func (n *DomainCache) handleDNSPacket(ctx context.Context, pkt Packet) {
 	logger := klog.FromContext(ctx)
 	// sanity check, the nftables rules should only queue UDP packets destined to port 53
 	if pkt.proto != v1.ProtocolUDP || pkt.srcPort != 53 {

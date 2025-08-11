@@ -160,7 +160,7 @@ func TestSyncPacket(t *testing.T) {
 		networkpolicy []*networkingv1.NetworkPolicy
 		namespace     []*v1.Namespace
 		pod           []*v1.Pod
-		p             packet
+		p             Packet
 		expect        bool
 	}{
 		{
@@ -168,7 +168,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -182,7 +182,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -196,7 +196,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.2.22"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.1.11"),
@@ -210,7 +210,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -224,7 +224,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress, npAllowAllIngress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -238,7 +238,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress, npAllowAllIngressIPBlock},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -252,7 +252,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npAllowAllIngressIPBlock},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("10.0.0.1"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -266,7 +266,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -280,7 +280,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -294,7 +294,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressIPBlock},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -308,7 +308,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressPodSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -322,7 +322,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressPodSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.3.33"),
@@ -336,7 +336,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -350,7 +350,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.3.33"),
@@ -364,7 +364,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -378,7 +378,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyEgress, npMultiPortEgress, npMultiPortEgressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.3.33"),
@@ -392,7 +392,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress, npMultiPortIngressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.2.22"),
@@ -406,7 +406,7 @@ func TestSyncPacket(t *testing.T) {
 			networkpolicy: []*networkingv1.NetworkPolicy{npDefaultDenyIngress, npMultiPortIngressPodNsSelector},
 			namespace:     []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
 			pod:           []*v1.Pod{podA, podB, podC, podD},
-			p: packet{
+			p: Packet{
 				srcIP:   net.ParseIP("192.168.1.11"),
 				srcPort: 52345,
 				dstIP:   net.ParseIP("192.168.4.44"),
