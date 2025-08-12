@@ -1,4 +1,4 @@
-package networkpolicy
+package dataplane
 
 import (
 	"context"
@@ -13,8 +13,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/vishvananda/netns"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
@@ -27,68 +25,8 @@ var (
 	checkUserns   sync.Once
 )
 
-func makeNamespace(name string) *v1.Namespace {
-	return &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"kubernetes.io/metadata.name": name,
-				"a":                           "b",
-			},
-		},
-	}
-}
-
-func makeNode(name string) *v1.Node {
-	return &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"kubernetes.io/node": name,
-				"a":                  "b",
-			},
-		},
-	}
-}
-
-func makePod(name, ns string, ip string) *v1.Pod {
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-			Labels: map[string]string{
-				"a": "b",
-			},
-		},
-		Spec: v1.PodSpec{
-			NodeName: "testnode",
-			Containers: []v1.Container{
-				{
-					Name:    "write-pod",
-					Command: []string{"/bin/sh"},
-					Ports: []v1.ContainerPort{{
-						Name:          "http",
-						ContainerPort: 80,
-						Protocol:      v1.ProtocolTCP,
-					}},
-				},
-			},
-		},
-		Status: v1.PodStatus{
-			PodIPs: []v1.PodIP{
-				{IP: ip},
-			},
-		},
-	}
-
-	return pod
-
-}
-
 var (
 	alwaysReady = func() bool { return true }
-	protocolTCP = v1.ProtocolTCP
-	protocolUDP = v1.ProtocolUDP
 )
 
 type networkpolicyController struct {
@@ -198,8 +136,8 @@ func TestConfig_Defaults(t *testing.T) {
 				t.Errorf("Config.Defaults() error = %v", err)
 			}
 
-			if c != tt.expected {
-				t.Errorf("Config.Defaults() = %v, want %v", c, tt.expected)
+			if diff := cmp.Diff(tt.expected, c); diff != "" {
+				t.Errorf("Config.Defaults() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

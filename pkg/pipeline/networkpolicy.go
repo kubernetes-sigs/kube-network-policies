@@ -1,4 +1,4 @@
-package networkpolicy
+package pipeline
 
 import (
 	"context"
@@ -8,38 +8,19 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	networkinglisters "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
+	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
 
-// getPodsForNetworkPolicyNode obtains all the Pods selected by the network policy for current Node
-func (c *Controller) getLocalPodsForNetworkPolicy(networkPolicy *networkingv1.NetworkPolicy) []*v1.Pod {
-	if networkPolicy == nil {
-		return nil
-	}
-	podSelector, err := metav1.LabelSelectorAsSelector(&networkPolicy.Spec.PodSelector)
-	if err != nil {
-		klog.InfoS("parsing PodSelector", "error", err)
-		return nil
-	}
-	pods, err := c.podLister.Pods(networkPolicy.Namespace).List(podSelector)
-	if err != nil {
-		return nil
-	}
-	result := []*v1.Pod{}
-	for _, pod := range pods {
-		if pod.Spec.NodeName == c.config.NodeName {
-			result = append(result, pod)
-		}
-	}
-	return result
-}
-
-func (c *Controller) getNetworkPoliciesForPod(pod *v1.Pod) []*networkingv1.NetworkPolicy {
+func GetNetworkPoliciesForPod(pod *api.PodInfo, networkpolicyLister networkinglisters.NetworkPolicyLister) []*networkingv1.NetworkPolicy {
 	if pod == nil {
 		return nil
 	}
 	// Get all the network policies that affect this pod
-	networkPolices, err := c.networkpolicyLister.NetworkPolicies(pod.Namespace).List(labels.Everything())
+	networkPolices, err := networkpolicyLister.NetworkPolicies(pod.Namespace.Name).List(labels.Everything())
 	if err != nil {
 		return nil
 	}
@@ -64,11 +45,56 @@ func (c *Controller) getNetworkPoliciesForPod(pod *v1.Pod) []*networkingv1.Netwo
 	return result
 }
 
+// NewNetworkPolicyEvaluator creates a new pipeline evaluator for standard Kubernetes NetworkPolicies.
+// It accepts all necessary dependencies to make it autonomous from the controller.
+func NewNetworkPolicyEvaluator(
+	nodeName string,
+	podInfoGetter PodByIPGetter,
+	podLister corelisters.PodLister,
+	namespaceLister corelisters.NamespaceLister,
+	networkpolicyLister networkinglisters.NetworkPolicyLister,
+) Evaluator {
+	return Evaluator{
+		Priority: 50,
+		Name:     "StandardNetworkPolicy",
+		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
+			logger := klog.FromContext(ctx)
+
+			srcPod, srcPodFound := podInfoGetter(p.SrcIP.String())
+			dstPod, dstPodFound := podInfoGetter(p.DstIP.String())
+
+			// --- Egress Evaluation ---
+			if srcPodFound {
+				egressPolicies := GetNetworkPoliciesForPod(srcPod, networkpolicyLister)
+				logger.V(2).Info("NetworkPolicies on Egress", "npolicies", len(egressPolicies), "srcPod", srcPod.Namespace.Name+"/"+srcPod.Name)
+				if len(egressPolicies) > 0 {
+					if !evaluatePolicyDirection(ctx, egressPolicies, networkingv1.PolicyTypeEgress, srcPod, p.SrcPort, dstPod, p.DstIP, p.DstPort, p.Proto) {
+						return VerdictDeny, nil
+					}
+				}
+			}
+
+			// --- Ingress Evaluation ---
+			if dstPodFound {
+				ingressPolicies := GetNetworkPoliciesForPod(dstPod, networkpolicyLister)
+				logger.V(2).Info("NetworkPolicies on Ingress", "npolicies", len(ingressPolicies), "dstPod", dstPod.Namespace.Name+"/"+dstPod.Name)
+				if len(ingressPolicies) > 0 {
+					if !evaluatePolicyDirection(ctx, ingressPolicies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
+						return VerdictDeny, nil
+					}
+				}
+			}
+
+			return VerdictNext, nil
+		},
+	}
+}
+
 // validator obtains a verdict for network policies that applies to a src Pod in the direction
 // passed as parameter
-func (c *Controller) evaluator(
+func evaluatePolicyDirection(
 	ctx context.Context, networkPolicies []*networkingv1.NetworkPolicy, networkPolictType networkingv1.PolicyType,
-	srcPod *v1.Pod, srcPort int, dstPod *v1.Pod, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
+	srcPod *api.PodInfo, srcPort int, dstPod *api.PodInfo, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
 
 	tlogger := klog.FromContext(ctx).V(2)
 
@@ -97,13 +123,13 @@ func (c *Controller) evaluator(
 				// if there is at least one network policy matching the Pod it defaults to deny
 				verdict = false
 				if netpol.Spec.Egress == nil {
-					if tlogger.Enabled() {
-						tlogger.Info("Pod has limited all egress traffic", "pod", klog.KObj(srcPod), "policy", netpol)
+					if tlogger.Enabled() && srcPod != nil {
+						tlogger.Info("Pod has limited all egress traffic", "pod", srcPod.Namespace.Name+"/"+srcPod.Name, "policy", netpol)
 					}
 					continue
 				}
 				// This evaluator only evaluates one policyType, if it matches then traffic is allowed
-				if c.evaluateEgress(ctx, netpol.Namespace, netpol.Spec.Egress, srcPod, dstPod, dstIP, dstPort, proto) {
+				if evaluateEgress(ctx, netpol.Namespace, netpol.Spec.Egress, srcPod, dstPod, dstIP, dstPort, proto) {
 					return true
 				}
 			}
@@ -120,13 +146,13 @@ func (c *Controller) evaluator(
 				// if there is at least one network policy matching the Pod it defaults to deny
 				verdict = false
 				if netpol.Spec.Ingress == nil {
-					if tlogger.Enabled() {
-						tlogger.Info("Pod has limited all ingress traffic", "pod", klog.KObj(dstPod), "policy", klog.KObj(netpol))
+					if tlogger.Enabled() && dstPod != nil {
+						tlogger.Info("Pod has limited all ingress traffic", "pod", dstPod.Namespace.Name+"/"+dstPod.Name, "policy", klog.KObj(netpol))
 					}
 					continue
 				}
 				// This evaluator only evaluates one policyType, if it matches then traffic is allowed
-				if c.evaluateIngress(ctx, netpol.Namespace, netpol.Spec.Ingress, srcPod, srcPort, dstPod, dstIP, proto) {
+				if evaluateIngress(ctx, netpol.Namespace, netpol.Spec.Ingress, srcPod, srcPort, dstPod, dstIP, proto) {
 					return true
 				}
 			}
@@ -136,10 +162,10 @@ func (c *Controller) evaluator(
 	return verdict
 }
 
-func (c *Controller) evaluateIngress(ctx context.Context, netpolNamespace string, ingressRules []networkingv1.NetworkPolicyIngressRule, srcPod *v1.Pod, srcPort int, dstPod *v1.Pod, dstIP net.IP, proto v1.Protocol) bool {
+func evaluateIngress(ctx context.Context, netpolNamespace string, ingressRules []networkingv1.NetworkPolicyIngressRule, srcPod *api.PodInfo, srcPort int, dstPod *api.PodInfo, dstIP net.IP, proto v1.Protocol) bool {
 	tlogger := klog.FromContext(ctx).V(2)
-	if tlogger.Enabled() {
-		tlogger = tlogger.WithValues("pod", klog.KObj(srcPod))
+	if tlogger.Enabled() && srcPod != nil {
+		tlogger = tlogger.WithValues("pod", srcPod.Namespace.Name+"/"+srcPod.Name)
 	}
 	// assume srcPod and ingressRules are not nil
 	if len(ingressRules) == 0 {
@@ -151,7 +177,7 @@ func (c *Controller) evaluateIngress(ctx context.Context, netpolNamespace string
 
 	for _, rule := range ingressRules {
 		// Evaluate if Port is accessible in the specified Pod
-		if !c.evaluatePorts(rule.Ports, srcPod, srcPort, proto) {
+		if !evaluatePorts(rule.Ports, srcPod, srcPort, proto) {
 			if tlogger.Enabled() {
 				tlogger.Info("Pod is not allowed to be connected on port", "src-port", srcPort)
 			}
@@ -174,7 +200,7 @@ func (c *Controller) evaluateIngress(ctx context.Context, netpolNamespace string
 			// to the pods matched by a NetworkPolicySpec's podSelector. The except entry describes CIDRs
 			// that should not be included within this rule.
 			if peer.IPBlock != nil {
-				if c.evaluateIPBlocks(peer.IPBlock, dstIP) {
+				if evaluateIPBlocks(peer.IPBlock, dstIP) {
 					if tlogger.Enabled() {
 						tlogger.Info("Pod is not accessible from dest", "dest", dstIP)
 					}
@@ -189,9 +215,9 @@ func (c *Controller) evaluateIngress(ctx context.Context, netpolNamespace string
 			}
 
 			if peer.NamespaceSelector != nil || peer.PodSelector != nil {
-				if c.evaluateSelectors(ctx, peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
-					if tlogger.Enabled() {
-						tlogger.Info("Pod is accessible from Pod because match selectors", "dstPod", klog.KObj(dstPod))
+				if evaluateSelectors(ctx, peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
+					if tlogger.Enabled() && dstPod != nil {
+						tlogger.Info("Pod is accessible from Pod because match selectors", "dstPod", dstPod.Namespace.Name+"/"+dstPod.Name)
 					}
 					return true
 				}
@@ -201,10 +227,10 @@ func (c *Controller) evaluateIngress(ctx context.Context, netpolNamespace string
 	return false
 }
 
-func (c *Controller) evaluateEgress(ctx context.Context, netpolNamespace string, egressRules []networkingv1.NetworkPolicyEgressRule, srcPod *v1.Pod, dstPod *v1.Pod, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
+func evaluateEgress(ctx context.Context, netpolNamespace string, egressRules []networkingv1.NetworkPolicyEgressRule, srcPod *api.PodInfo, dstPod *api.PodInfo, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
 	tlogger := klog.FromContext(ctx).V(2)
-	if tlogger.Enabled() {
-		tlogger = tlogger.WithValues("pod", klog.KObj(srcPod))
+	if tlogger.Enabled() && srcPod != nil {
+		tlogger = tlogger.WithValues("pod", srcPod.Namespace.Name+"/"+srcPod.Name)
 	}
 	if len(egressRules) == 0 {
 		tlogger.Info("Pod has allowed all egress traffic")
@@ -213,7 +239,7 @@ func (c *Controller) evaluateEgress(ctx context.Context, netpolNamespace string,
 
 	for _, rule := range egressRules {
 		// Evaluate if Pod is allowed to connect to dstPort
-		if !c.evaluatePorts(rule.Ports, dstPod, dstPort, proto) {
+		if !evaluatePorts(rule.Ports, dstPod, dstPort, proto) {
 			if tlogger.Enabled() {
 				tlogger.Info("Pod is not allowed to connect to port", "port", dstPort)
 			}
@@ -235,7 +261,7 @@ func (c *Controller) evaluateEgress(ctx context.Context, netpolNamespace string,
 			// to the pods matched by a NetworkPolicySpec's podSelector. The except entry describes CIDRs
 			// that should not be included within this rule.
 			if peer.IPBlock != nil {
-				if c.evaluateIPBlocks(peer.IPBlock, dstIP) {
+				if evaluateIPBlocks(peer.IPBlock, dstIP) {
 					if tlogger.Enabled() {
 						tlogger.Info("Pod is allowed to connect to dst", "dst", dstIP)
 					}
@@ -250,7 +276,7 @@ func (c *Controller) evaluateEgress(ctx context.Context, netpolNamespace string,
 			}
 
 			if peer.NamespaceSelector != nil || peer.PodSelector != nil {
-				if c.evaluateSelectors(ctx, peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
+				if evaluateSelectors(ctx, peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
 					if tlogger.Enabled() {
 						tlogger.Info("Pod is allowed to connect because of Pod and Namespace selectors")
 					}
@@ -262,7 +288,7 @@ func (c *Controller) evaluateEgress(ctx context.Context, netpolNamespace string,
 	return false
 }
 
-func (c *Controller) evaluateSelectors(ctx context.Context, peerPodSelector *metav1.LabelSelector, peerNSSelector *metav1.LabelSelector, pod *v1.Pod, policyNs string) bool {
+func evaluateSelectors(ctx context.Context, peerPodSelector *metav1.LabelSelector, peerNSSelector *metav1.LabelSelector, pod *api.PodInfo, policyNs string) bool {
 	// avoid panics
 	if pod == nil {
 		return true
@@ -285,7 +311,7 @@ func (c *Controller) evaluateSelectors(ctx context.Context, peerPodSelector *met
 		}
 		// if peerNSSelector selects the pods matching podSelector in the policy's own namespace
 		if peerNSSelector == nil {
-			return pod.Namespace == policyNs
+			return pod.Namespace.Name == policyNs
 		}
 	}
 	// namespaceSelector selects namespaces using cluster-scoped labels. This field follows
@@ -306,15 +332,8 @@ func (c *Controller) evaluateSelectors(ctx context.Context, peerPodSelector *met
 			return true
 		}
 
-		namespaces, err := c.namespaceLister.List(nsSelector)
-		if err != nil {
-			logger.Error(err, "Accepting packet")
+		if nsSelector.Matches(labels.Set(pod.Namespace.Labels)) {
 			return true
-		}
-		for _, ns := range namespaces {
-			if pod.Namespace == ns.Name {
-				return true
-			}
 		}
 		return false
 	}
@@ -323,7 +342,7 @@ func (c *Controller) evaluateSelectors(ctx context.Context, peerPodSelector *met
 	return true
 }
 
-func (c *Controller) evaluateIPBlocks(ipBlock *networkingv1.IPBlock, ip net.IP) bool {
+func evaluateIPBlocks(ipBlock *networkingv1.IPBlock, ip net.IP) bool {
 	if ipBlock == nil {
 		return true
 	}
@@ -350,7 +369,7 @@ func (c *Controller) evaluateIPBlocks(ipBlock *networkingv1.IPBlock, ip net.IP) 
 	return true
 }
 
-func (c *Controller) evaluatePorts(networkPolicyPorts []networkingv1.NetworkPolicyPort, pod *v1.Pod, port int, protocol v1.Protocol) bool {
+func evaluatePorts(networkPolicyPorts []networkingv1.NetworkPolicyPort, pod *api.PodInfo, port int, protocol v1.Protocol) bool {
 	// ports is a list of ports,  each item in this list is combined using a logical OR.
 	// If this field is empty or missing, this rule matches all ports (traffic not restricted by port).
 	// If this field is present and contains at least one item, then this rule allows
@@ -371,14 +390,13 @@ func (c *Controller) evaluatePorts(networkPolicyPorts []networkingv1.NetworkPoli
 			return true
 		}
 		if pod != nil && policyPort.Port.StrVal != "" {
-			for _, container := range pod.Spec.Containers {
-				for _, p := range container.Ports {
-					if p.Name == policyPort.Port.StrVal &&
-						p.ContainerPort == int32(port) &&
-						p.Protocol == protocol {
-						return true
-					}
+			for _, p := range pod.ContainerPorts {
+				if p.Name == policyPort.Port.StrVal &&
+					p.Port == int32(port) &&
+					v1.Protocol(p.Protocol) == protocol {
+					return true
 				}
+
 			}
 		}
 		// endPort indicates that the range of ports from port to endPort if set, inclusive,

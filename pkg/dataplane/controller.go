@@ -1,4 +1,4 @@
-package networkpolicy
+package dataplane
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -35,7 +35,7 @@ import (
 	netutils "k8s.io/utils/net"
 
 	"sigs.k8s.io/kube-network-policies/pkg/network"
-	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
+	"sigs.k8s.io/kube-network-policies/pkg/pipeline"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	policyinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
 	policylisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
@@ -59,7 +59,6 @@ import (
 
 const (
 	controllerName = "kube-network-policies"
-	podIPIndex     = "podIPKeyIndex"
 	syncKey        = "dummy-key" // use the same key to sync to aggregate the events
 	podV4IPsSet    = "podips-v4"
 	podV6IPsSet    = "podips-v6"
@@ -73,7 +72,7 @@ type Config struct {
 	NodeName                   string
 	NetfilterBug1766Fix        bool
 	NFTableName                string // if other projects use this controllers they need to be able to use their own table name
-	NRIdisabled                bool   // use NRI to get the Pod IPs information locally instead of waiting to be published by the apiserver
+	Evaluators                 []pipeline.Evaluator
 }
 
 func (c *Config) Defaults() error {
@@ -140,87 +139,40 @@ func newController(client clientset.Interface,
 
 	klog.V(2).InfoS("Creating controller", "config", config)
 	c := &Controller{
-		client: client,
-		config: config,
+		client:   client,
+		pipeline: pipeline.NewPipeline(config.Evaluators...),
+		config:   config,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: controllerName},
 		),
 	}
 
-	if !config.NRIdisabled {
-		nriPlugin, err := NewNriPlugin()
-		if err != nil {
-			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
-		} else {
-			c.nriPlugin = nriPlugin
-		}
+	c.podLister = podInformer.Lister()
+	c.podsSynced = podInformer.Informer().HasSynced
+	c.namespaceLister = namespaceInformer.Lister()
+	c.namespacesSynced = namespaceInformer.Informer().HasSynced
+	c.networkpolicyLister = networkpolicyInformer.Lister()
+	c.networkpoliciesSynced = networkpolicyInformer.Informer().HasSynced
+	if config.AdminNetworkPolicy || config.BaselineAdminNetworkPolicy {
+		c.npaClient = npaClient
+		c.nodeLister = nodeInformer.Lister()
+		c.nodesSynced = nodeInformer.Informer().HasSynced
+		c.domainCache = NewDomainCache(config.QueueID + 1)
 	}
 
-	err := podInformer.Informer().AddIndexers(cache.Indexers{
-		podIPIndex: func(obj interface{}) ([]string, error) {
-			pod, ok := obj.(*v1.Pod)
-			if !ok {
-				return []string{}, nil
-			}
-			// TODO check this later or it can block some traffic
-			// unrelated to the Pod
-			if pod.Spec.HostNetwork {
-				return []string{}, nil
-			}
-			result := []string{}
-			for _, ip := range pod.Status.PodIPs {
-				result = append(result, string(ip.IP))
-			}
-			return result, nil
-		},
-	})
-	if err != nil {
-		return nil, err
+	if config.AdminNetworkPolicy {
+		c.adminNetworkPolicyLister = adminNetworkPolicyInformer.Lister()
+		c.adminNetworkPolicySynced = adminNetworkPolicyInformer.Informer().HasSynced
 	}
 
-	podIndexer := podInformer.Informer().GetIndexer()
-	// Theoretically only one IP can be active at a time
-	c.getPodAssignedToIP = func(podIP string) *v1.Pod {
-		objs, err := podIndexer.ByIndex(podIPIndex, podIP)
-		if err != nil {
-			return nil
-		}
-		// check if we have the local information from nri
-		if len(objs) == 0 {
-			podKey := c.nriPlugin.GetPodFromIP(podIP)
-			obj, ok, err := podIndexer.GetByKey(podKey)
-			if err != nil || !ok {
-				return nil
-			}
-			return obj.(*v1.Pod)
-		}
-		// if there are multiple pods use the one that is running
-		for _, obj := range objs {
-			pod, ok := obj.(*v1.Pod)
-			if !ok {
-				continue
-			}
-			if pod.Status.Phase == v1.PodRunning {
-				return pod
-			}
-		}
-		// if no pod is running pick the first one
-		// TODO: check multiple phases
-		return objs[0].(*v1.Pod)
+	if config.BaselineAdminNetworkPolicy {
+		c.baselineAdminNetworkPolicyLister = baselineAdminNetworkPolicyInformer.Lister()
+		c.baselineAdminNetworkPolicySynced = baselineAdminNetworkPolicyInformer.Informer().HasSynced
 	}
 
-	// reduce memory usage only care about Labels and Status
-	trim := func(obj interface{}) (interface{}, error) {
-		if accessor, err := meta.Accessor(obj); err == nil {
-			accessor.SetManagedFields(nil)
-		}
-		return obj, nil
-	}
-	err = podInformer.Informer().SetTransform(trim)
-	if err != nil {
-		return nil, err
-	}
+	c.eventBroadcaster = broadcaster
+	c.eventRecorder = recorder
 
 	// process only local Pods that are affected by network policices
 	_, _ = podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -301,38 +253,66 @@ func newController(client clientset.Interface,
 		},
 	})
 
-	c.podLister = podInformer.Lister()
-	c.podsSynced = podInformer.Informer().HasSynced
-	c.namespaceLister = namespaceInformer.Lister()
-	c.namespacesSynced = namespaceInformer.Informer().HasSynced
-	c.networkpolicyLister = networkpolicyInformer.Lister()
-	c.networkpoliciesSynced = networkpolicyInformer.Informer().HasSynced
-	if config.AdminNetworkPolicy || config.BaselineAdminNetworkPolicy {
-		c.npaClient = npaClient
-		c.nodeLister = nodeInformer.Lister()
-		c.nodesSynced = nodeInformer.Informer().HasSynced
-		c.domainCache = NewDomainCache(config.QueueID + 1)
-	}
-
-	if config.AdminNetworkPolicy {
-		c.adminNetworkPolicyLister = adminNetworkPolicyInformer.Lister()
-		c.adminNetworkPolicySynced = adminNetworkPolicyInformer.Informer().HasSynced
-	}
-
-	if config.BaselineAdminNetworkPolicy {
-		c.baselineAdminNetworkPolicyLister = baselineAdminNetworkPolicyInformer.Lister()
-		c.baselineAdminNetworkPolicySynced = baselineAdminNetworkPolicyInformer.Informer().HasSynced
-	}
-
-	c.eventBroadcaster = broadcaster
-	c.eventRecorder = recorder
-
 	return c, nil
+}
+
+func (c *Controller) getNetworkPoliciesForPod(pod *v1.Pod) []*networkingv1.NetworkPolicy {
+	if pod == nil {
+		return nil
+	}
+	// Get all the network policies that affect this pod
+	networkPolices, err := c.networkpolicyLister.NetworkPolicies(pod.Namespace).List(labels.Everything())
+	if err != nil {
+		return nil
+	}
+	result := []*networkingv1.NetworkPolicy{}
+	for _, policy := range networkPolices {
+		// podSelector selects the pods to which this NetworkPolicy object applies.
+		// The array of ingress rules is applied to any pods selected by this field.
+		// Multiple network policies can select the same set of pods. In this case,
+		// the ingress rules for each are combined additively.
+		// This field is NOT optional and follows standard label selector semantics.
+		// An empty podSelector matches all pods in this namespace.
+		podSelector, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
+		if err != nil {
+			klog.InfoS("parsing PodSelector", "error", err)
+			continue
+		}
+		// networkPolicy does not select the pod try the next network policy
+		if podSelector.Matches(labels.Set(pod.Labels)) {
+			result = append(result, policy)
+		}
+	}
+	return result
+}
+
+// getLocalPodsForNetworkPolicy obtains all the Pods selected by the network policy for current Node
+func (c *Controller) getLocalPodsForNetworkPolicy(networkPolicy *networkingv1.NetworkPolicy) []*v1.Pod {
+	if networkPolicy == nil {
+		return nil
+	}
+	podSelector, err := metav1.LabelSelectorAsSelector(&networkPolicy.Spec.PodSelector)
+	if err != nil {
+		klog.InfoS("parsing PodSelector", "error", err)
+		return nil
+	}
+	pods, err := c.podLister.Pods(networkPolicy.Namespace).List(podSelector)
+	if err != nil {
+		return nil
+	}
+	result := []*v1.Pod{}
+	for _, pod := range pods {
+		if pod.Spec.NodeName == c.config.NodeName {
+			result = append(result, pod)
+		}
+	}
+	return result
 }
 
 // Controller manages selector-based networkpolicy endpoints.
 type Controller struct {
-	config Config
+	config   Config
+	pipeline *pipeline.Pipeline
 
 	client           clientset.Interface
 	eventBroadcaster record.EventBroadcaster
@@ -356,16 +336,12 @@ type Controller struct {
 	baselineAdminNetworkPolicySynced cache.InformerSynced
 	nodeLister                       corelisters.NodeLister
 	nodesSynced                      cache.InformerSynced
-	// function to get the Pod given an IP
-	// if an error or not found it returns nil
-	getPodAssignedToIP func(podIP string) *v1.Pod
 
 	nfq     *nfqueue.Nfqueue
 	flushed bool
 
 	// Passively obtain the Domain A and AAAA records from the network
 	domainCache *DomainCache
-	nriPlugin   *nriPlugin
 }
 
 // Run will not return until stopCh is closed. workers determines how many
@@ -384,14 +360,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	if c.config.AdminNetworkPolicy || c.config.BaselineAdminNetworkPolicy {
 		caches = append(caches, c.nodesSynced)
 	}
-	if !c.config.NRIdisabled {
-		go func() {
-			err := c.nriPlugin.stub.Run(ctx)
-			if err != nil {
-				klog.Infof("nri plugin exited: %v", err)
-			}
-		}()
-	}
+
 	if c.config.AdminNetworkPolicy {
 		caches = append(caches, c.adminNetworkPolicySynced)
 		go func() {
@@ -494,7 +463,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime), "verdict", verdictStr)
 		}()
 
-		if c.evaluatePacket(ctx, packet) {
+		if c.evaluatePacket(ctx, &packet) {
 			verdict = nfqueue.NfAccept
 		} else {
 			verdict = nfqueue.NfDrop
@@ -536,124 +505,17 @@ func verdictString(verdict int) string {
 	}
 }
 
-// evaluatePacket evalute the network policies using the following order:
-// 1. AdminNetworkPolicies in Egress for the source Pod/IP
-// 2. NetworkPolicies in Egress (if needed) for the source Pod/IP
-// 3. BaselineAdminNetworkPolicies in Egress (if needed) for the source Pod/IP
-// 4. AdminNetworkPolicies in Ingress for the destination Pod/IP
-// 5. NetworkPolicies in Ingress (if needed) for the destination Pod/IP
-// 6. BaselineAdminNetworkPolicies in Ingress (if needed) for the destination Pod/IP
-func (c *Controller) evaluatePacket(ctx context.Context, p network.Packet) bool {
-	logger := klog.FromContext(ctx)
-	srcIP := p.SrcIP
-	srcPod := c.getPodAssignedToIP(srcIP.String())
-	srcPort := p.SrcPort
-	dstIP := p.DstIP
-	dstPod := c.getPodAssignedToIP(dstIP.String())
-	dstPort := p.DstPort
-	protocol := p.Proto
-
-	// evaluatePacket() should be fast unless trace logging is enabled.
-	// Logging optimization: We check if V(2) is enabled before hand,
-	// rather than evaluating the all parameters make an unnecessary logger call
-	tlogger := logger.V(2)
-	if tlogger.Enabled() {
-		srcPodStr, dstPodStr := "none", "none"
-		if srcPod != nil {
-			srcPodStr = srcPod.GetNamespace() + "/" + srcPod.GetName()
-		}
-		if dstPod != nil {
-			dstPodStr = dstPod.GetNamespace() + "/" + dstPod.GetName()
-		}
-		tlogger.Info("Evaluating packet", "srcPod", srcPodStr, "dstPod", dstPodStr, "packet", p)
-		tlogger = tlogger.WithValues("id", p.ID)
+// evaluatePacket evaluates the network policies by running the configured pipeline.
+// The pipeline executes a series of evaluator functions in an order determined by their
+// priority. Each evaluator can return a final verdict (Allow/Deny) or pass the
+// packet to the next evaluator in the chain.
+func (c *Controller) evaluatePacket(ctx context.Context, p *network.Packet) bool {
+	allowed, err := c.pipeline.Run(ctx, p)
+	if err != nil {
+		klog.FromContext(ctx).Error(err, "error evaluating packet")
+		return c.config.FailOpen
 	}
-
-	// Evalute Egress Policies
-
-	// Admin Network Policies are evaluated first
-	evaluateEgressNetworkPolicy := true
-	if c.config.AdminNetworkPolicy {
-		srcPodAdminNetworkPolices := c.getAdminNetworkPoliciesForPod(ctx, srcPod)
-		action := c.evaluateAdminEgress(srcPodAdminNetworkPolices, dstPod, dstIP, dstPort, protocol)
-		if tlogger.Enabled() {
-			tlogger.Info("Egress AdminNetworkPolicies", "npolicies", len(srcPodAdminNetworkPolices), "action", action)
-		}
-		switch action {
-		case npav1alpha1.AdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
-			return false
-		case npav1alpha1.AdminNetworkPolicyRuleActionAllow: // Packet is allowed in Egress so no need to evalute Network Policies
-			evaluateEgressNetworkPolicy = false
-		case npav1alpha1.AdminNetworkPolicyRuleActionPass: // Packet need to evalute Egress Network Policies
-		}
-	}
-	evaluateAdminEgressNetworkPolicy := evaluateEgressNetworkPolicy
-	if evaluateEgressNetworkPolicy {
-		srcPodNetworkPolices := c.getNetworkPoliciesForPod(srcPod)
-		if len(srcPodNetworkPolices) > 0 {
-			evaluateAdminEgressNetworkPolicy = false
-		}
-		allowed := c.evaluator(ctx, srcPodNetworkPolices, networkingv1.PolicyTypeEgress, srcPod, srcPort, dstPod, dstIP, dstPort, protocol)
-		if tlogger.Enabled() {
-			tlogger.Info("Egress NetworkPolicies", "npolicies", len(srcPodNetworkPolices), "allowed", allowed)
-		}
-		if !allowed {
-			return false
-		}
-	}
-	if c.config.BaselineAdminNetworkPolicy && evaluateAdminEgressNetworkPolicy {
-		srcPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(ctx, srcPod)
-		action := c.evaluateBaselineAdminEgress(srcPodBaselineAdminNetworkPolices, dstPod, dstIP, dstPort, protocol)
-		if tlogger.Enabled() {
-			tlogger.Info("Egress BaselineAdminNetworkPolicies", "npolicies", len(srcPodBaselineAdminNetworkPolices), "action", action)
-		}
-		switch action {
-		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
-			return false
-		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow:
-		}
-	}
-
-	// Evalute Ingress Policies
-
-	// Admin Network Policies are evaluated first
-	if c.config.AdminNetworkPolicy {
-		dstPodAdminNetworkPolices := c.getAdminNetworkPoliciesForPod(ctx, dstPod)
-		action := c.evaluateAdminIngress(dstPodAdminNetworkPolices, srcPod, dstPort, protocol)
-		if tlogger.Enabled() {
-			tlogger.Info("Ingress AdminNetworkPolicies", "npolicies", len(dstPodAdminNetworkPolices), "action", action)
-		}
-		switch action {
-		case npav1alpha1.AdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
-			return false
-		case npav1alpha1.AdminNetworkPolicyRuleActionAllow: // Packet is allowed in Egress so no need to evalute Network Policies
-			return true
-		case npav1alpha1.AdminNetworkPolicyRuleActionPass: // Packet need to evalute Egress Network Policies
-		}
-	}
-	// Network policies override Baseline Admin Network Policies
-	dstPodNetworkPolices := c.getNetworkPoliciesForPod(dstPod)
-	if len(dstPodNetworkPolices) > 0 {
-		allowed := c.evaluator(ctx, dstPodNetworkPolices, networkingv1.PolicyTypeIngress, dstPod, dstPort, srcPod, srcIP, srcPort, protocol)
-		if tlogger.Enabled() {
-			tlogger.Info("Ingress NetworkPolicies", "npolicies", len(dstPodNetworkPolices), "allowed", allowed)
-		}
-		return allowed
-	}
-	if c.config.BaselineAdminNetworkPolicy {
-		dstPodBaselineAdminNetworkPolices := c.getBaselineAdminNetworkPoliciesForPod(ctx, dstPod)
-		action := c.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPort, protocol)
-		if tlogger.Enabled() {
-			tlogger.Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", action)
-		}
-		switch action {
-		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny: // Deny the packet no need to check anything else
-			return false
-		case npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow:
-			return true
-		}
-	}
-	return true
+	return allowed
 }
 
 func (c *Controller) runWorker() {

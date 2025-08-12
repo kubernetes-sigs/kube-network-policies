@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: APACHE-2.0
 
-package networkpolicy
+package dataplane
 
 import (
 	"context"

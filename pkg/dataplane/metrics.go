@@ -1,4 +1,4 @@
-package networkpolicy
+package dataplane
 
 import (
 	"bufio"

@@ -1,4 +1,4 @@
-package networkpolicy
+package pipeline
 
 import (
 	"context"
@@ -9,11 +9,77 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
+
+var (
+	protocolTCP = v1.ProtocolTCP
+	protocolUDP = v1.ProtocolUDP
+)
+
+func makeNamespace(name string) *v1.Namespace {
+	return &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"kubernetes.io/metadata.name": name,
+				"a":                           "b",
+			},
+		},
+	}
+}
+
+func makeNode(name string) *v1.Node {
+	return &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"kubernetes.io/node": name,
+				"a":                  "b",
+			},
+		},
+	}
+}
+
+func makePod(name, ns string, ip string) *v1.Pod {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Labels: map[string]string{
+				"a": "b",
+			},
+		},
+		Spec: v1.PodSpec{
+			NodeName: "testnode",
+			Containers: []v1.Container{
+				{
+					Name:    "write-pod",
+					Command: []string{"/bin/sh"},
+					Ports: []v1.ContainerPort{{
+						Name:          "http",
+						ContainerPort: 80,
+						Protocol:      v1.ProtocolTCP,
+					}},
+				},
+			},
+		},
+		Status: v1.PodStatus{
+			PodIPs: []v1.PodIP{
+				{IP: ip},
+			},
+		},
+	}
+
+	return pod
+
+}
 
 type netpolTweak func(networkPolicy *networkingv1.NetworkPolicy)
 
@@ -420,43 +486,116 @@ func TestSyncPacket(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller := newTestController(Config{
-				AdminNetworkPolicy:         true,
-				BaselineAdminNetworkPolicy: true,
-				NetfilterBug1766Fix:        true,
-				QueueID:                    102,
-				NFTableName:                "kube-network-policies",
-			})
+			client := fake.NewSimpleClientset()
+			informersFactory := informers.NewSharedInformerFactory(client, 0)
+			podInformer := informersFactory.Core().V1().Pods()
+			networkPolicyInformer := informersFactory.Networking().V1().NetworkPolicies()
+			namespaceInformer := informersFactory.Core().V1().Namespaces()
+
+			networkpolicyStore := networkPolicyInformer.Informer().GetStore()
+			namespaceStore := namespaceInformer.Informer().GetStore()
+			podStore := podInformer.Informer().GetStore()
 			// Add objects to the Store
 			for _, n := range tt.networkpolicy {
-				err := controller.networkpolicyStore.Add(n)
+				err := networkpolicyStore.Add(n)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, n := range tt.namespace {
-				err := controller.namespaceStore.Add(n)
+				err := namespaceStore.Add(n)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, p := range tt.pod {
-				err := controller.podStore.Add(p)
+				err := podStore.Add(p)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 
-			ok := controller.evaluatePacket(context.TODO(), tt.p)
-			if ok != tt.expect {
-				t.Errorf("expected %v got  %v", ok, tt.expect)
+			getPodInfo := func(podIP string) (*api.PodInfo, bool) {
+				for _, p := range tt.pod {
+					for _, ip := range p.Status.PodIPs {
+						if ip.IP == podIP {
+							for _, n := range tt.namespace {
+								if n.Name == p.Namespace {
+									return api.PodAndNamespaceToPodInfo(p, n, ""), true
+								}
+							}
+						}
+					}
+				}
+				return nil, false
+			}
+
+			evaluator := NewNetworkPolicyEvaluator("node", getPodInfo,
+				podInformer.Lister(),
+				namespaceInformer.Lister(),
+				networkPolicyInformer.Lister(),
+			)
+
+			ok, err := evaluator.Evaluate(context.TODO(), &tt.p)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if (ok == VerdictDeny) && tt.expect {
+				t.Errorf("got Deny, but expected  %v", tt.expect)
+			}
+			if (ok == VerdictNext) && !tt.expect {
+				t.Errorf("got Allow, but expected  %v", tt.expect)
 			}
 
 		})
 	}
 }
 
-func TestController_evaluateSelectors(t *testing.T) {
+func TestEvaluator_evaluateSelectors(t *testing.T) {
+	// Pods
+	pod1 := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod1",
+			Namespace: "ns1",
+			Labels:    map[string]string{"app": "foo"},
+		},
+	}
+	pod2 := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod2",
+			Namespace: "ns2",
+			Labels:    map[string]string{"app": "bar"},
+		},
+	}
+
+	// Namespaces
+	ns1 := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "ns1",
+			Labels: map[string]string{"team": "blue"},
+		},
+	}
+	ns2 := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "ns2",
+			Labels: map[string]string{"team": "red"},
+		},
+	}
+
+	// Label Selectors
+	podSelectorFoo := &metav1.LabelSelector{
+		MatchLabels: map[string]string{"app": "foo"},
+	}
+	podSelectorBar := &metav1.LabelSelector{
+		MatchLabels: map[string]string{"app": "bar"},
+	}
+	nsSelectorBlue := &metav1.LabelSelector{
+		MatchLabels: map[string]string{"team": "blue"},
+	}
+	nsSelectorRed := &metav1.LabelSelector{
+		MatchLabels: map[string]string{"team": "red"},
+	}
+	emptySelector := &metav1.LabelSelector{}
 	tests := []struct {
 		name            string
 		networkpolicies []*networkingv1.NetworkPolicy
@@ -468,44 +607,165 @@ func TestController_evaluateSelectors(t *testing.T) {
 		policyNs        string
 		want            bool
 	}{
-		// TODO: Add test cases.
+		{
+			name:            "no selectors",
+			peerPodSelector: nil,
+			peerNSSelector:  nil,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            true,
+		},
+		{
+			name:            "matching pod selector",
+			peerPodSelector: podSelectorFoo,
+			peerNSSelector:  nil,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            true,
+		},
+		{
+			name:            "non-matching pod selector",
+			peerPodSelector: podSelectorBar,
+			peerNSSelector:  nil,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            false,
+		},
+		{
+			name:            "matching namespace selector",
+			peerPodSelector: nil,
+			peerNSSelector:  nsSelectorBlue,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            true,
+		},
+		{
+			name:            "non-matching namespace selector",
+			peerPodSelector: nil,
+			peerNSSelector:  nsSelectorRed,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            false,
+		},
+		{
+			name:            "matching pod and namespace selectors",
+			peerPodSelector: podSelectorFoo,
+			peerNSSelector:  nsSelectorBlue,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            true,
+		},
+		{
+			name:            "matching pod, non-matching namespace selector",
+			peerPodSelector: podSelectorFoo,
+			peerNSSelector:  nsSelectorRed,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            false,
+		},
+		{
+			name:            "non-matching pod, matching namespace selector",
+			peerPodSelector: podSelectorBar,
+			peerNSSelector:  nsSelectorBlue,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            false,
+		},
+		{
+			name:            "empty pod selector matches all pods in policy namespace",
+			peerPodSelector: emptySelector,
+			peerNSSelector:  nil,
+			pod:             pod1,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1},
+			pods:            []*v1.Pod{pod1},
+			want:            true,
+		},
+		{
+			name:            "empty pod selector does not match pod in other namespace",
+			peerPodSelector: emptySelector,
+			peerNSSelector:  nil,
+			pod:             pod2,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1, ns2},
+			pods:            []*v1.Pod{pod1, pod2},
+			want:            false,
+		},
+		{
+			name:            "empty namespace selector matches all namespaces",
+			peerPodSelector: nil,
+			peerNSSelector:  emptySelector,
+			pod:             pod2,
+			policyNs:        "ns1",
+			namespaces:      []*v1.Namespace{ns1, ns2},
+			pods:            []*v1.Pod{pod1, pod2},
+			want:            true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newTestController(Config{
-				AdminNetworkPolicy:         true,
-				BaselineAdminNetworkPolicy: true,
-				NetfilterBug1766Fix:        true,
-				QueueID:                    102,
-				NFTableName:                "kube-network-policies",
-			})
+			client := fake.NewSimpleClientset()
+			informersFactory := informers.NewSharedInformerFactory(client, 0)
+			networkpolicyStore := informersFactory.Networking().V1().NetworkPolicies().Informer().GetStore()
+			namespaceStore := informersFactory.Core().V1().Namespaces().Informer().GetStore()
+			podStore := informersFactory.Core().V1().Pods().Informer().GetStore()
 			// Add objects to the Store
 			for _, n := range tt.networkpolicies {
-				err := c.networkpolicyStore.Add(n)
+				err := networkpolicyStore.Add(n)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, n := range tt.namespaces {
-				err := c.namespaceStore.Add(n)
+				err := namespaceStore.Add(n)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, p := range tt.pods {
-				err := c.podStore.Add(p)
+				err := podStore.Add(p)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
-			if got := c.evaluateSelectors(context.TODO(), tt.peerPodSelector, tt.peerNSSelector, tt.pod, tt.policyNs); got != tt.want {
+
+			ok := false
+			var ns *v1.Namespace
+			for _, n := range tt.namespaces {
+				if n.Name == tt.pod.Namespace {
+					ns = n
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				t.Fatal("namespace not found")
+			}
+			podInfo := api.PodAndNamespaceToPodInfo(tt.pod, ns, "")
+			if got := evaluateSelectors(context.TODO(), tt.peerPodSelector, tt.peerNSSelector, podInfo, tt.policyNs); got != tt.want {
 				t.Errorf("Controller.evaluateSelectors() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestController_evaluateIPBlocks(t *testing.T) {
+func TestEvaluator_evaluateIPBlocks(t *testing.T) {
 	tests := []struct {
 		name    string
 		ipBlock *networkingv1.IPBlock
@@ -543,21 +803,14 @@ func TestController_evaluateIPBlocks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newTestController(Config{
-				AdminNetworkPolicy:         true,
-				BaselineAdminNetworkPolicy: true,
-				NetfilterBug1766Fix:        true,
-				QueueID:                    102,
-				NFTableName:                "kube-network-policies",
-			})
-			if got := c.evaluateIPBlocks(tt.ipBlock, tt.ip); got != tt.want {
+			if got := evaluateIPBlocks(tt.ipBlock, tt.ip); got != tt.want {
 				t.Errorf("Controller.evaluateIPBlocks() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestController_evaluatePorts(t *testing.T) {
+func TestEvaluator_evaluatePorts(t *testing.T) {
 	tests := []struct {
 		name               string
 		networkPolicyPorts []networkingv1.NetworkPolicyPort
@@ -645,14 +898,8 @@ func TestController_evaluatePorts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newTestController(Config{
-				AdminNetworkPolicy:         true,
-				BaselineAdminNetworkPolicy: true,
-				NetfilterBug1766Fix:        true,
-				QueueID:                    102,
-				NFTableName:                "kube-network-policies",
-			})
-			if got := c.evaluatePorts(tt.networkPolicyPorts, tt.pod, tt.port, tt.protocol); got != tt.want {
+
+			if got := evaluatePorts(tt.networkPolicyPorts, api.PodAndNamespaceToPodInfo(tt.pod, &v1.Namespace{}, ""), tt.port, tt.protocol); got != tt.want {
 				t.Errorf("Controller.evaluatePorts() = %v, want %v", got, tt.want)
 			}
 		})

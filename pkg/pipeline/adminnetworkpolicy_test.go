@@ -1,4 +1,4 @@
-package networkpolicy
+package pipeline
 
 import (
 	"context"
@@ -488,7 +488,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ok := controller.evaluatePacket(context.TODO(), tt.p)
+			ok := controller.evaluatePacket(context.TODO(), &tt.p)
 			if ok != tt.expect {
 				t.Errorf("expected %v got  %v", tt.expect, ok)
 			}
