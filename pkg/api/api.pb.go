@@ -93,6 +93,7 @@ func (x *Namespace) GetLabels() map[string]string {
 type Node struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Labels        map[string]string      `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -132,6 +133,13 @@ func (x *Node) GetName() string {
 		return x.Name
 	}
 	return ""
+}
+
+func (x *Node) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
 }
 
 // ContainerPort mimics the Kubernetes ContainerPort type.
@@ -197,14 +205,17 @@ func (x *ContainerPort) GetProtocol() string {
 
 // PodInfo contains the necessary information to match on network policies
 type PodInfo struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	PodName        string                 `protobuf:"bytes,1,opt,name=pod_name,json=podName,proto3" json:"pod_name,omitempty"`
-	PodLabels      map[string]string      `protobuf:"bytes,2,rep,name=pod_labels,json=podLabels,proto3" json:"pod_labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	ContainerPorts []*ContainerPort       `protobuf:"bytes,3,rep,name=container_ports,json=containerPorts,proto3" json:"container_ports,omitempty"`
-	Namespace      *Namespace             `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Node           *Node                  `protobuf:"bytes,5,opt,name=node,proto3" json:"node,omitempty"`
-	LastUpdated    int64                  `protobuf:"varint,6,opt,name=last_updated,json=lastUpdated,proto3" json:"last_updated,omitempty"`
-	ClusterId      string                 `protobuf:"bytes,7,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The name of the Pod
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The labels of the Pod
+	Labels map[string]string `protobuf:"bytes,2,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// The ports of the Containers on the Pod
+	ContainerPorts []*ContainerPort `protobuf:"bytes,3,rep,name=container_ports,json=containerPorts,proto3" json:"container_ports,omitempty"`
+	Namespace      *Namespace       `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Node           *Node            `protobuf:"bytes,5,opt,name=node,proto3" json:"node,omitempty"`
+	LastUpdated    int64            `protobuf:"varint,6,opt,name=last_updated,json=lastUpdated,proto3" json:"last_updated,omitempty"`
+	ClusterId      string           `protobuf:"bytes,7,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -239,16 +250,16 @@ func (*PodInfo) Descriptor() ([]byte, []int) {
 	return file_pkg_api_api_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *PodInfo) GetPodName() string {
+func (x *PodInfo) GetName() string {
 	if x != nil {
-		return x.PodName
+		return x.Name
 	}
 	return ""
 }
 
-func (x *PodInfo) GetPodLabels() map[string]string {
+func (x *PodInfo) GetLabels() map[string]string {
 	if x != nil {
-		return x.PodLabels
+		return x.Labels
 	}
 	return nil
 }
@@ -298,24 +309,27 @@ const file_pkg_api_api_proto_rawDesc = "" +
 	"\x06labels\x18\x02 \x03(\v2\x1a.api.Namespace.LabelsEntryR\x06labels\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1a\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x84\x01\n" +
 	"\x04Node\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"S\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
+	"\x06labels\x18\x02 \x03(\v2\x15.api.Node.LabelsEntryR\x06labels\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"S\n" +
 	"\rContainerPort\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xea\x02\n" +
-	"\aPodInfo\x12\x19\n" +
-	"\bpod_name\x18\x01 \x01(\tR\apodName\x12:\n" +
-	"\n" +
-	"pod_labels\x18\x02 \x03(\v2\x1b.api.PodInfo.PodLabelsEntryR\tpodLabels\x12;\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xd6\x02\n" +
+	"\aPodInfo\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x120\n" +
+	"\x06labels\x18\x02 \x03(\v2\x18.api.PodInfo.LabelsEntryR\x06labels\x12;\n" +
 	"\x0fcontainer_ports\x18\x03 \x03(\v2\x12.api.ContainerPortR\x0econtainerPorts\x12,\n" +
 	"\tnamespace\x18\x04 \x01(\v2\x0e.api.NamespaceR\tnamespace\x12\x1d\n" +
 	"\x04node\x18\x05 \x01(\v2\t.api.NodeR\x04node\x12!\n" +
 	"\flast_updated\x18\x06 \x01(\x03R\vlastUpdated\x12\x1d\n" +
 	"\n" +
-	"cluster_id\x18\a \x01(\tR\tclusterId\x1a<\n" +
-	"\x0ePodLabelsEntry\x12\x10\n" +
+	"cluster_id\x18\a \x01(\tR\tclusterId\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B+Z)sigs.k8s.io/kube-network-policies/pkg/apib\x06proto3"
 
@@ -331,26 +345,28 @@ func file_pkg_api_api_proto_rawDescGZIP() []byte {
 	return file_pkg_api_api_proto_rawDescData
 }
 
-var file_pkg_api_api_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_pkg_api_api_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_pkg_api_api_proto_goTypes = []any{
 	(*Namespace)(nil),     // 0: api.Namespace
 	(*Node)(nil),          // 1: api.Node
 	(*ContainerPort)(nil), // 2: api.ContainerPort
 	(*PodInfo)(nil),       // 3: api.PodInfo
 	nil,                   // 4: api.Namespace.LabelsEntry
-	nil,                   // 5: api.PodInfo.PodLabelsEntry
+	nil,                   // 5: api.Node.LabelsEntry
+	nil,                   // 6: api.PodInfo.LabelsEntry
 }
 var file_pkg_api_api_proto_depIdxs = []int32{
 	4, // 0: api.Namespace.labels:type_name -> api.Namespace.LabelsEntry
-	5, // 1: api.PodInfo.pod_labels:type_name -> api.PodInfo.PodLabelsEntry
-	2, // 2: api.PodInfo.container_ports:type_name -> api.ContainerPort
-	0, // 3: api.PodInfo.namespace:type_name -> api.Namespace
-	1, // 4: api.PodInfo.node:type_name -> api.Node
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	5, // 1: api.Node.labels:type_name -> api.Node.LabelsEntry
+	6, // 2: api.PodInfo.labels:type_name -> api.PodInfo.LabelsEntry
+	2, // 3: api.PodInfo.container_ports:type_name -> api.ContainerPort
+	0, // 4: api.PodInfo.namespace:type_name -> api.Namespace
+	1, // 5: api.PodInfo.node:type_name -> api.Node
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_pkg_api_api_proto_init() }
@@ -364,7 +380,7 @@ func file_pkg_api_api_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_api_api_proto_rawDesc), len(file_pkg_api_api_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -28,6 +28,7 @@ message Namespace {
 // Represents a Kubernetes Node
 message Node {
   string name = 1;
+  map<string, string> labels = 2;
 }
 
 // ContainerPort mimics the Kubernetes ContainerPort type.
@@ -40,8 +41,11 @@ message ContainerPort {
 
 // PodInfo contains the necessary information to match on network policies
 message PodInfo {
-  string pod_name = 1;
-  map<string, string> pod_labels = 2;
+  // The name of the Pod
+  string name = 1;
+  // The labels of the Pod
+  map<string, string> labels = 2;
+  // The ports of the Containers on the Pod
   repeated ContainerPort container_ports = 3;
   Namespace namespace = 4;
   Node node = 5;
