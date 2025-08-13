@@ -195,20 +195,18 @@ func evaluateAdminIngress(
 	dstPort int,
 	protocol v1.Protocol,
 ) npav1alpha1.AdminNetworkPolicyRuleAction {
+	// Ingress rules only apply if the source is a pod within the cluster.
+	if srcPod == nil {
+		return npav1alpha1.AdminNetworkPolicyRuleActionPass
+	}
 	for _, policy := range policies {
 		for _, rule := range policy.Spec.Ingress {
 			// If rule.Ports is specified, it must match the destination port.
 			if rule.Ports != nil {
 				// For ingress, a NamedPort is resolved on the pod the policy applies to (the destination pod).
-				// This was a key bug fix.
 				if !evaluateAdminNetworkPolicyPort(*rule.Ports, dstPod, dstPort, protocol) {
 					continue
 				}
-			}
-			// The 'From' field lists sources. The rule applies if any peer matches.
-			// Ingress rules only apply if the source is a pod within the cluster.
-			if srcPod == nil {
-				continue
 			}
 			for _, from := range rule.From {
 				if from.Namespaces != nil && matchesSelector(from.Namespaces, srcPod.Namespace.Labels) {
