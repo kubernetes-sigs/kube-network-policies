@@ -11,6 +11,14 @@ import (
 
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
+
+	v1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/component-base/logs"
 )
 
 // FuncProvider is a test helper that wraps a function to satisfy the
@@ -193,5 +201,166 @@ func TestPipeline_Run_ContextCancellation(t *testing.T) {
 
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected context.DeadlineExceeded error, got %v", err)
+	}
+}
+
+// --- Real Evaluator Pipeline Tests ---
+
+// Test helpers for creating policies and cluster objects
+
+func makeTestPod(name, namespace string, labels map[string]string, ip string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		Status:     v1.PodStatus{PodIP: ip, PodIPs: []v1.PodIP{{IP: ip}}},
+	}
+}
+
+func makeTestNamespace(name string, labels map[string]string) *v1.Namespace {
+	return &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}}
+}
+
+func makeNP(name, namespace string, podSelector labels.Set, policyTypes []networkingv1.PolicyType, egress []networkingv1.NetworkPolicyEgressRule, ingress []networkingv1.NetworkPolicyIngressRule) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: podSelector},
+			PolicyTypes: policyTypes,
+			Egress:      egress,
+			Ingress:     ingress,
+		},
+	}
+}
+
+func TestSinglePipelineWithRealEvaluators(t *testing.T) {
+	logs.GlogSetter("4")
+	// Define common pods and namespaces for tests
+	podA := makeTestPod("pod-a", "ns-a", map[string]string{"app": "a"}, "10.0.1.10")
+	podB := makeTestPod("pod-b", "ns-b", map[string]string{"app": "b"}, "10.0.2.20")
+	nsA := makeTestNamespace("ns-a", map[string]string{"team": "a"})
+	nsB := makeTestNamespace("ns-b", map[string]string{"team": "b"})
+
+	tests := []struct {
+		name        string
+		anpVerdict  Verdict // Mocked ANP verdict
+		banpVerdict Verdict // Mocked BANP verdict
+		nps         []*networkingv1.NetworkPolicy
+		pods        []*v1.Pod
+		namespaces  []*v1.Namespace
+		packet      *network.Packet
+		wantAllow   bool
+	}{
+		{
+			name:        "ANP Allow overrides NP Deny",
+			anpVerdict:  VerdictAccept, // ANP has high priority and allows
+			banpVerdict: VerdictNext,
+			nps: []*networkingv1.NetworkPolicy{
+				// This NP would otherwise deny the traffic
+				makeNP("deny-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil, nil),
+			},
+			pods:       []*v1.Pod{podA, podB},
+			namespaces: []*v1.Namespace{nsA, nsB},
+			packet:     &network.Packet{SrcIP: net.ParseIP(podA.Status.PodIP), DstIP: net.ParseIP(podB.Status.PodIP), DstPort: 80, Proto: v1.ProtocolTCP},
+			wantAllow:  true, // Final outcome should be Allow
+		},
+		{
+			name:        "BANP Allow do not overrides NP Deny",
+			anpVerdict:  VerdictNext,   // ANP passes decision down
+			banpVerdict: VerdictAccept, // BANP allows
+			nps: []*networkingv1.NetworkPolicy{
+				// This NP would otherwise deny the traffic
+				makeNP("deny-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil, nil),
+			},
+			pods:       []*v1.Pod{podA, podB},
+			namespaces: []*v1.Namespace{nsA, nsB},
+			packet:     &network.Packet{SrcIP: net.ParseIP(podA.Status.PodIP), DstIP: net.ParseIP(podB.Status.PodIP), DstPort: 80, Proto: v1.ProtocolTCP},
+			wantAllow:  false, // Final outcome should be Deny
+		},
+		{
+			name:        "ANP Deny overrides NP Allow",
+			anpVerdict:  VerdictDeny, // ANP has high priority and denies
+			banpVerdict: VerdictNext,
+			nps: []*networkingv1.NetworkPolicy{
+				// This NP would otherwise allow the traffic
+				makeNP("allow-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, []networkingv1.NetworkPolicyEgressRule{{ /* empty egress rule allows all */ }}, nil),
+			},
+			pods:       []*v1.Pod{podA, podB},
+			namespaces: []*v1.Namespace{nsA, nsB},
+			packet:     &network.Packet{SrcIP: net.ParseIP(podA.Status.PodIP), DstIP: net.ParseIP(podB.Status.PodIP), DstPort: 80, Proto: v1.ProtocolTCP},
+			wantAllow:  false, // Final outcome should be Deny
+		},
+		{
+			name:        "NP Deny when ANP and BANP Pass",
+			anpVerdict:  VerdictNext, // ANP passes decision down
+			banpVerdict: VerdictNext, // BANP passes decision down
+			nps: []*networkingv1.NetworkPolicy{
+				// This NP selects podA and denies all egress traffic
+				makeNP("deny-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil, nil),
+			},
+			pods:       []*v1.Pod{podA, podB},
+			namespaces: []*v1.Namespace{nsA, nsB},
+			packet:     &network.Packet{SrcIP: net.ParseIP(podA.Status.PodIP), DstIP: net.ParseIP(podB.Status.PodIP), DstPort: 80, Proto: v1.ProtocolTCP},
+			wantAllow:  false, // Final outcome should be Deny
+		},
+		{
+			name:        "Default Allow when all evaluators Pass",
+			anpVerdict:  VerdictNext,
+			banpVerdict: VerdictNext,
+			nps:         []*networkingv1.NetworkPolicy{
+				// No policies select the pod, so NP evaluator should return Next
+			},
+			pods:       []*v1.Pod{podA, podB},
+			namespaces: []*v1.Namespace{nsA, nsB},
+			packet:     &network.Packet{SrcIP: net.ParseIP(podA.Status.PodIP), DstIP: net.ParseIP(podB.Status.PodIP), DstPort: 80, Proto: v1.ProtocolTCP},
+			wantAllow:  true, // Pipeline default is Allow
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup mock informers and providers
+			kubeClient := fake.NewSimpleClientset()
+			informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
+			netpolInformer := informerFactory.Networking().V1().NetworkPolicies()
+
+			podInfoMap := make(map[string]*api.PodInfo)
+			for _, p := range tt.pods {
+				nsLabels := map[string]string{}
+				for _, ns := range tt.namespaces {
+					if p.Namespace == ns.Name {
+						nsLabels = ns.Labels
+						break
+					}
+				}
+				podInfoMap[p.Status.PodIP] = api.NewPodInfo(p, nsLabels, nil, "")
+			}
+
+			podInfoProvider := &FuncProvider{GetFunc: func(podIP string) (*api.PodInfo, bool) {
+				p, ok := podInfoMap[podIP]
+				return p, ok
+			}}
+
+			// For this test, we mock the ANP/BANP evaluators to control their output,
+			// but use the real NetworkPolicy evaluator.
+			anpEvaluator := mockEvaluator("AdminNetworkPolicy", 10, tt.anpVerdict, nil)
+			banpEvaluator := mockEvaluator("BaselineAdminNetworkPolicy", 100, tt.banpVerdict, nil)
+
+			// Use the real NetworkPolicy evaluator, which has a default priority of 50.
+			npEvaluator := NewNetworkPolicyEvaluator("test-node", podInfoProvider, netpolInformer)
+			for _, np := range tt.nps {
+				netpolInformer.Informer().GetStore().Add(np)
+			}
+
+			// A single pipeline containing all evaluators, sorted by priority.
+			pipeline := NewPipeline(anpEvaluator, banpEvaluator, npEvaluator)
+
+			allow, err := pipeline.Run(context.Background(), tt.packet)
+			if err != nil {
+				t.Fatalf("pipeline.Run() returned an unexpected error: %v", err)
+			}
+
+			if allow != tt.wantAllow {
+				t.Errorf("Final verdict mismatch: got allow=%v, want allow=%v", allow, tt.wantAllow)
+			}
+		})
 	}
 }
