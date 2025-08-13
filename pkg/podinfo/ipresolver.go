@@ -122,11 +122,13 @@ func NewNRIResolver(ctx context.Context) (*NRIResolver, error) {
 			}
 			err := p.Run(ctx)
 			if err != nil {
-				klog.Infof("nri plugin exited: %v", err)
+				klog.Infof("nri plugin exited, retrying %d times in 5 seconds: %v", maxRetries, err)
 			}
 			maxRetries--
 			time.Sleep(5 * time.Second)
 		}
+		klog.Infof("nri plugin exited, restart to reconnnect: %v", err)
+
 	}()
 
 	return p, nil
