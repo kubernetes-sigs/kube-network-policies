@@ -34,6 +34,9 @@ func NewAdminNetworkPolicyEvaluator(
 			if err != nil {
 				return VerdictNext, err
 			}
+			if len(allPolicies) == 0 {
+				return VerdictNext, nil
+			}
 
 			// 1. Evaluate Egress policies for the source pod.
 			// These policies dictate whether the source pod is allowed to send traffic.
