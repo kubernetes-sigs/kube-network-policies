@@ -12,8 +12,7 @@ export GOROOT GO111MODULE CGO_ENABLED
 
 
 build:
-	go build -v -o "$(OUT_DIR)/$(BINARY_NAME)" $(KIND_CLOUD_BUILD_FLAGS) cmd/kube-network-policies/main.go
-	go build -v -o "$(OUT_DIR)/kube-ip-tracker" $(KIND_CLOUD_BUILD_FLAGS) cmd/kube-ip-tracker/main.go
+	go build -v -o "$(OUT_DIR)/$(BINARY_NAME)" $(KIND_CLOUD_BUILD_FLAGS) cmd/main.go
 
 clean:
 	rm -rf "$(OUT_DIR)/"
