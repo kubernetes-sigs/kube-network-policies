@@ -5,7 +5,6 @@ import (
 	"net"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
@@ -29,34 +28,36 @@ func NewBaselineAdminNetworkPolicyEvaluator(
 			srcPod, srcPodFound := podInfoGetter(p.SrcIP.String())
 			dstPod, dstPodFound := podInfoGetter(p.DstIP.String())
 
-			// Egress Evaluation
+			allPolicies, err := banpLister.List(labels.Everything())
+			if err != nil {
+				return VerdictNext, err
+			}
+			if len(allPolicies) == 0 {
+				return VerdictNext, nil
+			}
+			// 1. Evaluate Egress policies for the source pod.
+			// These policies dictate whether the source pod is allowed to send traffic.
 			if srcPodFound {
-				allPolicies, err := banpLister.List(labels.Everything())
-				if err != nil {
-					return VerdictNext, err
-				}
 				srcPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(srcPod, allPolicies)
-				action := evaluateBaselineAdminEgress(ctx, srcPodBaselineAdminNetworkPolices, srcPod, dstPod, p.DstIP, int(p.DstPort), p.Proto, nsLister, podInfoGetter)
-				logger.V(2).Info("Egress BaselineAdminNetworkPolicies", "npolicies", len(srcPodBaselineAdminNetworkPolices), "action", action)
-				if action == npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny {
+				egressAction := evaluateBaselineAdminEgress(srcPodBaselineAdminNetworkPolices, dstPod, p.DstIP, p.DstPort, p.Proto)
+				logger.V(2).Info("Egress BaselineAdminNetworkPolicies", "npolicies", len(srcPodBaselineAdminNetworkPolices), "action", egressAction)
+				if egressAction == npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny {
 					return VerdictDeny, nil
 				}
 			}
 
-			// Ingress Evaluation
+			// 2. Evaluate Ingress policies for the destination pod.
+			// These policies dictate whether the destination pod is allowed to receive traffic.
 			if dstPodFound {
-				allPolicies, err := banpLister.List(labels.Everything())
-				if err != nil {
-					return VerdictNext, err
-				}
 				dstPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(dstPod, allPolicies)
-				action := evaluateBaselineAdminIngress(ctx, dstPodBaselineAdminNetworkPolices, dstPod, srcPod, p.SrcIP, int(p.SrcPort), p.Proto, nsLister, podInfoGetter)
-				logger.V(2).Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", action)
-				if action == npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny {
+				ingressAction := evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, p.SrcIP, p.SrcPort, p.Proto)
+				logger.V(2).Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", ingressAction)
+				// Egress has to be Allow or Pass if we are here.
+				if ingressAction == npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny {
 					return VerdictDeny, nil
 				}
-				if action == npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow {
-					return VerdictNext, nil
+				if ingressAction == npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow {
+					return VerdictAccept, nil
 				}
 			}
 
@@ -65,49 +66,133 @@ func NewBaselineAdminNetworkPolicyEvaluator(
 	}
 }
 
-func getBaselineAdminNetworkPoliciesForPod(pod *api.PodInfo, allBANPs []*npav1alpha1.BaselineAdminNetworkPolicy) []*npav1alpha1.BaselineAdminNetworkPolicy {
-	var matchingBANPs []*npav1alpha1.BaselineAdminNetworkPolicy
-	if pod == nil || pod.Namespace == nil {
-		return matchingBANPs
+// getBaselineAdminNetworkPoliciesForPod filters a list of all BANPs and returns only those
+// that apply to a given pod.
+// A policy applies to a pod if the pod matches the policy's 'Subject' field.
+func getBaselineAdminNetworkPoliciesForPod(pod *api.PodInfo, allPolicies []*npav1alpha1.BaselineAdminNetworkPolicy) []*npav1alpha1.BaselineAdminNetworkPolicy {
+	if pod == nil {
+		return nil
 	}
-	for _, banp := range allBANPs {
-		selector, err := metav1.LabelSelectorAsSelector(&banp.Spec.Subject)
-		if err != nil {
-			continue
+
+	var result []*npav1alpha1.BaselineAdminNetworkPolicy
+	for _, policy := range allPolicies {
+		// A policy's subject can select pods in two ways: by their namespace, or by
+		// a combination of namespace and pod labels.
+		subject := policy.Spec.Subject
+		matches := false
+		if subject.Namespaces != nil && matchesSelector(subject.Namespaces, pod.Namespace.Labels) {
+			matches = true
 		}
-		if selector.Matches(labels.Set(pod.Namespace.Labels)) {
-			matchingBANPs = append(matchingBANPs, banp)
+
+		if !matches && subject.Pods != nil &&
+			matchesSelector(&subject.Pods.NamespaceSelector, pod.Namespace.Labels) &&
+			matchesSelector(&subject.Pods.PodSelector, pod.Labels) {
+			matches = true
+		}
+
+		if matches {
+			result = append(result, policy)
 		}
 	}
-	return matchingBANPs
+
+	return result
 }
 
-func evaluateBaselineAdminEgress(ctx context.Context, policies []*npav1alpha1.BaselineAdminNetworkPolicy, srcPod, dstPod *api.PodInfo, dstIP net.IP, dstPort int, protocol v1.Protocol, nsLister anplisters.NamespaceLister, podInfoGetter PodByIPGetter) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
-	// Default action is Allow
-	finalAction := npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
-	for _, policy := range policies {
+func evaluateBaselineAdminEgress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, pod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
+	for _, policy := range adminNetworkPolices {
 		for _, rule := range policy.Spec.Egress {
-			if matchesBaselineAdminEgressRule(ctx, &rule, srcPod, dstPod, dstIP, dstPort, protocol, nsLister, podInfoGetter) {
-				if rule.Action == npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny {
-					return npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny
+			// Ports allows for matching traffic based on port and protocols.
+			// This field is a list of destination ports for the outgoing egress traffic.
+			// If Ports is not set then the rule does not filter traffic via port.
+			if rule.Ports != nil {
+				if !evaluateAdminNetworkPolicyPort(*rule.Ports, pod, port, protocol) {
+					continue
+				}
+			}
+			// To is the List of destinations whose traffic this rule applies to.
+			// If any AdminNetworkPolicyEgressPeer matches the destination of outgoing
+			// traffic then the specified action is applied.
+			// This field must be defined and contain at least one item.
+			for _, to := range rule.To {
+				// Exactly one of the selector pointers must be set for a given peer. If a
+				// consumer observes none of its fields are set, they must assume an unknown
+				// option has been specified and fail closed.
+				if to.Namespaces != nil && pod != nil {
+					if matchesSelector(to.Namespaces, pod.Namespace.Labels) {
+						return rule.Action
+					}
+				}
+
+				if to.Pods != nil && pod != nil {
+					if matchesSelector(&to.Pods.NamespaceSelector, pod.Namespace.Labels) &&
+						matchesSelector(&to.Pods.PodSelector, pod.Labels) {
+						return rule.Action
+					}
+				}
+
+				if to.Nodes != nil && pod != nil {
+					if matchesSelector(to.Nodes, pod.Node.Labels) {
+						return rule.Action
+					}
+				}
+
+				for _, network := range to.Networks {
+					_, cidr, err := net.ParseCIDR(string(network))
+					if err != nil { // this has been validated by the API
+						continue
+					}
+					if cidr.Contains(ip) {
+						return rule.Action
+					}
 				}
 			}
 		}
 	}
-	return finalAction
+
+	return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
 }
 
-func evaluateBaselineAdminIngress(ctx context.Context, policies []*npav1alpha1.BaselineAdminNetworkPolicy, dstPod, srcPod *api.PodInfo, srcIP net.IP, srcPort int, protocol v1.Protocol, nsLister anplisters.NamespaceLister, podInfoGetter PodByIPGetter) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
-	// Default action is Allow
-	finalAction := npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
-	for _, policy := range policies {
+func evaluateBaselineAdminIngress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, pod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
+	// Ingress rules only apply to pods
+	if pod == nil {
+		return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
+	}
+	for _, policy := range adminNetworkPolices {
+		// Ingress is the list of Ingress rules to be applied to the selected pods. A total of 100 rules will be allowed in each ANP instance. The relative precedence of ingress rules within a single ANP object (all of which share the priority) will be determined by the order in which the rule is written. Thus, a rule that appears at the top of the ingress rules would take the highest precedence.
+		// ANPs with no ingress rules do not affect ingress traffic.
 		for _, rule := range policy.Spec.Ingress {
-			if matchesBaselineAdminIngressRule(ctx, &rule, dstPod, srcPod, srcIP, srcPort, protocol, nsLister, podInfoGetter) {
-				if rule.Action == npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny {
-					return npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny
+			// Ports allows for matching traffic based on port and protocols.
+			// This field is a list of ports which should be matched on the pods selected for this policy
+			// i.e the subject of the policy. So it matches on the destination port for the ingress traffic.
+			// If Ports is not set then the rule does not filter traffic via port.
+			if rule.Ports != nil {
+				if !evaluateAdminNetworkPolicyPort(*rule.Ports, pod, port, protocol) {
+					continue
 				}
 			}
+			// From is the list of sources whose traffic this rule applies to.
+			// If any AdminNetworkPolicyIngressPeer matches the source of incoming traffic then the specified action is applied.
+			// This field must be defined and contain at least one item.
+			for _, from := range rule.From {
+				// Exactly one of the selector pointers must be set for a given peer. If a
+				// consumer observes none of its fields are set, they must assume an unknown
+				// option has been specified and fail closed.
+				if from.Namespaces != nil {
+					if matchesSelector(from.Namespaces, pod.Namespace.Labels) {
+						return rule.Action
+					}
+				}
+
+				if from.Pods != nil {
+					if matchesSelector(&from.Pods.NamespaceSelector, pod.Namespace.Labels) &&
+						matchesSelector(&from.Pods.PodSelector, pod.Labels) {
+						return rule.Action
+					}
+				}
+			}
+
 		}
 	}
-	return finalAction
+
+	return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
 }
