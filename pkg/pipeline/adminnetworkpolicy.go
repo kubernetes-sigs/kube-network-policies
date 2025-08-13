@@ -7,9 +7,7 @@ import (
 	"slices"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
@@ -17,268 +15,235 @@ import (
 	anplisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 )
 
-// namespaceSelector return true if the namespace selector matches the pod
-func namespaceSelector(selector *metav1.LabelSelector, pod *api.PodInfo) bool {
-	nsSelector, err := metav1.LabelSelectorAsSelector(selector)
-	if err != nil {
-		return false
-	}
-
-	return nsSelector.Matches(labels.Set(pod.Namespace.Labels))
-}
-
-// podSelector return true if the pod selector matches the pod
-func podSelector(selector *metav1.LabelSelector, pod *api.PodInfo) bool {
-	podSelector, err := metav1.LabelSelectorAsSelector(selector)
-	if err != nil {
-		return false
-	}
-	return podSelector.Matches(labels.Set(pod.Labels))
-}
-
-// nodeSelector return true if the node selector matches the pod
-func nodeSelector(selector *metav1.LabelSelector, pod *api.PodInfo) bool {
-	nodeSelector, err := metav1.LabelSelectorAsSelector(selector)
-	if err != nil {
-		return false
-	}
-	return nodeSelector.Matches(labels.Set(pod.Node.Labels))
-}
-
 // NewAdminNetworkPolicyEvaluator creates a new pipeline evaluator for AdminNetworkPolicies.
+// This evaluator determines the fate of a network packet based on the highest-priority
+// AdminNetworkPolicy rules that apply to the source (for Egress) and destination (for Ingress) pods.
 func NewAdminNetworkPolicyEvaluator(
 	podInfoGetter PodByIPGetter,
 	anpLister anplisters.AdminNetworkPolicyLister,
-	nsLister corelisters.NamespaceLister,
 ) Evaluator {
 	return Evaluator{
 		Priority: 10,
 		Name:     "AdminNetworkPolicy",
 		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
 			logger := klog.FromContext(ctx)
-			srcPod, srcPodFound := podInfoGetter(p.SrcIP.String())
-			dstPod, dstPodFound := podInfoGetter(p.DstIP.String())
+			srcPod, _ := podInfoGetter(p.SrcIP.String())
+			dstPod, _ := podInfoGetter(p.DstIP.String())
 
-			verdict := VerdictNext
-			// Egress Evaluation
-			if dstPodFound {
-				allPolicies, err := anpLister.List(labels.Everything())
-				if err != nil {
-					return VerdictNext, err
-				}
-				srcPodAdminNetworkPolices := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
-				action := evaluateAdminEgress(srcPodAdminNetworkPolices, dstPod, p.DstIP, p.DstPort, p.Proto)
-				logger.V(2).Info("Egress AdminNetworkPolicies", "npolicies", len(srcPodAdminNetworkPolices), "action", action)
-
-				switch action {
-				case npav1alpha1.AdminNetworkPolicyRuleActionDeny:
-					return VerdictDeny, nil
-				case npav1alpha1.AdminNetworkPolicyRuleActionAllow:
-					verdict = VerdictAccept
-					break
-				case npav1alpha1.AdminNetworkPolicyRuleActionPass:
-					break
-				}
+			allPolicies, err := anpLister.List(labels.Everything())
+			if err != nil {
+				return VerdictNext, err
 			}
 
-			// Ingress Evaluation
-			if srcPodFound {
-				allPolicies, err := anpLister.List(labels.Everything())
-				if err != nil {
-					return VerdictNext, err
-				}
-				dstPodAdminNetworkPolices := getAdminNetworkPoliciesForPod(dstPod, allPolicies)
-				action := evaluateAdminIngress(dstPodAdminNetworkPolices, srcPod, p.DstPort, p.Proto)
-				logger.V(2).Info("Ingress AdminNetworkPolicies", "npolicies", len(dstPodAdminNetworkPolices), "action", action)
+			// 1. Evaluate Egress policies for the source pod.
+			// These policies dictate whether the source pod is allowed to send traffic.
+			srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
+			egressAction := evaluateAdminEgress(srcPodAdminNetworkPolicies, srcPod, dstPod, p.DstIP, p.DstPort, p.Proto)
+			logger.V(2).Info("Egress AdminNetworkPolicies evaluation complete", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
 
-				switch action {
-				case npav1alpha1.AdminNetworkPolicyRuleActionDeny:
-					return VerdictDeny, nil
-				case npav1alpha1.AdminNetworkPolicyRuleActionAllow:
-					return VerdictAccept, nil
-				case npav1alpha1.AdminNetworkPolicyRuleActionPass:
-					break
-				}
+			// 2. Evaluate Ingress policies for the destination pod.
+			// These policies dictate whether the destination pod is allowed to receive traffic.
+			dstPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(dstPod, allPolicies)
+			ingressAction := evaluateAdminIngress(dstPodAdminNetworkPolicies, srcPod, dstPod, p.DstPort, p.Proto)
+			logger.V(2).Info("Ingress AdminNetworkPolicies evaluation complete", "npolicies", len(dstPodAdminNetworkPolicies), "action", ingressAction)
+
+			// 3. Combine Egress and Ingress results to determine the final verdict.
+			// A DENY from either side takes precedence and drops the packet.
+			if egressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny || ingressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny {
+				return VerdictDeny, nil
 			}
 
-			return verdict, nil
+			// An ALLOW is only granted if BOTH sides explicitly allow the traffic.
+			if egressAction == npav1alpha1.AdminNetworkPolicyRuleActionAllow && ingressAction == npav1alpha1.AdminNetworkPolicyRuleActionAllow {
+				return VerdictAccept, nil
+			}
+
+			// In all other cases (e.g., Allow+Pass, Pass+Pass), the decision is deferred
+			// to the next evaluator in the pipeline (e.g., standard NetworkPolicy).
+			// This is because a 'Pass' action explicitly delegates control, and an 'Allow'
+			// on one side is not sufficient if the other side has not also made a final decision.
+			return VerdictNext, nil
 		},
 	}
 }
 
-func getAdminNetworkPoliciesForPod(pod *api.PodInfo, networkPolicies []*npav1alpha1.AdminNetworkPolicy) []*npav1alpha1.AdminNetworkPolicy {
+// getAdminNetworkPoliciesForPod filters a list of all ANPs and returns only those
+// that apply to a given pod, sorted by priority.
+// A policy applies to a pod if the pod matches the policy's 'Subject' field.
+// Policies are sorted first by their 'Priority' field (lower value is higher precedence)
+// and then by name for stable ordering.
+func getAdminNetworkPoliciesForPod(pod *api.PodInfo, allPolicies []*npav1alpha1.AdminNetworkPolicy) []*npav1alpha1.AdminNetworkPolicy {
 	if pod == nil {
 		return nil
 	}
 
-	result := []*npav1alpha1.AdminNetworkPolicy{}
-	for _, policy := range networkPolicies {
-		if policy.Spec.Subject.Namespaces != nil &&
-			namespaceSelector(policy.Spec.Subject.Namespaces, pod) {
-			result = append(result, policy)
+	var result []*npav1alpha1.AdminNetworkPolicy
+	for _, policy := range allPolicies {
+		// A policy's subject can select pods in two ways: by their namespace, or by
+		// a combination of namespace and pod labels.
+		subject := policy.Spec.Subject
+		matches := false
+		if subject.Namespaces != nil && matchesSelector(subject.Namespaces, pod.Namespace.Labels) {
+			matches = true
 		}
 
-		if policy.Spec.Subject.Pods != nil &&
-			namespaceSelector(&policy.Spec.Subject.Pods.NamespaceSelector, pod) &&
-			podSelector(&policy.Spec.Subject.Pods.PodSelector, pod) {
-			klog.InfoS("Pod match AdminNetworkPolicy", "policy", policy.Name)
+		if !matches && subject.Pods != nil &&
+			matchesSelector(&subject.Pods.NamespaceSelector, pod.Namespace.Labels) &&
+			matchesSelector(&subject.Pods.PodSelector, pod.Labels) {
+			matches = true
+		}
+
+		if matches {
 			result = append(result, policy)
 		}
 	}
-	// Rules with lower priority values have higher precedence
+
+	// Per ANP API spec, rules with lower priority values have higher precedence.
 	slices.SortFunc(result, func(a, b *npav1alpha1.AdminNetworkPolicy) int {
 		if n := cmp.Compare(a.Spec.Priority, b.Spec.Priority); n != 0 {
 			return n
 		}
-		// If priorities are equal, order by name
+		// If priorities are equal, sort by name to ensure deterministic evaluation order.
 		return cmp.Compare(a.Name, b.Name)
 	})
 	return result
 }
 
-// evaluateAdminEgress assume the list of network policies is ordered
-func evaluateAdminEgress(adminNetworkPolices []*npav1alpha1.AdminNetworkPolicy, pod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.AdminNetworkPolicyRuleAction {
-	for _, policy := range adminNetworkPolices {
+// evaluateAdminEgress evaluates a list of egress policies for a traffic flow.
+// It iterates through the sorted policies and their rules, returning the action
+// of the first matching rule.
+// An egress rule matches if its 'To' peer selector matches the traffic's destination
+// and its 'Ports' selector matches the destination port/protocol.
+// If no rule matches, it returns 'Pass'.
+func evaluateAdminEgress(
+	policies []*npav1alpha1.AdminNetworkPolicy,
+	srcPod, dstPod *api.PodInfo, // srcPod for context, dstPod for peer matching
+	dstIP net.IP,
+	dstPort int,
+	protocol v1.Protocol,
+) npav1alpha1.AdminNetworkPolicyRuleAction {
+	for _, policy := range policies {
 		for _, rule := range policy.Spec.Egress {
-			// Ports allows for matching traffic based on port and protocols.
-			// This field is a list of destination ports for the outgoing egress traffic.
-			// If Ports is not set then the rule does not filter traffic via port.
+			// If rule.Ports is specified, it must match the destination port.
 			if rule.Ports != nil {
-				if !evaluateAdminNetworkPolicyPort(*rule.Ports, pod, port, protocol) {
+				// For egress, a NamedPort must be resolved on the destination pod.
+				if !evaluateAdminNetworkPolicyPort(*rule.Ports, dstPod, dstPort, protocol) {
 					continue
 				}
 			}
-			// To is the List of destinations whose traffic this rule applies to.
-			// If any AdminNetworkPolicyEgressPeer matches the destination of outgoing
-			// traffic then the specified action is applied.
-			// This field must be defined and contain at least one item.
+			// The 'To' field lists destinations. The rule applies if any peer matches.
 			for _, to := range rule.To {
-				// Exactly one of the selector pointers must be set for a given peer. If a
-				// consumer observes none of its fields are set, they must assume an unknown
-				// option has been specified and fail closed.
-				if to.Namespaces != nil && pod != nil {
-					if namespaceSelector(to.Namespaces, pod) {
-						return rule.Action
-					}
+				if to.Namespaces != nil && dstPod != nil && matchesSelector(to.Namespaces, dstPod.Namespace.Labels) {
+					return rule.Action
 				}
 
-				if to.Pods != nil && pod != nil {
-					if namespaceSelector(&to.Pods.NamespaceSelector, pod) &&
-						podSelector(&to.Pods.PodSelector, pod) {
-						return rule.Action
-					}
+				if to.Pods != nil && dstPod != nil &&
+					matchesSelector(&to.Pods.NamespaceSelector, dstPod.Namespace.Labels) &&
+					matchesSelector(&to.Pods.PodSelector, dstPod.Labels) {
+					return rule.Action
 				}
 
-				if to.Nodes != nil && pod != nil {
-					if nodeSelector(to.Nodes, pod) {
-						return rule.Action
-					}
+				if to.Nodes != nil && dstPod != nil && matchesSelector(to.Nodes, dstPod.Node.Labels) {
+					return rule.Action
 				}
 
+				// Check for CIDR match for traffic to non-pod or external destinations.
 				for _, network := range to.Networks {
 					_, cidr, err := net.ParseCIDR(string(network))
-					if err != nil { // this has been validated by the API
+					if err != nil { // Should be validated by the API.
 						continue
 					}
-					if cidr.Contains(ip) {
+					if cidr.Contains(dstIP) {
 						return rule.Action
 					}
 				}
-
-				// TODO DNS
-				// for _, domain := range to.DomainNames {
-				//	if c.domainCache.ContainsIP(string(domain), ip) {
-				//		return rule.Action
-				//	}
-				// }
+				// TODO: DNS matching can be added here.
 			}
 		}
 	}
-
+	// Per ANP spec, if no rule matches, the default action is 'Pass'.
 	return npav1alpha1.AdminNetworkPolicyRuleActionPass
 }
 
-// evaluateAdminIngress assume the list of network policies is ordered
-func evaluateAdminIngress(adminNetworkPolices []*npav1alpha1.AdminNetworkPolicy, pod *api.PodInfo, port int, protocol v1.Protocol) npav1alpha1.AdminNetworkPolicyRuleAction {
-	// Ingress rules only apply to pods
-	if pod == nil {
-		return npav1alpha1.AdminNetworkPolicyRuleActionPass
-	}
-	for _, policy := range adminNetworkPolices {
-		// Ingress is the list of Ingress rules to be applied to the selected pods. A total of 100 rules will be allowed in each ANP instance. The relative precedence of ingress rules within a single ANP object (all of which share the priority) will be determined by the order in which the rule is written. Thus, a rule that appears at the top of the ingress rules would take the highest precedence.
-		// ANPs with no ingress rules do not affect ingress traffic.
+// evaluateAdminIngress evaluates a list of ingress policies for a traffic flow.
+// It iterates through the sorted policies and their rules, returning the action
+// of the first matching rule.
+// An ingress rule matches if its 'From' peer selector matches the traffic's source
+// and its 'Ports' selector matches the destination port/protocol on the subject pod.
+// If no rule matches, it returns 'Pass'.
+func evaluateAdminIngress(
+	policies []*npav1alpha1.AdminNetworkPolicy,
+	srcPod, dstPod *api.PodInfo, // srcPod for peer matching, dstPod for port resolution
+	dstPort int,
+	protocol v1.Protocol,
+) npav1alpha1.AdminNetworkPolicyRuleAction {
+	for _, policy := range policies {
 		for _, rule := range policy.Spec.Ingress {
-			// Ports allows for matching traffic based on port and protocols.
-			// This field is a list of ports which should be matched on the pods selected for this policy
-			// i.e the subject of the policy. So it matches on the destination port for the ingress traffic.
-			// If Ports is not set then the rule does not filter traffic via port.
+			// If rule.Ports is specified, it must match the destination port.
 			if rule.Ports != nil {
-				if !evaluateAdminNetworkPolicyPort(*rule.Ports, pod, port, protocol) {
+				// For ingress, a NamedPort is resolved on the pod the policy applies to (the destination pod).
+				// This was a key bug fix.
+				if !evaluateAdminNetworkPolicyPort(*rule.Ports, dstPod, dstPort, protocol) {
 					continue
 				}
 			}
-			// From is the list of sources whose traffic this rule applies to.
-			// If any AdminNetworkPolicyIngressPeer matches the source of incoming traffic then the specified action is applied.
-			// This field must be defined and contain at least one item.
+			// The 'From' field lists sources. The rule applies if any peer matches.
+			// Ingress rules only apply if the source is a pod within the cluster.
+			if srcPod == nil {
+				continue
+			}
 			for _, from := range rule.From {
-				// Exactly one of the selector pointers must be set for a given peer. If a
-				// consumer observes none of its fields are set, they must assume an unknown
-				// option has been specified and fail closed.
-				if from.Namespaces != nil {
-					if namespaceSelector(from.Namespaces, pod) {
-						return rule.Action
-					}
+				if from.Namespaces != nil && matchesSelector(from.Namespaces, srcPod.Namespace.Labels) {
+					return rule.Action
 				}
 
-				if from.Pods != nil {
-					if namespaceSelector(&from.Pods.NamespaceSelector, pod) &&
-						podSelector(&from.Pods.PodSelector, pod) {
-						return rule.Action
-					}
+				if from.Pods != nil &&
+					matchesSelector(&from.Pods.NamespaceSelector, srcPod.Namespace.Labels) &&
+					matchesSelector(&from.Pods.PodSelector, srcPod.Labels) {
+					return rule.Action
 				}
 			}
-
 		}
 	}
-
+	// Per ANP spec, if no rule matches, the default action is 'Pass'.
 	return npav1alpha1.AdminNetworkPolicyRuleActionPass
 }
 
-func evaluateAdminNetworkPolicyPort(networkPolicyPorts []npav1alpha1.AdminNetworkPolicyPort, pod *api.PodInfo, port int, protocol v1.Protocol) bool {
-	// AdminNetworkPolicyPort describes how to select network ports on pod(s).
-	// Exactly one field must be set.
-	if len(networkPolicyPorts) == 0 {
+// evaluateAdminNetworkPolicyPort checks if a specific port and protocol match any
+// of the port selectors in the given list.
+// A 'pod' parameter is required for resolving NamedPorts.
+func evaluateAdminNetworkPolicyPort(
+	policyPorts []npav1alpha1.AdminNetworkPolicyPort,
+	pod *api.PodInfo, // The pod on which a NamedPort should be resolved.
+	port int,
+	protocol v1.Protocol,
+) bool {
+	// If the port list is empty, the rule matches all ports.
+	if len(policyPorts) == 0 {
 		return true
 	}
 
-	for _, policyPort := range networkPolicyPorts {
-		// Port number
-		if policyPort.PortNumber != nil &&
-			policyPort.PortNumber.Port == int32(port) &&
-			policyPort.PortNumber.Protocol == protocol {
+	for _, policyPort := range policyPorts {
+		// Match by port number and protocol.
+		if p := policyPort.PortNumber; p != nil && p.Port == int32(port) && p.Protocol == protocol {
 			return true
 		}
 
-		// Named Port
-		if policyPort.NamedPort != nil {
-			if pod == nil {
-				continue
-			}
-			for _, p := range pod.ContainerPorts {
-				if p.Name == *policyPort.NamedPort {
+		// Match by named port. This requires pod info to look up the container port name.
+		if p := policyPort.NamedPort; p != nil && pod != nil {
+			for _, containerPort := range pod.ContainerPorts {
+				if containerPort.Name == *p && v1.Protocol(containerPort.Protocol) == protocol && containerPort.Port == int32(port) {
 					return true
 				}
 			}
 		}
 
-		// Port range
-		if policyPort.PortRange != nil &&
-			policyPort.PortRange.Protocol == protocol &&
-			policyPort.PortRange.Start <= int32(port) &&
-			policyPort.PortRange.End >= int32(port) {
+		// Match by a range of ports and protocol.
+		if p := policyPort.PortRange; p != nil && p.Protocol == protocol && int32(port) >= p.Start && int32(port) <= p.End {
 			return true
 		}
-
 	}
+
+	// No selector matched the given port and protocol.
 	return false
 }
