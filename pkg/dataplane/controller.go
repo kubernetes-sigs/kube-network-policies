@@ -71,7 +71,6 @@ type Config struct {
 	NodeName                   string
 	NetfilterBug1766Fix        bool
 	NFTableName                string // if other projects use this controllers they need to be able to use their own table name
-	Evaluators                 []pipeline.Evaluator
 }
 
 func (c *Config) Defaults() error {
@@ -96,6 +95,7 @@ func NewController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
+	pipeline *pipeline.Pipeline,
 	config Config,
 ) (*Controller, error) {
 	err := config.Defaults()
@@ -108,6 +108,7 @@ func NewController(client clientset.Interface,
 		networkpolicyInformer,
 		namespaceInformer,
 		podInformer,
+		pipeline,
 		config,
 	)
 }
@@ -116,6 +117,7 @@ func newController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
+	pipeline *pipeline.Pipeline,
 	config Config,
 ) (*Controller, error) {
 	klog.V(2).Info("Creating event broadcaster")
@@ -127,7 +129,7 @@ func newController(client clientset.Interface,
 	klog.V(2).InfoS("Creating controller", "config", config)
 	c := &Controller{
 		client:   client,
-		pipeline: pipeline.NewPipeline(config.Evaluators...),
+		pipeline: pipeline,
 		config:   config,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
