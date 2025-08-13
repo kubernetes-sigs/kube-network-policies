@@ -6,7 +6,6 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
@@ -18,7 +17,6 @@ import (
 func NewBaselineAdminNetworkPolicyEvaluator(
 	podInfoGetter PodByIPGetter,
 	banpLister anplisters.BaselineAdminNetworkPolicyLister,
-	nsLister corelisters.NamespaceLister,
 ) Evaluator {
 	return Evaluator{
 		Priority: 100,

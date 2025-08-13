@@ -255,11 +255,31 @@ func run() int {
 		return api.NewPodInfo(pod, nsLabels, nodeLabels, ""), true
 	}
 
+	networkPolicyEvaluator := pipeline.NewNetworkPolicyEvaluator(nodeName,
+		getPodInfo,
+		podInformer.Lister(),
+		nsInformer.Lister(),
+		networkPolicyInfomer.Lister(),
+	)
+
 	cfg.Evaluators = []pipeline.Evaluator{
 		pipeline.NewLoggingEvaluator(getPodInfo),
+		networkPolicyEvaluator,
 		// ... add other evaluators, passing the getter where needed
 	}
 
+	if adminNetworkPolicy {
+		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewAdminNetworkPolicyEvaluator(
+			getPodInfo,
+			anpInformer.Lister(),
+		))
+	}
+	if baselineAdminNetworkPolicy {
+		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewBaselineAdminNetworkPolicyEvaluator(
+			getPodInfo,
+			banpInformer.Lister(),
+		))
+	}
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
 		err := http.ListenAndServe(metricsBindAddress, nil)
