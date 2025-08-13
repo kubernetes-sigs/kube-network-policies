@@ -168,13 +168,17 @@ func run() int {
 		klog.Fatalf("Failed to set pod informer transform: %v", err)
 	}
 
+	// Create the Pod IP resolvers.
+	// First, given an IP address they return the Pod name/namespace.
 	informerResolver, err := podinfo.NewInformerResolver(podInformer.Informer())
 	if err != nil {
 		klog.Fatalf("Failed to create informer resolver: %v", err)
 	}
 	resolvers := []podinfo.IPResolver{informerResolver}
 
-	// Create an NRI Pod IP resolver.
+	// Create an NRI Pod IP resolver if enabled, since NRI connects to the container runtime
+	// the Pod and IP information is provided at the time the Pod Sandbox is created and before
+	// the containers start running, so policies can be enforced without race conditions.
 	if !disableNRI {
 		nriIPResolver, err := podinfo.NewNRIResolver(ctx)
 		if err != nil {
@@ -183,23 +187,33 @@ func run() int {
 		resolvers = append(resolvers, nriIPResolver)
 	}
 
+	// Create the pod info provider to obtain the Pod information
+	// necessary for the network policy evaluation, it uses the resolvers
+	// to obtain the key (Pod name and namespace) and use the informers to obtain
+	// the labels that are necessary to match the network policies.
 	podInfoProvider := podinfo.New(
 		podInformer,
 		nsInformer,
 		nodeInformer,
 		resolvers)
 
-	cfg.Evaluators = []pipeline.Evaluator{
+	// Create the evaluators for the Pipeline to process the packets
+	// and take a network policy action.
+	evaluators := []pipeline.Evaluator{
 		pipeline.NewNetworkPolicyEvaluator(nodeName,
 			podInfoProvider,
 			networkPolicyInfomer,
 		)}
 
 	if klog.V(2).Enabled() {
-		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewLoggingEvaluator(podInfoProvider))
+		evaluators = append(evaluators, pipeline.NewLoggingEvaluator(podInfoProvider))
 	}
 
 	if adminNetworkPolicy {
+		// Admin Network Policy need to associate IP addresses to Domains
+		// NewDomainCache implements the interface DomainResolver using
+		// nftables to create a cache with the resolved IP addresses from the
+		// Pod domain queries.
 		domainResolver := dns.NewDomainCache(queueID + 1)
 		go func() {
 			err := domainResolver.Run(ctx)
@@ -208,29 +222,33 @@ func run() int {
 			}
 		}()
 
-		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewAdminNetworkPolicyEvaluator(
+		evaluators = append(evaluators, pipeline.NewAdminNetworkPolicyEvaluator(
 			podInfoProvider,
 			domainResolver,
 			anpInformer,
 		))
 	}
+
 	if baselineAdminNetworkPolicy {
-		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewBaselineAdminNetworkPolicyEvaluator(
+		evaluators = append(evaluators, pipeline.NewBaselineAdminNetworkPolicyEvaluator(
 			podInfoProvider,
 			banpInformer,
 		))
 	}
+
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
 		err := http.ListenAndServe(metricsBindAddress, nil)
 		utilruntime.HandleError(err)
 	}()
 
+	// Create the controller that enforces the network policies on the data plane
 	networkPolicyController, err := dataplane.NewController(
 		clientset,
 		networkPolicyInfomer,
 		nsInformer,
 		podInformer,
+		pipeline.NewPipeline(evaluators...),
 		cfg,
 	)
 	if err != nil {
