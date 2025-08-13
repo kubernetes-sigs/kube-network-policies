@@ -210,7 +210,7 @@ func TestNRIResolver_PodLifecycle(t *testing.T) {
 	// 3. Synchronize state
 	resolver.podIPMap = make(map[string]string) // Clear map
 	pod3 := makeNRIPod("ns3", "pod3", []string{"10.0.0.3"})
-	
+
 	if _, err := resolver.Synchronize(context.Background(), []*nriapi.PodSandbox{pod1, pod2, pod3}, nil); err != nil {
 		t.Fatalf("Synchronize() failed: %v", err)
 	}
@@ -241,15 +241,6 @@ func TestNRIResolver_PodLifecycle(t *testing.T) {
 		t.Errorf("LookupPod(10.0.0.2) after removal got %q, %v; want %q, true", key, ok, "ns2/pod2")
 	}
 
-	// 5. Test removing pod by key fallback
-	resolver.podIPMap["10.0.0.2"] = "ns2/pod2" // ensure it's there
-	pod2NoIPs := makeNRIPod("ns2", "pod2", nil) // Simulate missing IPs on remove
-	if err := resolver.RemovePodSandbox(context.Background(), pod2NoIPs); err != nil {
-		t.Fatalf("RemovePodSandbox() with no IPs failed: %v", err)
-	}
-	if _, ok := resolver.LookupPod("10.0.0.2"); ok {
-		t.Error("LookupPod(10.0.0.2) should have failed after fallback removal")
-	}
 }
 
 func TestNRIResolver_LookupPod(t *testing.T) {

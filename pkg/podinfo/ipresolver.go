@@ -198,15 +198,6 @@ func (p *NRIResolver) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox
 		delete(p.podIPMap, ip)
 		p.mu.Unlock()
 	}
-	// remove also the pod from the cache in case the logic for IPs fails
-	// There are no expected to be more than 128 or 255 pods per node
-	p.mu.Lock()
-	for ip, v := range p.podIPMap {
-		if v == podKey {
-			delete(p.podIPMap, ip)
-		}
-	}
-	p.mu.Unlock()
 	return nil
 }
 
