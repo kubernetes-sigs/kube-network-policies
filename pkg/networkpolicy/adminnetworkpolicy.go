@@ -47,7 +47,7 @@ func NewAdminNetworkPolicyEvaluator(
 			egressAction := npav1alpha1.AdminNetworkPolicyRuleActionPass
 			if srcPodFound {
 				srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
-				egressAction = evaluateAdminEgress(domainResolver, srcPodAdminNetworkPolicies, srcPod, dstPod, p.DstIP, p.DstPort, p.Proto)
+				egressAction = evaluateAdminEgress(domainResolver, srcPodAdminNetworkPolicies, dstPod, p.DstIP, p.DstPort, p.Proto)
 				logger.V(2).Info("Egress AdminNetworkPolicies evaluation complete", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
 				if egressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny {
 					return VerdictDeny, nil
@@ -131,7 +131,7 @@ func getAdminNetworkPoliciesForPod(pod *api.PodInfo, allPolicies []*npav1alpha1.
 func evaluateAdminEgress(
 	domainResolver DomainResolver,
 	policies []*npav1alpha1.AdminNetworkPolicy,
-	srcPod, dstPod *api.PodInfo, // srcPod for context, dstPod for peer matching
+	dstPod *api.PodInfo,
 	dstIP net.IP,
 	dstPort int,
 	protocol v1.Protocol,
