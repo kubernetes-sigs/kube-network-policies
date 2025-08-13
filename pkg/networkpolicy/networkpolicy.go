@@ -65,13 +65,18 @@ func NewNetworkPolicyEvaluator(
 			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
 			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
 
+			// default verdict is to pass to the next evaluator if no network policies apply
+			verdictEgress, verdictIngress := VerdictNext, VerdictNext
 			// --- Egress Evaluation ---
 			if srcPodFound {
 				egressPolicies := GetNetworkPoliciesForPod(srcPod, networkpolicyLister)
 				logger.V(2).Info("NetworkPolicies on Egress", "npolicies", len(egressPolicies), "srcPod", srcPod.Namespace.Name+"/"+srcPod.Name)
+				// Network Policies apply to the source pod, so traffic will be accepted or denied
 				if len(egressPolicies) > 0 {
 					if !evaluatePolicyDirection(ctx, egressPolicies, networkingv1.PolicyTypeEgress, srcPod, p.SrcPort, dstPod, p.DstIP, p.DstPort, p.Proto) {
 						return VerdictDeny, nil
+					} else {
+						verdictEgress = VerdictAccept
 					}
 				}
 			}
@@ -80,11 +85,17 @@ func NewNetworkPolicyEvaluator(
 			if dstPodFound {
 				ingressPolicies := GetNetworkPoliciesForPod(dstPod, networkpolicyLister)
 				logger.V(2).Info("NetworkPolicies on Ingress", "npolicies", len(ingressPolicies), "dstPod", dstPod.Namespace.Name+"/"+dstPod.Name)
+				// Network Policies apply to the destination pod, so traffic will be accepted or denied
 				if len(ingressPolicies) > 0 {
 					if !evaluatePolicyDirection(ctx, ingressPolicies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
 						return VerdictDeny, nil
+					} else {
+						verdictIngress = VerdictAccept
 					}
 				}
+			}
+			if verdictEgress == VerdictAccept && verdictIngress == VerdictAccept {
+				return VerdictAccept, nil
 			}
 
 			return VerdictNext, nil
