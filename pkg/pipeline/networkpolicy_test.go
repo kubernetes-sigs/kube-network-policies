@@ -521,7 +521,7 @@ func TestSyncPacket(t *testing.T) {
 						if ip.IP == podIP {
 							for _, n := range tt.namespace {
 								if n.Name == p.Namespace {
-									return api.PodAndNamespaceToPodInfo(p, n, ""), true
+									return api.NewPodInfo(p, n.Labels, nil, ""), true
 								}
 							}
 						}
@@ -757,7 +757,7 @@ func TestEvaluator_evaluateSelectors(t *testing.T) {
 			if !ok {
 				t.Fatal("namespace not found")
 			}
-			podInfo := api.PodAndNamespaceToPodInfo(tt.pod, ns, "")
+			podInfo := api.NewPodInfo(tt.pod, ns.Labels, nil, "")
 			if got := evaluateSelectors(context.TODO(), tt.peerPodSelector, tt.peerNSSelector, podInfo, tt.policyNs); got != tt.want {
 				t.Errorf("Controller.evaluateSelectors() = %v, want %v", got, tt.want)
 			}
@@ -899,7 +899,7 @@ func TestEvaluator_evaluatePorts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			if got := evaluatePorts(tt.networkPolicyPorts, api.PodAndNamespaceToPodInfo(tt.pod, &v1.Namespace{}, ""), tt.port, tt.protocol); got != tt.want {
+			if got := evaluatePorts(tt.networkPolicyPorts, api.NewPodInfo(tt.pod, nil, nil, ""), tt.port, tt.protocol); got != tt.want {
 				t.Errorf("Controller.evaluatePorts() = %v, want %v", got, tt.want)
 			}
 		})

@@ -176,7 +176,7 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 						if ip.IP == podIP {
 							for _, n := range namespaces {
 								if n.Name == p.Namespace {
-									return api.PodAndNamespaceAndNodeToPodInfo(p, n, makeNode("test-node"), ""), true
+									return api.NewPodInfo(p, n.Labels, makeNode("test-node").Labels, ""), true
 								}
 							}
 						}
