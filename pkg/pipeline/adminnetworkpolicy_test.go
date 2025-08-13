@@ -496,7 +496,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 
 			evaluator := NewAdminNetworkPolicyEvaluator(podInfoProvider,
 				nil,
-				adminNetworkPolicyInformer.Lister(),
+				adminNetworkPolicyInformer,
 			)
 
 			verdict, err := evaluator.Evaluate(context.TODO(), &tt.p)
@@ -765,6 +765,10 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 }
 
 func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
+	_, err := logs.GlogSetter("4")
+	if err != nil {
+		t.Fatal(err)
+	}
 	podA := makePod("a", "foo", "192.168.1.11")
 	ipAllow := net.ParseIP("10.0.0.1")
 	ipDeny := net.ParseIP("10.0.0.2")
@@ -979,12 +983,8 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 			}
 
 			getPodInfo := func(podIP string) (*api.PodInfo, bool) {
-				for _, p := range podA.Status.PodIPs {
-					if p.IP == podIP {
-						// In this specific test, podA is the only source pod, and its namespace/node labels are fixed.
-						// We don't need to iterate through tt.namespace or tt.node as in the previous test.
-						return api.NewPodInfo(podA, makeNamespace("foo").Labels, makeNode("testnode").Labels, ""), true
-					}
+				if podIP == "192.168.1.11" {
+					return api.NewPodInfo(podA, makeNamespace("foo").Labels, makeNode("testnode").Labels, ""), true
 				}
 				return nil, false
 			}
@@ -1012,10 +1012,11 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 
 			evaluator := NewAdminNetworkPolicyEvaluator(podInfoProvider,
 				domainResolver,
-				adminNetworkPolicyInformer.Lister(),
+				adminNetworkPolicyInformer,
 			)
 
 			packet := network.Packet{
+				SrcIP: net.ParseIP("192.168.1.11"),
 				DstIP: tt.dstIP,
 			}
 

@@ -2,6 +2,7 @@ package podinfo
 
 import (
 	v1 "k8s.io/api/core/v1"
+	coreinformers "k8s.io/client-go/informers/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
@@ -19,17 +20,23 @@ type InformerProvider struct {
 // NewInformerProvider creates a new pod info provider.
 // The nodeLister can be nil if node information is not required.
 func New(
-	podInformer cache.SharedIndexInformer,
-	nsLister corelisters.NamespaceLister,
-	nodeLister corelisters.NodeLister,
+	podInformer coreinformers.PodInformer,
+	nsInfomer coreinformers.NamespaceInformer,
+	nodeInformer coreinformers.NodeInformer,
 	resolvers []IPResolver,
 ) *InformerProvider {
-	return &InformerProvider{
-		podIndexer: podInformer.GetIndexer(),
-		nsLister:   nsLister,
-		nodeLister: nodeLister,
+	provider := &InformerProvider{
+		podIndexer: podInformer.Informer().GetIndexer(),
+		nsLister:   nsInfomer.Lister(),
 		resolvers:  resolvers,
 	}
+
+	// nodeInformer is optional only used for AdminNetworkPolicies
+	if nodeInformer != nil {
+		provider.nodeLister = nodeInformer.Lister()
+	}
+
+	return provider
 }
 
 // getPodByIP finds a running pod by its IP address using the informer index

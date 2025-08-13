@@ -536,9 +536,7 @@ func TestSyncPacket(t *testing.T) {
 			}
 
 			evaluator := NewNetworkPolicyEvaluator("node", podInfoProvider,
-				podInformer.Lister(),
-				namespaceInformer.Lister(),
-				networkPolicyInformer.Lister(),
+				networkPolicyInformer,
 			)
 
 			ok, err := evaluator.Evaluate(context.TODO(), &tt.p)
