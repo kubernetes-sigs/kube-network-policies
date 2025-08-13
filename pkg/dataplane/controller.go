@@ -35,7 +35,7 @@ import (
 	netutils "k8s.io/utils/net"
 
 	"sigs.k8s.io/kube-network-policies/pkg/network"
-	"sigs.k8s.io/kube-network-policies/pkg/pipeline"
+	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	policylisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 )
@@ -95,7 +95,7 @@ func NewController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
-	pipeline *pipeline.Pipeline,
+	pipeline *networkpolicy.Pipeline,
 	config Config,
 ) (*Controller, error) {
 	err := config.Defaults()
@@ -117,7 +117,7 @@ func newController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
-	pipeline *pipeline.Pipeline,
+	pipeline *networkpolicy.Pipeline,
 	config Config,
 ) (*Controller, error) {
 	klog.V(2).Info("Creating event broadcaster")
@@ -285,7 +285,7 @@ func (c *Controller) getLocalPodsForNetworkPolicy(networkPolicy *networkingv1.Ne
 // Controller manages selector-based networkpolicy endpoints.
 type Controller struct {
 	config   Config
-	pipeline *pipeline.Pipeline
+	pipeline *networkpolicy.Pipeline
 
 	client           clientset.Interface
 	eventBroadcaster record.EventBroadcaster

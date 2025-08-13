@@ -14,7 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"sigs.k8s.io/kube-network-policies/pkg/dataplane"
 	"sigs.k8s.io/kube-network-policies/pkg/dns"
-	"sigs.k8s.io/kube-network-policies/pkg/pipeline"
+	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
@@ -199,14 +199,14 @@ func run() int {
 
 	// Create the evaluators for the Pipeline to process the packets
 	// and take a network policy action.
-	evaluators := []pipeline.Evaluator{
-		pipeline.NewNetworkPolicyEvaluator(nodeName,
+	evaluators := []networkpolicy.Evaluator{
+		networkpolicy.NewNetworkPolicyEvaluator(nodeName,
 			podInfoProvider,
 			networkPolicyInfomer,
 		)}
 
 	if klog.V(2).Enabled() {
-		evaluators = append(evaluators, pipeline.NewLoggingEvaluator(podInfoProvider))
+		evaluators = append(evaluators, networkpolicy.NewLoggingEvaluator(podInfoProvider))
 	}
 
 	if adminNetworkPolicy {
@@ -222,7 +222,7 @@ func run() int {
 			}
 		}()
 
-		evaluators = append(evaluators, pipeline.NewAdminNetworkPolicyEvaluator(
+		evaluators = append(evaluators, networkpolicy.NewAdminNetworkPolicyEvaluator(
 			podInfoProvider,
 			domainResolver,
 			anpInformer,
@@ -230,7 +230,7 @@ func run() int {
 	}
 
 	if baselineAdminNetworkPolicy {
-		evaluators = append(evaluators, pipeline.NewBaselineAdminNetworkPolicyEvaluator(
+		evaluators = append(evaluators, networkpolicy.NewBaselineAdminNetworkPolicyEvaluator(
 			podInfoProvider,
 			banpInformer,
 		))
@@ -248,7 +248,7 @@ func run() int {
 		networkPolicyInfomer,
 		nsInformer,
 		podInformer,
-		pipeline.NewPipeline(evaluators...),
+		networkpolicy.NewPipeline(evaluators...),
 		cfg,
 	)
 	if err != nil {
