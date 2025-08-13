@@ -5,11 +5,38 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
+
+// FuncProvider is a test helper that wraps a function to satisfy the
+// podinfo.Provider interface.
+type FuncProvider struct {
+	GetFunc func(podIP string) (*api.PodInfo, bool)
+}
+
+// GetPodInfoByIP calls the wrapped function.
+func (f *FuncProvider) GetPodInfoByIP(podIP string) (*api.PodInfo, bool) {
+	return f.GetFunc(podIP)
+}
+
+// FuncDomainResolver is a test helper that wraps a function to satisfy the
+// DomainResolver interface.
+type FuncDomainResolver struct {
+	ContainsIPFunc func(domain string, ip net.IP) bool
+}
+
+// ContainsIP calls the wrapped function.
+func (f *FuncDomainResolver) ContainsIP(domain string, ip net.IP) bool {
+	if f.ContainsIPFunc == nil {
+		return false // Default behavior if no function is provided
+	}
+	return f.ContainsIPFunc(domain, ip)
+}
 
 // mockEvaluator is a helper to create an Evaluator for testing purposes.
 func mockEvaluator(name string, priority int, verdict Verdict, err error) Evaluator {

@@ -489,7 +489,13 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				return nil, false
 			}
 
-			evaluator := NewAdminNetworkPolicyEvaluator(getPodInfo,
+			// Create the provider instance from the closure
+			podInfoProvider := &FuncProvider{
+				GetFunc: getPodInfo,
+			}
+
+			evaluator := NewAdminNetworkPolicyEvaluator(podInfoProvider,
+				nil,
 				adminNetworkPolicyInformer.Lister(),
 			)
 
@@ -758,8 +764,6 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 	}
 }
 
-/*
-
 func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 	podA := makePod("a", "foo", "192.168.1.11")
 	ipAllow := net.ParseIP("10.0.0.1")
@@ -768,13 +772,12 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 	domainAllow := "allow.example.com"
 	domainDeny := "deny.example.com"
 	domainWildcard := "*.wild.com"
-	domainSpecificWild := "test.wild.com"
 
 	tests := []struct {
 		name           string
 		policy         *npav1alpha1.AdminNetworkPolicy
 		dstIP          net.IP
-		expectedAction npav1alpha1.AdminNetworkPolicyRuleAction
+		expectedAction Verdict
 	}{
 		{
 			name: "Allow rule matches domain and IP",
@@ -789,7 +792,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+			expectedAction: VerdictAccept,
 		},
 		{
 			name: "Allow rule matches domain but not IP",
@@ -803,8 +806,8 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 					}},
 				}}
 			}),
-			dstIP:          ipOther,                                      // IP not in cache for domainAllow
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionPass, // Rule doesn't match, pass to next rule/policy
+			dstIP:          ipOther,     // IP not in cache for domainAllow
+			expectedAction: VerdictNext, // Rule doesn't match, pass to next rule/policy
 		},
 		{
 			name: "Deny rule matches domain and IP",
@@ -819,7 +822,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipDeny,
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionDeny,
+			expectedAction: VerdictDeny,
 		},
 		{
 			name: "Rule domain does not match cached domains",
@@ -834,7 +837,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionPass, // Rule doesn't match
+			expectedAction: VerdictNext, // Rule doesn't match
 		},
 		{
 			name: "Multiple domains in rule, one matches",
@@ -852,7 +855,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+			expectedAction: VerdictAccept,
 		},
 		{
 			name: "Wildcard domain matches IP",
@@ -870,7 +873,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow, // This IP is associated with test.wild.com in the mock cache
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+			expectedAction: VerdictAccept,
 		},
 		{
 			name: "Wildcard domain does not match IP",
@@ -885,7 +888,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipOther, // This IP is not associated with any *.wild.com domain
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionPass,
+			expectedAction: VerdictNext,
 		},
 		{
 			name: "Rule with multiple peer types, domain matches",
@@ -901,7 +904,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow,
+			expectedAction: VerdictAccept,
 		},
 		{
 			name: "Rule with multiple peer types, domain does not match",
@@ -917,7 +920,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionPass, // No peer in the rule matches
+			expectedAction: VerdictNext, // No peer in the rule matches
 		},
 		{
 			name: "Rule with deny all, domain matches",
@@ -937,7 +940,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionAllow, // No peer in the rule matches
+			expectedAction: VerdictAccept, // No peer in the rule matches
 		},
 		{
 			name: "Rule with deny all, domain does not match",
@@ -957,43 +960,72 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipOther,
-			expectedAction: npav1alpha1.AdminNetworkPolicyRuleActionDeny, // No peer in the rule matches
+			expectedAction: VerdictDeny, // No peer in the rule matches
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a controller instance and inject the mock cache
-			controller := newTestController(Config{AdminNetworkPolicy: true})
-			controller.domainCache.cache.add(domainAllow, []net.IP{ipAllow}, int(maxTTL.Seconds()))
-			controller.domainCache.cache.add(domainDeny, []net.IP{ipDeny}, int(maxTTL.Seconds()))
-			controller.domainCache.cache.add(domainSpecificWild, []net.IP{ipAllow}, int(maxTTL.Seconds()))
 
-			// Add necessary objects to stores (simplified for this test)
-			err := controller.namespaceStore.Add(makeNamespace("foo"))
+			npaClient := npaclientfake.NewSimpleClientset()
+			npaInformerFactory := npainformers.NewSharedInformerFactory(npaClient, 0)
+			adminNetworkPolicyInformer := npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies()
+			adminNetworkpolicyStore := adminNetworkPolicyInformer.Informer().GetStore()
+
+			// Add objects to the Store
+			err := adminNetworkpolicyStore.Add(tt.policy)
 			if err != nil {
-				t.Fatalf("Failed to add namespace: %v", err)
-			}
-			err = controller.podStore.Add(podA)
-			if err != nil {
-				t.Fatalf("Failed to add pod: %v", err)
+				t.Fatal(err)
 			}
 
-			// Call the function under test
-			action := controller.evaluateAdminEgress(
-				[]*npav1alpha1.AdminNetworkPolicy{tt.policy}, // Pass the single policy
-				podA, // Source pod (can be nil if not needed for other peer types)
-				tt.dstIP,
-				80,             // Arbitrary port
-				v1.ProtocolTCP, // Arbitrary protocol
+			getPodInfo := func(podIP string) (*api.PodInfo, bool) {
+				for _, p := range podA.Status.PodIPs {
+					if p.IP == podIP {
+						// In this specific test, podA is the only source pod, and its namespace/node labels are fixed.
+						// We don't need to iterate through tt.namespace or tt.node as in the previous test.
+						return api.NewPodInfo(podA, makeNamespace("foo").Labels, makeNode("testnode").Labels, ""), true
+					}
+				}
+				return nil, false
+			}
+
+			// Create the provider instance from the closure
+			podInfoProvider := &FuncProvider{
+				GetFunc: getPodInfo,
+			}
+
+			// Create the provider instance from the closure
+			domainResolver := &FuncDomainResolver{
+				ContainsIPFunc: func(domain string, ip net.IP) bool {
+					if domain == domainAllow {
+						return ip.Equal(ipAllow)
+					}
+					if domain == domainDeny {
+						return ip.Equal(ipDeny)
+					}
+					if domain == "test.wild.com" {
+						return ip.Equal(ipAllow)
+					}
+					return false
+				},
+			}
+
+			evaluator := NewAdminNetworkPolicyEvaluator(podInfoProvider,
+				domainResolver,
+				adminNetworkPolicyInformer.Lister(),
 			)
 
-			// Assert the result
-			if action != tt.expectedAction {
-				t.Errorf("evaluateAdminEgress() = %v, want %v", action, tt.expectedAction)
+			packet := network.Packet{
+				DstIP: tt.dstIP,
+			}
+
+			verdict, err := evaluator.Evaluate(context.TODO(), &packet)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if verdict != tt.expectedAction {
+				t.Errorf("got %v, but expected  %v", verdict, tt.expectedAction)
 			}
 		})
 	}
 }
-
-*/

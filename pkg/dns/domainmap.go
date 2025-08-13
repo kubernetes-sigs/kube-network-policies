@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: APACHE-2.0
 
-package dataplane
+package dns
 
 import (
 	"net"

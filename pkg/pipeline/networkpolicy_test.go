@@ -530,7 +530,12 @@ func TestSyncPacket(t *testing.T) {
 				return nil, false
 			}
 
-			evaluator := NewNetworkPolicyEvaluator("node", getPodInfo,
+			// Create the provider instance from the closure
+			podInfoProvider := &FuncProvider{
+				GetFunc: getPodInfo,
+			}
+
+			evaluator := NewNetworkPolicyEvaluator("node", podInfoProvider,
 				podInformer.Lister(),
 				namespaceInformer.Lister(),
 				networkPolicyInformer.Lister(),

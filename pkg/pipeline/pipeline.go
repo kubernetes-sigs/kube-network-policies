@@ -4,6 +4,7 @@ package pipeline
 
 import (
 	"context"
+	"net"
 	"sort"
 
 	"k8s.io/klog/v2"
@@ -11,8 +12,18 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
 
-// PodByIPGetter is a function signature for retrieving a pod by its IP address.
-type PodByIPGetter func(podIP string) (*api.PodInfo, bool)
+// PodInfoProvider defines an interface for components that can provide PodInfo.
+type PodInfoProvider interface {
+	// GetPodInfoByIP retrieves information about a pod by its IP address.
+	GetPodInfoByIP(podIP string) (*api.PodInfo, bool)
+}
+
+// DomainResolver provides an interface for resolving domain names to IP addresses.
+type DomainResolver interface {
+	// ContainsIP checks if the given IP is associated with the domain.
+	// The domain can be a specific domain or a wildcard.
+	ContainsIP(domain string, ip net.IP) bool
+}
 
 // Verdict represents the outcome of a packet evaluation.
 type Verdict int
@@ -95,6 +106,7 @@ func (p *Pipeline) Run(ctx context.Context, packet *network.Packet) (bool, error
 		}
 	}
 	// If the pipeline completes without a final verdict, default to allowing the packet.
+	// TODO: check if we want to make this configurable.
 	logger.V(2).Info("packet accepted by all evaluators")
 	return true, nil
 }

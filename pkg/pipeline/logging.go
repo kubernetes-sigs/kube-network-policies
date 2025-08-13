@@ -8,20 +8,20 @@ import (
 )
 
 // NewLoggingEvaluator creates an evaluator that logs packet details.
-func NewLoggingEvaluator(podInfoGetter PodByIPGetter) Evaluator {
+func NewLoggingEvaluator(podInfoProvider PodInfoProvider) Evaluator {
 	return Evaluator{
 		Priority: 0, // Highest priority to log first
 		Name:     "PacketLogger",
 		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
 			logger := klog.FromContext(ctx)
-			srcPod, _ := podInfoGetter(p.SrcIP.String())
-			dstPod, _ := podInfoGetter(p.DstIP.String())
+			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
+			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
 
 			srcPodStr, dstPodStr := "none", "none"
-			if srcPod != nil {
+			if srcPodFound {
 				srcPodStr = srcPod.Namespace.Name + "/" + srcPod.Name
 			}
-			if dstPod != nil {
+			if dstPodFound {
 				dstPodStr = dstPod.Namespace.Name + "/" + dstPod.Name
 			}
 

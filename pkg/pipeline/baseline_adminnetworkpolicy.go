@@ -15,7 +15,7 @@ import (
 
 // NewBaselineAdminNetworkPolicyEvaluator creates a new pipeline evaluator for BaselineAdminNetworkPolicies.
 func NewBaselineAdminNetworkPolicyEvaluator(
-	podInfoGetter PodByIPGetter,
+	podInfoProvider PodInfoProvider,
 	banpLister anplisters.BaselineAdminNetworkPolicyLister,
 ) Evaluator {
 	return Evaluator{
@@ -23,8 +23,8 @@ func NewBaselineAdminNetworkPolicyEvaluator(
 		Name:     "BaselineAdminNetworkPolicy",
 		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
 			logger := klog.FromContext(ctx)
-			srcPod, srcPodFound := podInfoGetter(p.SrcIP.String())
-			dstPod, dstPodFound := podInfoGetter(p.DstIP.String())
+			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
+			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
 
 			allPolicies, err := banpLister.List(labels.Everything())
 			if err != nil {

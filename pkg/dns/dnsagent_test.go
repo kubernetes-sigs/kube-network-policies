@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: APACHE-2.0
 
-package dataplane
+package dns
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -278,4 +279,13 @@ func mustNewName(name string) dnsmessage.Name {
 		panic(fmt.Sprint("creating name: ", err))
 	}
 	return nn
+}
+
+func compareMultilineStringsIgnoreIndentation(str1, str2 string) bool {
+	// Remove all indentation from both strings
+	re := regexp.MustCompile(`(?m)^\s+`)
+	str1 = re.ReplaceAllString(str1, "")
+	str2 = re.ReplaceAllString(str2, "")
+
+	return str1 == str2
 }

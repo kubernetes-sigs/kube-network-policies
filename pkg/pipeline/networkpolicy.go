@@ -49,7 +49,7 @@ func GetNetworkPoliciesForPod(pod *api.PodInfo, networkpolicyLister networkingli
 // It accepts all necessary dependencies to make it autonomous from the controller.
 func NewNetworkPolicyEvaluator(
 	nodeName string,
-	podInfoGetter PodByIPGetter,
+	podInfoProvider PodInfoProvider,
 	podLister corelisters.PodLister,
 	namespaceLister corelisters.NamespaceLister,
 	networkpolicyLister networkinglisters.NetworkPolicyLister,
@@ -60,8 +60,8 @@ func NewNetworkPolicyEvaluator(
 		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
 			logger := klog.FromContext(ctx)
 
-			srcPod, srcPodFound := podInfoGetter(p.SrcIP.String())
-			dstPod, dstPodFound := podInfoGetter(p.DstIP.String())
+			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
+			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
 
 			// --- Egress Evaluation ---
 			if srcPodFound {

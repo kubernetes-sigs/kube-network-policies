@@ -16,8 +16,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
-	npaclientfake "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned/fake"
-	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 )
 
 var (
@@ -31,30 +29,20 @@ var (
 
 type networkpolicyController struct {
 	*Controller
-	adminNetworkpolicyStore         cache.Store
-	baselineAdminNetworkpolicyStore cache.Store
-	networkpolicyStore              cache.Store
-	namespaceStore                  cache.Store
-	podStore                        cache.Store
-	nodeStore                       cache.Store
+	networkpolicyStore cache.Store
+	namespaceStore     cache.Store
+	podStore           cache.Store
 }
 
 func newTestController(config Config) *networkpolicyController {
 	client := fake.NewSimpleClientset()
 	informersFactory := informers.NewSharedInformerFactory(client, 0)
 
-	npaClient := npaclientfake.NewSimpleClientset()
-	npaInformerFactory := npainformers.NewSharedInformerFactory(npaClient, 0)
-
 	controller, err := newController(
 		client,
 		informersFactory.Networking().V1().NetworkPolicies(),
 		informersFactory.Core().V1().Namespaces(),
 		informersFactory.Core().V1().Pods(),
-		informersFactory.Core().V1().Nodes(),
-		npaClient,
-		npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies(),
-		npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies(),
 		config,
 	)
 	if err != nil {
@@ -63,16 +51,11 @@ func newTestController(config Config) *networkpolicyController {
 	controller.networkpoliciesSynced = alwaysReady
 	controller.namespacesSynced = alwaysReady
 	controller.podsSynced = alwaysReady
-	controller.nodesSynced = alwaysReady
-	controller.adminNetworkPolicySynced = alwaysReady
 	return &networkpolicyController{
-		controller,
-		npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies().Informer().GetStore(),
-		npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies().Informer().GetStore(),
-		informersFactory.Networking().V1().NetworkPolicies().Informer().GetStore(),
-		informersFactory.Core().V1().Namespaces().Informer().GetStore(),
-		informersFactory.Core().V1().Pods().Informer().GetStore(),
-		informersFactory.Core().V1().Nodes().Informer().GetStore(),
+		Controller:         controller,
+		networkpolicyStore: informersFactory.Networking().V1().NetworkPolicies().Informer().GetStore(),
+		namespaceStore:     informersFactory.Core().V1().Namespaces().Informer().GetStore(),
+		podStore:           informersFactory.Core().V1().Pods().Informer().GetStore(),
 	}
 }
 
