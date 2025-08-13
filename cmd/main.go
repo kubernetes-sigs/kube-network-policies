@@ -255,17 +255,16 @@ func run() int {
 		return api.NewPodInfo(pod, nsLabels, nodeLabels, ""), true
 	}
 
-	networkPolicyEvaluator := pipeline.NewNetworkPolicyEvaluator(nodeName,
-		getPodInfo,
-		podInformer.Lister(),
-		nsInformer.Lister(),
-		networkPolicyInfomer.Lister(),
-	)
-
 	cfg.Evaluators = []pipeline.Evaluator{
-		pipeline.NewLoggingEvaluator(getPodInfo),
-		networkPolicyEvaluator,
-		// ... add other evaluators, passing the getter where needed
+		pipeline.NewNetworkPolicyEvaluator(nodeName,
+			getPodInfo,
+			podInformer.Lister(),
+			nsInformer.Lister(),
+			networkPolicyInfomer.Lister(),
+		)}
+
+	if klog.V(2).Enabled() {
+		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewLoggingEvaluator(getPodInfo))
 	}
 
 	if adminNetworkPolicy {
