@@ -17,7 +17,7 @@
 // versions:
 // 	protoc-gen-go v1.36.7
 // 	protoc        v3.21.12
-// source: pkg/api/api.proto
+// source: pkg/api/kubenetworkpolicies.proto
 
 package api
 
@@ -47,7 +47,7 @@ type Namespace struct {
 
 func (x *Namespace) Reset() {
 	*x = Namespace{}
-	mi := &file_pkg_api_api_proto_msgTypes[0]
+	mi := &file_pkg_api_kubenetworkpolicies_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -59,7 +59,7 @@ func (x *Namespace) String() string {
 func (*Namespace) ProtoMessage() {}
 
 func (x *Namespace) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_api_proto_msgTypes[0]
+	mi := &file_pkg_api_kubenetworkpolicies_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -72,7 +72,7 @@ func (x *Namespace) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Namespace.ProtoReflect.Descriptor instead.
 func (*Namespace) Descriptor() ([]byte, []int) {
-	return file_pkg_api_api_proto_rawDescGZIP(), []int{0}
+	return file_pkg_api_kubenetworkpolicies_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Namespace) GetName() string {
@@ -100,7 +100,7 @@ type Node struct {
 
 func (x *Node) Reset() {
 	*x = Node{}
-	mi := &file_pkg_api_api_proto_msgTypes[1]
+	mi := &file_pkg_api_kubenetworkpolicies_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -112,7 +112,7 @@ func (x *Node) String() string {
 func (*Node) ProtoMessage() {}
 
 func (x *Node) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_api_proto_msgTypes[1]
+	mi := &file_pkg_api_kubenetworkpolicies_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -125,7 +125,7 @@ func (x *Node) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Node.ProtoReflect.Descriptor instead.
 func (*Node) Descriptor() ([]byte, []int) {
-	return file_pkg_api_api_proto_rawDescGZIP(), []int{1}
+	return file_pkg_api_kubenetworkpolicies_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Node) GetName() string {
@@ -154,7 +154,7 @@ type ContainerPort struct {
 
 func (x *ContainerPort) Reset() {
 	*x = ContainerPort{}
-	mi := &file_pkg_api_api_proto_msgTypes[2]
+	mi := &file_pkg_api_kubenetworkpolicies_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -166,7 +166,7 @@ func (x *ContainerPort) String() string {
 func (*ContainerPort) ProtoMessage() {}
 
 func (x *ContainerPort) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_api_proto_msgTypes[2]
+	mi := &file_pkg_api_kubenetworkpolicies_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -179,7 +179,7 @@ func (x *ContainerPort) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContainerPort.ProtoReflect.Descriptor instead.
 func (*ContainerPort) Descriptor() ([]byte, []int) {
-	return file_pkg_api_api_proto_rawDescGZIP(), []int{2}
+	return file_pkg_api_kubenetworkpolicies_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ContainerPort) GetName() string {
@@ -222,7 +222,7 @@ type PodInfo struct {
 
 func (x *PodInfo) Reset() {
 	*x = PodInfo{}
-	mi := &file_pkg_api_api_proto_msgTypes[3]
+	mi := &file_pkg_api_kubenetworkpolicies_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -234,7 +234,7 @@ func (x *PodInfo) String() string {
 func (*PodInfo) ProtoMessage() {}
 
 func (x *PodInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_api_proto_msgTypes[3]
+	mi := &file_pkg_api_kubenetworkpolicies_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -247,7 +247,7 @@ func (x *PodInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PodInfo.ProtoReflect.Descriptor instead.
 func (*PodInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_api_api_proto_rawDescGZIP(), []int{3}
+	return file_pkg_api_kubenetworkpolicies_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PodInfo) GetName() string {
@@ -299,33 +299,33 @@ func (x *PodInfo) GetClusterId() string {
 	return ""
 }
 
-var File_pkg_api_api_proto protoreflect.FileDescriptor
+var File_pkg_api_kubenetworkpolicies_proto protoreflect.FileDescriptor
 
-const file_pkg_api_api_proto_rawDesc = "" +
+const file_pkg_api_kubenetworkpolicies_proto_rawDesc = "" +
 	"\n" +
-	"\x11pkg/api/api.proto\x12'sigs.k8s.io.kubenetworkpolicies.pkg.api\"\xb2\x01\n" +
+	"!pkg/api/kubenetworkpolicies.proto\x12\x1fsigs.k8s.io.kubenetworkpolicies\"\xaa\x01\n" +
 	"\tNamespace\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12V\n" +
-	"\x06labels\x18\x02 \x03(\v2>.sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace.LabelsEntryR\x06labels\x1a9\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12N\n" +
+	"\x06labels\x18\x02 \x03(\v26.sigs.k8s.io.kubenetworkpolicies.Namespace.LabelsEntryR\x06labels\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa8\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa0\x01\n" +
 	"\x04Node\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12Q\n" +
-	"\x06labels\x18\x02 \x03(\v29.sigs.k8s.io.kubenetworkpolicies.pkg.api.Node.LabelsEntryR\x06labels\x1a9\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12I\n" +
+	"\x06labels\x18\x02 \x03(\v21.sigs.k8s.io.kubenetworkpolicies.Node.LabelsEntryR\x06labels\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"S\n" +
 	"\rContainerPort\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xe6\x03\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xc6\x03\n" +
 	"\aPodInfo\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12T\n" +
-	"\x06labels\x18\x02 \x03(\v2<.sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.LabelsEntryR\x06labels\x12_\n" +
-	"\x0fcontainer_ports\x18\x03 \x03(\v26.sigs.k8s.io.kubenetworkpolicies.pkg.api.ContainerPortR\x0econtainerPorts\x12P\n" +
-	"\tnamespace\x18\x04 \x01(\v22.sigs.k8s.io.kubenetworkpolicies.pkg.api.NamespaceR\tnamespace\x12A\n" +
-	"\x04node\x18\x05 \x01(\v2-.sigs.k8s.io.kubenetworkpolicies.pkg.api.NodeR\x04node\x12!\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12L\n" +
+	"\x06labels\x18\x02 \x03(\v24.sigs.k8s.io.kubenetworkpolicies.PodInfo.LabelsEntryR\x06labels\x12W\n" +
+	"\x0fcontainer_ports\x18\x03 \x03(\v2..sigs.k8s.io.kubenetworkpolicies.ContainerPortR\x0econtainerPorts\x12H\n" +
+	"\tnamespace\x18\x04 \x01(\v2*.sigs.k8s.io.kubenetworkpolicies.NamespaceR\tnamespace\x129\n" +
+	"\x04node\x18\x05 \x01(\v2%.sigs.k8s.io.kubenetworkpolicies.NodeR\x04node\x12!\n" +
 	"\flast_updated\x18\x06 \x01(\x03R\vlastUpdated\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\a \x01(\tR\tclusterId\x1a9\n" +
@@ -334,34 +334,34 @@ const file_pkg_api_api_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B+Z)sigs.k8s.io/kube-network-policies/pkg/apib\x06proto3"
 
 var (
-	file_pkg_api_api_proto_rawDescOnce sync.Once
-	file_pkg_api_api_proto_rawDescData []byte
+	file_pkg_api_kubenetworkpolicies_proto_rawDescOnce sync.Once
+	file_pkg_api_kubenetworkpolicies_proto_rawDescData []byte
 )
 
-func file_pkg_api_api_proto_rawDescGZIP() []byte {
-	file_pkg_api_api_proto_rawDescOnce.Do(func() {
-		file_pkg_api_api_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_pkg_api_api_proto_rawDesc), len(file_pkg_api_api_proto_rawDesc)))
+func file_pkg_api_kubenetworkpolicies_proto_rawDescGZIP() []byte {
+	file_pkg_api_kubenetworkpolicies_proto_rawDescOnce.Do(func() {
+		file_pkg_api_kubenetworkpolicies_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_pkg_api_kubenetworkpolicies_proto_rawDesc), len(file_pkg_api_kubenetworkpolicies_proto_rawDesc)))
 	})
-	return file_pkg_api_api_proto_rawDescData
+	return file_pkg_api_kubenetworkpolicies_proto_rawDescData
 }
 
-var file_pkg_api_api_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
-var file_pkg_api_api_proto_goTypes = []any{
-	(*Namespace)(nil),     // 0: sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace
-	(*Node)(nil),          // 1: sigs.k8s.io.kubenetworkpolicies.pkg.api.Node
-	(*ContainerPort)(nil), // 2: sigs.k8s.io.kubenetworkpolicies.pkg.api.ContainerPort
-	(*PodInfo)(nil),       // 3: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo
-	nil,                   // 4: sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace.LabelsEntry
-	nil,                   // 5: sigs.k8s.io.kubenetworkpolicies.pkg.api.Node.LabelsEntry
-	nil,                   // 6: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.LabelsEntry
+var file_pkg_api_kubenetworkpolicies_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_pkg_api_kubenetworkpolicies_proto_goTypes = []any{
+	(*Namespace)(nil),     // 0: sigs.k8s.io.kubenetworkpolicies.Namespace
+	(*Node)(nil),          // 1: sigs.k8s.io.kubenetworkpolicies.Node
+	(*ContainerPort)(nil), // 2: sigs.k8s.io.kubenetworkpolicies.ContainerPort
+	(*PodInfo)(nil),       // 3: sigs.k8s.io.kubenetworkpolicies.PodInfo
+	nil,                   // 4: sigs.k8s.io.kubenetworkpolicies.Namespace.LabelsEntry
+	nil,                   // 5: sigs.k8s.io.kubenetworkpolicies.Node.LabelsEntry
+	nil,                   // 6: sigs.k8s.io.kubenetworkpolicies.PodInfo.LabelsEntry
 }
-var file_pkg_api_api_proto_depIdxs = []int32{
-	4, // 0: sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace.LabelsEntry
-	5, // 1: sigs.k8s.io.kubenetworkpolicies.pkg.api.Node.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.Node.LabelsEntry
-	6, // 2: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.LabelsEntry
-	2, // 3: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.container_ports:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.ContainerPort
-	0, // 4: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.namespace:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace
-	1, // 5: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.node:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.Node
+var file_pkg_api_kubenetworkpolicies_proto_depIdxs = []int32{
+	4, // 0: sigs.k8s.io.kubenetworkpolicies.Namespace.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.Namespace.LabelsEntry
+	5, // 1: sigs.k8s.io.kubenetworkpolicies.Node.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.Node.LabelsEntry
+	6, // 2: sigs.k8s.io.kubenetworkpolicies.PodInfo.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.PodInfo.LabelsEntry
+	2, // 3: sigs.k8s.io.kubenetworkpolicies.PodInfo.container_ports:type_name -> sigs.k8s.io.kubenetworkpolicies.ContainerPort
+	0, // 4: sigs.k8s.io.kubenetworkpolicies.PodInfo.namespace:type_name -> sigs.k8s.io.kubenetworkpolicies.Namespace
+	1, // 5: sigs.k8s.io.kubenetworkpolicies.PodInfo.node:type_name -> sigs.k8s.io.kubenetworkpolicies.Node
 	6, // [6:6] is the sub-list for method output_type
 	6, // [6:6] is the sub-list for method input_type
 	6, // [6:6] is the sub-list for extension type_name
@@ -369,26 +369,26 @@ var file_pkg_api_api_proto_depIdxs = []int32{
 	0, // [0:6] is the sub-list for field type_name
 }
 
-func init() { file_pkg_api_api_proto_init() }
-func file_pkg_api_api_proto_init() {
-	if File_pkg_api_api_proto != nil {
+func init() { file_pkg_api_kubenetworkpolicies_proto_init() }
+func file_pkg_api_kubenetworkpolicies_proto_init() {
+	if File_pkg_api_kubenetworkpolicies_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_api_api_proto_rawDesc), len(file_pkg_api_api_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_api_kubenetworkpolicies_proto_rawDesc), len(file_pkg_api_kubenetworkpolicies_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_pkg_api_api_proto_goTypes,
-		DependencyIndexes: file_pkg_api_api_proto_depIdxs,
-		MessageInfos:      file_pkg_api_api_proto_msgTypes,
+		GoTypes:           file_pkg_api_kubenetworkpolicies_proto_goTypes,
+		DependencyIndexes: file_pkg_api_kubenetworkpolicies_proto_depIdxs,
+		MessageInfos:      file_pkg_api_kubenetworkpolicies_proto_msgTypes,
 	}.Build()
-	File_pkg_api_api_proto = out.File
-	file_pkg_api_api_proto_goTypes = nil
-	file_pkg_api_api_proto_depIdxs = nil
+	File_pkg_api_kubenetworkpolicies_proto = out.File
+	file_pkg_api_kubenetworkpolicies_proto_goTypes = nil
+	file_pkg_api_kubenetworkpolicies_proto_depIdxs = nil
 }
