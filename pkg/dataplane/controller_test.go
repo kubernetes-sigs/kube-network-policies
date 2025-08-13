@@ -16,7 +16,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
-	"sigs.k8s.io/kube-network-policies/pkg/pipeline"
+	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 )
 
 var (
@@ -44,7 +44,7 @@ func newTestController(config Config) *networkpolicyController {
 		informersFactory.Networking().V1().NetworkPolicies(),
 		informersFactory.Core().V1().Namespaces(),
 		informersFactory.Core().V1().Pods(),
-		pipeline.NewPipeline(),
+		networkpolicy.NewPipeline(),
 		config,
 	)
 	if err != nil {
