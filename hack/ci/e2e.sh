@@ -201,6 +201,21 @@ run_tests() {
   wait "$GINKGO_PID"
 }
 
+install_kube_network_policy() {
+  # stop kindnet since it has its own network policies vendored from here
+  kubectl -n kube-system delete ds kindnet
+  # Install kube-network-policies
+  export IMAGE_NAME="registry.k8s.io/networking/kube-network-policies"
+  # Build the image
+  docker build -t "$IMAGE_NAME":test -f Dockerfile . --load
+  # Load the image into kind
+  kind load docker-image "$IMAGE_NAME":test
+   # Install kube-network-policies
+  _install=$(sed s#"$IMAGE_NAME".*#"$IMAGE_NAME":test# < ./install.yaml)
+  printf '%s' "${_install}" | kubectl apply -f -
+  kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
+}
+
 main() {
   # create temp dir and setup cleanup
   TMP_DIR=$(mktemp -d)
@@ -216,10 +231,6 @@ main() {
 
   # debug kind version
   kind version
-
-  # build cloud-provider-kind
-  make
-  nohup bin/cloud-provider-kind --enable-log-dumping --logs-dir ${ARTIFACTS}/loadbalancers > ${ARTIFACTS}/ccm-kind.log 2>&1 &
 
   # build kubernetes
   K8S_PATH=$(find ${GOPATH} -path '*/k8s.io/kubernetes/go.mod' -print -quit)
@@ -238,6 +249,7 @@ main() {
   # create the cluster and run tests
   res=0
   create_cluster || res=$?
+  install_kube_network_policy || res=$?
   run_tests || res=$?
   cleanup || res=$?
   exit $res
