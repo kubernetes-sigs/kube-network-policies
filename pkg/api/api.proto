@@ -15,7 +15,7 @@ limitations under the License.
 */
 syntax = "proto3";
 
-package api;
+package sigs.k8s.io.kubenetworkpolicies.pkg.api;
 
 option go_package = "sigs.k8s.io/kube-network-policies/pkg/api";
 

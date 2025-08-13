@@ -303,29 +303,29 @@ var File_pkg_api_api_proto protoreflect.FileDescriptor
 
 const file_pkg_api_api_proto_rawDesc = "" +
 	"\n" +
-	"\x11pkg/api/api.proto\x12\x03api\"\x8e\x01\n" +
+	"\x11pkg/api/api.proto\x12'sigs.k8s.io.kubenetworkpolicies.pkg.api\"\xb2\x01\n" +
 	"\tNamespace\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
-	"\x06labels\x18\x02 \x03(\v2\x1a.api.Namespace.LabelsEntryR\x06labels\x1a9\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12V\n" +
+	"\x06labels\x18\x02 \x03(\v2>.sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace.LabelsEntryR\x06labels\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x84\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa8\x01\n" +
 	"\x04Node\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
-	"\x06labels\x18\x02 \x03(\v2\x15.api.Node.LabelsEntryR\x06labels\x1a9\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12Q\n" +
+	"\x06labels\x18\x02 \x03(\v29.sigs.k8s.io.kubenetworkpolicies.pkg.api.Node.LabelsEntryR\x06labels\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"S\n" +
 	"\rContainerPort\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xd6\x02\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xe6\x03\n" +
 	"\aPodInfo\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x120\n" +
-	"\x06labels\x18\x02 \x03(\v2\x18.api.PodInfo.LabelsEntryR\x06labels\x12;\n" +
-	"\x0fcontainer_ports\x18\x03 \x03(\v2\x12.api.ContainerPortR\x0econtainerPorts\x12,\n" +
-	"\tnamespace\x18\x04 \x01(\v2\x0e.api.NamespaceR\tnamespace\x12\x1d\n" +
-	"\x04node\x18\x05 \x01(\v2\t.api.NodeR\x04node\x12!\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12T\n" +
+	"\x06labels\x18\x02 \x03(\v2<.sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.LabelsEntryR\x06labels\x12_\n" +
+	"\x0fcontainer_ports\x18\x03 \x03(\v26.sigs.k8s.io.kubenetworkpolicies.pkg.api.ContainerPortR\x0econtainerPorts\x12P\n" +
+	"\tnamespace\x18\x04 \x01(\v22.sigs.k8s.io.kubenetworkpolicies.pkg.api.NamespaceR\tnamespace\x12A\n" +
+	"\x04node\x18\x05 \x01(\v2-.sigs.k8s.io.kubenetworkpolicies.pkg.api.NodeR\x04node\x12!\n" +
 	"\flast_updated\x18\x06 \x01(\x03R\vlastUpdated\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\a \x01(\tR\tclusterId\x1a9\n" +
@@ -347,21 +347,21 @@ func file_pkg_api_api_proto_rawDescGZIP() []byte {
 
 var file_pkg_api_api_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_pkg_api_api_proto_goTypes = []any{
-	(*Namespace)(nil),     // 0: api.Namespace
-	(*Node)(nil),          // 1: api.Node
-	(*ContainerPort)(nil), // 2: api.ContainerPort
-	(*PodInfo)(nil),       // 3: api.PodInfo
-	nil,                   // 4: api.Namespace.LabelsEntry
-	nil,                   // 5: api.Node.LabelsEntry
-	nil,                   // 6: api.PodInfo.LabelsEntry
+	(*Namespace)(nil),     // 0: sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace
+	(*Node)(nil),          // 1: sigs.k8s.io.kubenetworkpolicies.pkg.api.Node
+	(*ContainerPort)(nil), // 2: sigs.k8s.io.kubenetworkpolicies.pkg.api.ContainerPort
+	(*PodInfo)(nil),       // 3: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo
+	nil,                   // 4: sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace.LabelsEntry
+	nil,                   // 5: sigs.k8s.io.kubenetworkpolicies.pkg.api.Node.LabelsEntry
+	nil,                   // 6: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.LabelsEntry
 }
 var file_pkg_api_api_proto_depIdxs = []int32{
-	4, // 0: api.Namespace.labels:type_name -> api.Namespace.LabelsEntry
-	5, // 1: api.Node.labels:type_name -> api.Node.LabelsEntry
-	6, // 2: api.PodInfo.labels:type_name -> api.PodInfo.LabelsEntry
-	2, // 3: api.PodInfo.container_ports:type_name -> api.ContainerPort
-	0, // 4: api.PodInfo.namespace:type_name -> api.Namespace
-	1, // 5: api.PodInfo.node:type_name -> api.Node
+	4, // 0: sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace.LabelsEntry
+	5, // 1: sigs.k8s.io.kubenetworkpolicies.pkg.api.Node.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.Node.LabelsEntry
+	6, // 2: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.labels:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.LabelsEntry
+	2, // 3: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.container_ports:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.ContainerPort
+	0, // 4: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.namespace:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.Namespace
+	1, // 5: sigs.k8s.io.kubenetworkpolicies.pkg.api.PodInfo.node:type_name -> sigs.k8s.io.kubenetworkpolicies.pkg.api.Node
 	6, // [6:6] is the sub-list for method output_type
 	6, // [6:6] is the sub-list for method input_type
 	6, // [6:6] is the sub-list for extension type_name
