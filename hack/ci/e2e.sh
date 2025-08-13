@@ -207,7 +207,7 @@ install_kube_network_policy() {
   # Install kube-network-policies
   export IMAGE_NAME="registry.k8s.io/networking/kube-network-policies"
   # Build the image
-  docker build -t "$IMAGE_NAME":test -f Dockerfile "$BATS_TEST_DIRNAME"/.. --load
+  docker build -t "$IMAGE_NAME":test -f Dockerfile . --load
   # Load the image into kind
   kind load docker-image "$IMAGE_NAME":test
    # Install kube-network-policies
