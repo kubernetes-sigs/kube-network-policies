@@ -480,7 +480,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 						if ip.IP == podIP {
 							for _, n := range tt.namespace {
 								if n.Name == p.Namespace {
-									return api.PodAndNamespaceAndNodeToPodInfo(p, n, makeNode("testnode"), ""), true
+									return api.NewPodInfo(p, n.Labels, makeNode("testnode").Labels, ""), true
 								}
 							}
 						}
@@ -613,7 +613,7 @@ func Test_evaluateAdminNetworkPolicyPort(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			podInfo := api.PodAndNamespaceAndNodeToPodInfo(tt.pod, makeNamespace("foo"), makeNode("testnode"), "id")
+			podInfo := api.NewPodInfo(tt.pod, makeNamespace("foo").Labels, makeNode("testnode").Labels, "id")
 			if got := evaluateAdminNetworkPolicyPort(tt.networkPolicyPorts, podInfo, tt.port, tt.protocol); got != tt.want {
 				t.Errorf("evaluateAdminNetworkPolicyPort() = %v, want %v", got, tt.want)
 			}
@@ -750,7 +750,7 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			podInfo := api.PodAndNamespaceAndNodeToPodInfo(makePod("a", "foo", "192.168.1.11"), makeNamespace("foo"), makeNode("testnode"), "id")
+			podInfo := api.NewPodInfo(makePod("a", "foo", "192.168.1.11"), makeNamespace("foo").Labels, makeNode("testnode").Labels, "id")
 			if got := getAdminNetworkPoliciesForPod(podInfo, []*npav1alpha1.AdminNetworkPolicy{tt.networkpolicy}); len(got) > 0 != tt.want {
 				t.Errorf("Controller.getAdminNetworkPoliciesForPod() = %v, want %v", len(got) > 0, tt.want)
 			}
