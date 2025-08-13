@@ -184,17 +184,15 @@ func run() int {
 	}
 
 	podInfoProvider := podinfo.New(
-		podInformer.Informer(),
-		nsInformer.Lister(),
-		nodeInformer.Lister(),
+		podInformer,
+		nsInformer,
+		nodeInformer,
 		resolvers)
 
 	cfg.Evaluators = []pipeline.Evaluator{
 		pipeline.NewNetworkPolicyEvaluator(nodeName,
 			podInfoProvider,
-			podInformer.Lister(),
-			nsInformer.Lister(),
-			networkPolicyInfomer.Lister(),
+			networkPolicyInfomer,
 		)}
 
 	if klog.V(2).Enabled() {
@@ -213,13 +211,13 @@ func run() int {
 		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewAdminNetworkPolicyEvaluator(
 			podInfoProvider,
 			domainResolver,
-			anpInformer.Lister(),
+			anpInformer,
 		))
 	}
 	if baselineAdminNetworkPolicy {
 		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewBaselineAdminNetworkPolicyEvaluator(
 			podInfoProvider,
-			banpInformer.Lister(),
+			banpInformer,
 		))
 	}
 	http.Handle("/metrics", promhttp.Handler())

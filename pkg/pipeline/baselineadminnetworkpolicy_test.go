@@ -189,7 +189,7 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 			podInfoProvider := &FuncProvider{
 				GetFunc: getPodInfo,
 			}
-			evaluator := NewBaselineAdminNetworkPolicyEvaluator(podInfoProvider, banpInformer.Lister())
+			evaluator := NewBaselineAdminNetworkPolicyEvaluator(podInfoProvider, banpInformer)
 
 			verdict, err := evaluator.Evaluate(context.TODO(), &tt.packet)
 			if err != nil {

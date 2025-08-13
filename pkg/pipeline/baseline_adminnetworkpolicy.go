@@ -10,14 +10,17 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
-	anplisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
+	"sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
 )
 
 // NewBaselineAdminNetworkPolicyEvaluator creates a new pipeline evaluator for BaselineAdminNetworkPolicies.
 func NewBaselineAdminNetworkPolicyEvaluator(
 	podInfoProvider PodInfoProvider,
-	banpLister anplisters.BaselineAdminNetworkPolicyLister,
+	banpInformer v1alpha1.BaselineAdminNetworkPolicyInformer,
 ) Evaluator {
+
+	banpLister := banpInformer.Lister()
+
 	return Evaluator{
 		Priority: 100,
 		Name:     "BaselineAdminNetworkPolicy",

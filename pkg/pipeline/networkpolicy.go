@@ -7,8 +7,9 @@ import (
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	networkinginformers "k8s.io/client-go/informers/networking/v1"
+
 	"k8s.io/apimachinery/pkg/labels"
-	corelisters "k8s.io/client-go/listers/core/v1"
 	networkinglisters "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
@@ -50,10 +51,11 @@ func GetNetworkPoliciesForPod(pod *api.PodInfo, networkpolicyLister networkingli
 func NewNetworkPolicyEvaluator(
 	nodeName string,
 	podInfoProvider PodInfoProvider,
-	podLister corelisters.PodLister,
-	namespaceLister corelisters.NamespaceLister,
-	networkpolicyLister networkinglisters.NetworkPolicyLister,
+	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 ) Evaluator {
+
+	networkpolicyLister := networkpolicyInformer.Lister()
+
 	return Evaluator{
 		Priority: 50,
 		Name:     "StandardNetworkPolicy",

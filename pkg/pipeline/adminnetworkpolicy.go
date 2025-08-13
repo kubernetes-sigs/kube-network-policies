@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
-	anplisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
+	"sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
 )
 
 // NewAdminNetworkPolicyEvaluator creates a new pipeline evaluator for AdminNetworkPolicies.
@@ -21,15 +21,18 @@ import (
 func NewAdminNetworkPolicyEvaluator(
 	podInfoProvider PodInfoProvider,
 	domainResolver DomainResolver,
-	anpLister anplisters.AdminNetworkPolicyLister,
+	anpInformer v1alpha1.AdminNetworkPolicyInformer,
 ) Evaluator {
+
+	anpLister := anpInformer.Lister()
+
 	return Evaluator{
 		Priority: 10,
 		Name:     "AdminNetworkPolicy",
 		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
 			logger := klog.FromContext(ctx)
-			srcPod, _ := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
-			dstPod, _ := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
+			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
+			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
 
 			allPolicies, err := anpLister.List(labels.Everything())
 			if err != nil {
@@ -41,19 +44,25 @@ func NewAdminNetworkPolicyEvaluator(
 
 			// 1. Evaluate Egress policies for the source pod.
 			// These policies dictate whether the source pod is allowed to send traffic.
-			srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
-			egressAction := evaluateAdminEgress(domainResolver, srcPodAdminNetworkPolicies, srcPod, dstPod, p.DstIP, p.DstPort, p.Proto)
-			logger.V(2).Info("Egress AdminNetworkPolicies evaluation complete", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
+			egressAction := npav1alpha1.AdminNetworkPolicyRuleActionPass
+			if srcPodFound {
+				srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
+				egressAction = evaluateAdminEgress(domainResolver, srcPodAdminNetworkPolicies, srcPod, dstPod, p.DstIP, p.DstPort, p.Proto)
+				logger.V(2).Info("Egress AdminNetworkPolicies evaluation complete", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
+				if egressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny {
+					return VerdictDeny, nil
+				}
+			}
 
 			// 2. Evaluate Ingress policies for the destination pod.
 			// These policies dictate whether the destination pod is allowed to receive traffic.
-			dstPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(dstPod, allPolicies)
-			ingressAction := evaluateAdminIngress(dstPodAdminNetworkPolicies, srcPod, dstPod, p.DstPort, p.Proto)
-			logger.V(2).Info("Ingress AdminNetworkPolicies evaluation complete", "npolicies", len(dstPodAdminNetworkPolicies), "action", ingressAction)
-
-			// 3. Combine Egress and Ingress results to determine the final verdict.
-			// A DENY from either side takes precedence and drops the packet.
-			if egressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny || ingressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny {
+			ingressAction := npav1alpha1.AdminNetworkPolicyRuleActionPass
+			if dstPodFound {
+				dstPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(dstPod, allPolicies)
+				ingressAction = evaluateAdminIngress(dstPodAdminNetworkPolicies, srcPod, dstPod, p.DstPort, p.Proto)
+				logger.V(2).Info("Ingress AdminNetworkPolicies evaluation complete", "npolicies", len(dstPodAdminNetworkPolicies), "action", ingressAction)
+			}
+			if ingressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny {
 				return VerdictDeny, nil
 			}
 
@@ -167,7 +176,6 @@ func evaluateAdminEgress(
 						return rule.Action
 					}
 				}
-
 			}
 		}
 	}
