@@ -185,7 +185,7 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 				return nil, false
 			}
 
-			evaluator := NewBaselineAdminNetworkPolicyEvaluator(getPodInfo, banpInformer.Lister(), nil) // nsLister is unused
+			evaluator := NewBaselineAdminNetworkPolicyEvaluator(getPodInfo, banpInformer.Lister())
 
 			verdict, err := evaluator.Evaluate(context.TODO(), &tt.packet)
 			if err != nil {
