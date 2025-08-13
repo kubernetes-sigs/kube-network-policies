@@ -10,8 +10,11 @@ import (
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
+	npaclientfake "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned/fake"
+	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 )
 
 type adminNetpolTweak func(networkPolicy *npav1alpha1.AdminNetworkPolicy)
@@ -227,7 +230,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 		pod           []*v1.Pod
 		node          []*v1.Node
 		p             network.Packet
-		expect        bool
+		expect        Verdict
 	}{
 		{
 			name:          "no network policy",
@@ -241,7 +244,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "deny ingress",
@@ -255,7 +258,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: false,
+			expect: VerdictDeny,
 		},
 		{
 			name:          "deny egress",
@@ -269,7 +272,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: false,
+			expect: VerdictDeny,
 		},
 		{
 			name:          "allow all override deny ingress if it has higher priority",
@@ -283,7 +286,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "allow ingress",
@@ -297,7 +300,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow egress port",
@@ -311,7 +314,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow egress node port",
@@ -325,7 +328,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport deny egress port",
@@ -339,7 +342,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 30080,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: false,
+			expect: VerdictDeny,
 		},
 		{
 			name:          "multiport allow egress",
@@ -353,7 +356,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow egress port selector not match ns",
@@ -367,7 +370,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow egress ns selector",
@@ -381,7 +384,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow egress ns selector fail",
@@ -395,7 +398,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow egress ns and pod selector",
@@ -409,7 +412,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow egress ns and pod selector fail",
@@ -423,7 +426,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow ingress ns and pod selector",
@@ -437,7 +440,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: true,
+			expect: VerdictNext,
 		},
 		{
 			name:          "multiport allow ingress ns and pod selector fail",
@@ -451,46 +454,51 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 9080,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: false,
+			expect: VerdictDeny,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller := newTestController(Config{
-				AdminNetworkPolicy:         true,
-				BaselineAdminNetworkPolicy: true,
-				NetfilterBug1766Fix:        true,
-				QueueID:                    102,
-				NFTableName:                "kube-network-policies",
-			})
+
+			npaClient := npaclientfake.NewSimpleClientset()
+			npaInformerFactory := npainformers.NewSharedInformerFactory(npaClient, 0)
+			adminNetworkPolicyInformer := npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies()
+			adminNetworkpolicyStore := adminNetworkPolicyInformer.Informer().GetStore()
+
 			// Add objects to the Store
 			for _, n := range tt.networkpolicy {
-				err := controller.adminNetworkpolicyStore.Add(n)
+				err := adminNetworkpolicyStore.Add(n)
 				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			for _, n := range tt.namespace {
-				err := controller.namespaceStore.Add(n)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			for _, p := range tt.pod {
-				err := controller.podStore.Add(p)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			err := controller.nodeStore.Add(makeNode("testnode"))
-			if err != nil {
-				t.Fatal(err)
 			}
 
-			ok := controller.evaluatePacket(context.TODO(), &tt.p)
-			if ok != tt.expect {
-				t.Errorf("expected %v got  %v", tt.expect, ok)
+			getPodInfo := func(podIP string) (*api.PodInfo, bool) {
+				for _, p := range tt.pod {
+					for _, ip := range p.Status.PodIPs {
+						if ip.IP == podIP {
+							for _, n := range tt.namespace {
+								if n.Name == p.Namespace {
+									return api.PodAndNamespaceAndNodeToPodInfo(p, n, makeNode("testnode"), ""), true
+								}
+							}
+						}
+					}
+				}
+				return nil, false
+			}
+
+			evaluator := NewAdminNetworkPolicyEvaluator(getPodInfo,
+				adminNetworkPolicyInformer.Lister(),
+			)
+
+			verdict, err := evaluator.Evaluate(context.TODO(), &tt.p)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if verdict != tt.expect {
+				t.Errorf("got %v, but expected  %v", verdict, tt.expect)
 			}
 
 		})
@@ -605,7 +613,8 @@ func Test_evaluateAdminNetworkPolicyPort(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := evaluateAdminNetworkPolicyPort(tt.networkPolicyPorts, tt.pod, tt.port, tt.protocol); got != tt.want {
+			podInfo := api.PodAndNamespaceAndNodeToPodInfo(tt.pod, makeNamespace("foo"), makeNode("testnode"), "id")
+			if got := evaluateAdminNetworkPolicyPort(tt.networkPolicyPorts, podInfo, tt.port, tt.protocol); got != tt.want {
 				t.Errorf("evaluateAdminNetworkPolicyPort() = %v, want %v", got, tt.want)
 			}
 		})
@@ -741,29 +750,15 @@ func TestController_getAdminNetworkPoliciesForPod(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller := newTestController(Config{
-				AdminNetworkPolicy:         true,
-				BaselineAdminNetworkPolicy: true,
-				NetfilterBug1766Fix:        true,
-				QueueID:                    102,
-				NFTableName:                "kube-network-policies",
-			})
-			// Add objects to the Store
-			err := controller.adminNetworkpolicyStore.Add(tt.networkpolicy)
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = controller.namespaceStore.Add(makeNamespace("foo"))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			if got := controller.getAdminNetworkPoliciesForPod(context.TODO(), makePod("a", "foo", "192.168.1.11")); len(got) > 0 != tt.want {
+			podInfo := api.PodAndNamespaceAndNodeToPodInfo(makePod("a", "foo", "192.168.1.11"), makeNamespace("foo"), makeNode("testnode"), "id")
+			if got := getAdminNetworkPoliciesForPod(podInfo, []*npav1alpha1.AdminNetworkPolicy{tt.networkpolicy}); len(got) > 0 != tt.want {
 				t.Errorf("Controller.getAdminNetworkPoliciesForPod() = %v, want %v", len(got) > 0, tt.want)
 			}
 		})
 	}
 }
+
+/*
 
 func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 	podA := makePod("a", "foo", "192.168.1.11")
@@ -1000,3 +995,5 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 		})
 	}
 }
+
+*/

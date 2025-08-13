@@ -89,10 +89,12 @@ func (p *Pipeline) Run(ctx context.Context, packet *network.Packet) (bool, error
 				return false, nil
 			case VerdictNext:
 				// Continue to the next evaluator.
+				logger.V(2).Info("packet continue to the next evaluator", "evaluator", evaluator.Name)
 				continue
 			}
 		}
 	}
 	// If the pipeline completes without a final verdict, default to allowing the packet.
+	logger.V(2).Info("packet accepted by all evaluators")
 	return true, nil
 }
