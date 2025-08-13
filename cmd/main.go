@@ -236,12 +236,23 @@ func run() int {
 		if !ok {
 			return nil, false
 		}
-		ns, err := nsInformer.Lister().Get(pod.Namespace)
-		if err != nil || ns == nil {
-			return nil, false
+		var nsLabels, nodeLabels map[string]string
+
+		if nsInformer != nil {
+			ns, err := nsInformer.Lister().Get(pod.Namespace)
+			if err == nil {
+				nsLabels = ns.Labels
+			}
 		}
 
-		return api.PodAndNamespaceToPodInfo(pod, ns, ""), true
+		if nodeInformer != nil {
+			node, err := nodeInformer.Lister().Get(pod.Spec.NodeName)
+			if err == nil {
+				nodeLabels = node.Labels
+			}
+		}
+
+		return api.NewPodInfo(pod, nsLabels, nodeLabels, ""), true
 	}
 
 	cfg.Evaluators = []pipeline.Evaluator{
