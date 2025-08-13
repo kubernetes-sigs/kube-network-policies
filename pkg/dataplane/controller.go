@@ -37,7 +37,6 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	"sigs.k8s.io/kube-network-policies/pkg/pipeline"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
-	policyinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
 	policylisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 )
 
@@ -97,10 +96,6 @@ func NewController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
-	nodeInformer coreinformers.NodeInformer,
-	npaClient npaclient.Interface,
-	adminNetworkPolicyInformer policyinformers.AdminNetworkPolicyInformer,
-	baselineAdminNetworkPolicyInformer policyinformers.BaselineAdminNetworkPolicyInformer,
 	config Config,
 ) (*Controller, error) {
 	err := config.Defaults()
@@ -113,10 +108,6 @@ func NewController(client clientset.Interface,
 		networkpolicyInformer,
 		namespaceInformer,
 		podInformer,
-		nodeInformer,
-		npaClient,
-		adminNetworkPolicyInformer,
-		baselineAdminNetworkPolicyInformer,
 		config,
 	)
 }
@@ -125,10 +116,6 @@ func newController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
-	nodeInformer coreinformers.NodeInformer,
-	npaClient npaclient.Interface,
-	adminNetworkPolicyInformer policyinformers.AdminNetworkPolicyInformer,
-	baselineAdminNetworkPolicyInformer policyinformers.BaselineAdminNetworkPolicyInformer,
 	config Config,
 ) (*Controller, error) {
 	klog.V(2).Info("Creating event broadcaster")
@@ -154,22 +141,6 @@ func newController(client clientset.Interface,
 	c.namespacesSynced = namespaceInformer.Informer().HasSynced
 	c.networkpolicyLister = networkpolicyInformer.Lister()
 	c.networkpoliciesSynced = networkpolicyInformer.Informer().HasSynced
-	if config.AdminNetworkPolicy || config.BaselineAdminNetworkPolicy {
-		c.npaClient = npaClient
-		c.nodeLister = nodeInformer.Lister()
-		c.nodesSynced = nodeInformer.Informer().HasSynced
-		c.domainCache = NewDomainCache(config.QueueID + 1)
-	}
-
-	if config.AdminNetworkPolicy {
-		c.adminNetworkPolicyLister = adminNetworkPolicyInformer.Lister()
-		c.adminNetworkPolicySynced = adminNetworkPolicyInformer.Informer().HasSynced
-	}
-
-	if config.BaselineAdminNetworkPolicy {
-		c.baselineAdminNetworkPolicyLister = baselineAdminNetworkPolicyInformer.Lister()
-		c.baselineAdminNetworkPolicySynced = baselineAdminNetworkPolicyInformer.Informer().HasSynced
-	}
 
 	c.eventBroadcaster = broadcaster
 	c.eventRecorder = recorder
@@ -339,9 +310,6 @@ type Controller struct {
 
 	nfq     *nfqueue.Nfqueue
 	flushed bool
-
-	// Passively obtain the Domain A and AAAA records from the network
-	domainCache *DomainCache
 }
 
 // Run will not return until stopCh is closed. workers determines how many
@@ -357,22 +325,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	// Wait for the caches to be synced
 	logger.Info("Waiting for informer caches to sync")
 	caches := []cache.InformerSynced{c.networkpoliciesSynced, c.namespacesSynced, c.podsSynced}
-	if c.config.AdminNetworkPolicy || c.config.BaselineAdminNetworkPolicy {
-		caches = append(caches, c.nodesSynced)
-	}
 
-	if c.config.AdminNetworkPolicy {
-		caches = append(caches, c.adminNetworkPolicySynced)
-		go func() {
-			err := c.domainCache.Run(ctx)
-			if err != nil {
-				klog.Infof("domain cache controller exited: %v", err)
-			}
-		}()
-	}
-	if c.config.BaselineAdminNetworkPolicy {
-		caches = append(caches, c.baselineAdminNetworkPolicySynced)
-	}
 	if !cache.WaitForNamedCacheSync(controllerName, ctx.Done(), caches...) {
 		return fmt.Errorf("error syncing cache")
 	}

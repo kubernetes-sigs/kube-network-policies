@@ -19,7 +19,8 @@ import (
 // This evaluator determines the fate of a network packet based on the highest-priority
 // AdminNetworkPolicy rules that apply to the source (for Egress) and destination (for Ingress) pods.
 func NewAdminNetworkPolicyEvaluator(
-	podInfoGetter PodByIPGetter,
+	podInfoProvider PodInfoProvider,
+	domainResolver DomainResolver,
 	anpLister anplisters.AdminNetworkPolicyLister,
 ) Evaluator {
 	return Evaluator{
@@ -27,8 +28,8 @@ func NewAdminNetworkPolicyEvaluator(
 		Name:     "AdminNetworkPolicy",
 		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
 			logger := klog.FromContext(ctx)
-			srcPod, _ := podInfoGetter(p.SrcIP.String())
-			dstPod, _ := podInfoGetter(p.DstIP.String())
+			srcPod, _ := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
+			dstPod, _ := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
 
 			allPolicies, err := anpLister.List(labels.Everything())
 			if err != nil {
@@ -41,7 +42,7 @@ func NewAdminNetworkPolicyEvaluator(
 			// 1. Evaluate Egress policies for the source pod.
 			// These policies dictate whether the source pod is allowed to send traffic.
 			srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
-			egressAction := evaluateAdminEgress(srcPodAdminNetworkPolicies, srcPod, dstPod, p.DstIP, p.DstPort, p.Proto)
+			egressAction := evaluateAdminEgress(domainResolver, srcPodAdminNetworkPolicies, srcPod, dstPod, p.DstIP, p.DstPort, p.Proto)
 			logger.V(2).Info("Egress AdminNetworkPolicies evaluation complete", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
 
 			// 2. Evaluate Ingress policies for the destination pod.
@@ -119,6 +120,7 @@ func getAdminNetworkPoliciesForPod(pod *api.PodInfo, allPolicies []*npav1alpha1.
 // and its 'Ports' selector matches the destination port/protocol.
 // If no rule matches, it returns 'Pass'.
 func evaluateAdminEgress(
+	domainResolver DomainResolver,
 	policies []*npav1alpha1.AdminNetworkPolicy,
 	srcPod, dstPod *api.PodInfo, // srcPod for context, dstPod for peer matching
 	dstIP net.IP,
@@ -160,7 +162,12 @@ func evaluateAdminEgress(
 						return rule.Action
 					}
 				}
-				// TODO: DNS matching can be added here.
+				for _, domain := range to.DomainNames {
+					if domainResolver.ContainsIP(string(domain), dstIP) {
+						return rule.Action
+					}
+				}
+
 			}
 		}
 	}

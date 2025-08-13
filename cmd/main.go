@@ -12,15 +12,14 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/dataplane"
-	"sigs.k8s.io/kube-network-policies/pkg/nri"
+	"sigs.k8s.io/kube-network-policies/pkg/dns"
 	"sigs.k8s.io/kube-network-policies/pkg/pipeline"
+	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 	"sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
 
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -28,7 +27,6 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/component-base/logs"
 	logsapi "k8s.io/component-base/logs/api/v1"
 	_ "k8s.io/component-base/logs/json/register"
@@ -158,25 +156,6 @@ func run() int {
 	nsInformer := informersFactory.Core().V1().Namespaces()
 	networkPolicyInfomer := informersFactory.Networking().V1().NetworkPolicies()
 	podInformer := informersFactory.Core().V1().Pods()
-	podIndexer := podInformer.Informer().GetIndexer()
-
-	// Add the IP indexer to the pod informer.
-	err = podInformer.Informer().AddIndexers(cache.Indexers{
-		podIPIndex: func(obj interface{}) ([]string, error) {
-			pod, ok := obj.(*v1.Pod)
-			if !ok || pod.Spec.HostNetwork {
-				return []string{}, nil
-			}
-			ips := make([]string, 0, len(pod.Status.PodIPs))
-			for _, ip := range pod.Status.PodIPs {
-				ips = append(ips, ip.IP)
-			}
-			return ips, nil
-		},
-	})
-	if err != nil {
-		klog.Fatalf("Failed to add pod IP indexer: %v", err)
-	}
 
 	// Set the memory-saving transform function on the pod informer.
 	err = podInformer.Informer().SetTransform(func(obj interface{}) (interface{}, error) {
@@ -189,93 +168,57 @@ func run() int {
 		klog.Fatalf("Failed to set pod informer transform: %v", err)
 	}
 
-	// Create the NRI plugin instance.
-	var nriPlugin *nri.Plugin
+	informerResolver, err := podinfo.NewInformerResolver(podInformer.Informer())
+	if err != nil {
+		klog.Fatalf("Failed to create informer resolver: %v", err)
+	}
+	resolvers := []podinfo.IPResolver{informerResolver}
+
+	// Create an NRI Pod IP resolver.
 	if !disableNRI {
-		nriPlugin, err = nri.New()
+		nriIPResolver, err := podinfo.NewNRIResolver(ctx)
 		if err != nil {
 			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
-		} else {
-			go func() {
-				err := nriPlugin.Run(ctx)
-				if err != nil {
-					klog.Infof("nri plugin exited: %v", err)
-				}
-			}()
 		}
-	}
-	// Create the getPodAssignedToIP function here, capturing the necessary variables.
-	getPodAssignedToIP := func(podIP string) (*v1.Pod, bool) {
-		objs, err := podIndexer.ByIndex(podIPIndex, podIP)
-		if err != nil {
-			return nil, false
-		}
-		if len(objs) == 0 && nriPlugin != nil {
-			podKey := nriPlugin.GetPodFromIP(podIP)
-			if podKey != "" {
-				obj, ok, err := podIndexer.GetByKey(podKey)
-				if err == nil && ok {
-					return obj.(*v1.Pod), true
-				}
-			}
-			return nil, false
-		}
-		for _, obj := range objs {
-			if pod, ok := obj.(*v1.Pod); ok && pod.Status.Phase == v1.PodRunning {
-				return pod, true
-			}
-		}
-		if len(objs) > 0 {
-			return objs[0].(*v1.Pod), true
-		}
-		return nil, false
+		resolvers = append(resolvers, nriIPResolver)
 	}
 
-	getPodInfo := func(podIP string) (*api.PodInfo, bool) {
-		pod, ok := getPodAssignedToIP(podIP)
-		if !ok {
-			return nil, false
-		}
-		var nsLabels, nodeLabels map[string]string
-
-		if nsInformer != nil {
-			ns, err := nsInformer.Lister().Get(pod.Namespace)
-			if err == nil {
-				nsLabels = ns.Labels
-			}
-		}
-
-		if nodeInformer != nil {
-			node, err := nodeInformer.Lister().Get(pod.Spec.NodeName)
-			if err == nil {
-				nodeLabels = node.Labels
-			}
-		}
-
-		return api.NewPodInfo(pod, nsLabels, nodeLabels, ""), true
-	}
+	podInfoProvider := podinfo.New(
+		podInformer.Informer(),
+		nsInformer.Lister(),
+		nodeInformer.Lister(),
+		resolvers)
 
 	cfg.Evaluators = []pipeline.Evaluator{
 		pipeline.NewNetworkPolicyEvaluator(nodeName,
-			getPodInfo,
+			podInfoProvider,
 			podInformer.Lister(),
 			nsInformer.Lister(),
 			networkPolicyInfomer.Lister(),
 		)}
 
 	if klog.V(2).Enabled() {
-		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewLoggingEvaluator(getPodInfo))
+		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewLoggingEvaluator(podInfoProvider))
 	}
 
 	if adminNetworkPolicy {
+		domainResolver := dns.NewDomainCache(queueID + 1)
+		go func() {
+			err := domainResolver.Run(ctx)
+			if err != nil {
+				klog.Infof("domain cache controller exited: %v", err)
+			}
+		}()
+
 		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewAdminNetworkPolicyEvaluator(
-			getPodInfo,
+			podInfoProvider,
+			domainResolver,
 			anpInformer.Lister(),
 		))
 	}
 	if baselineAdminNetworkPolicy {
 		cfg.Evaluators = append(cfg.Evaluators, pipeline.NewBaselineAdminNetworkPolicyEvaluator(
-			getPodInfo,
+			podInfoProvider,
 			banpInformer.Lister(),
 		))
 	}
@@ -290,10 +233,6 @@ func run() int {
 		networkPolicyInfomer,
 		nsInformer,
 		podInformer,
-		nodeInformer,
-		npaClient,
-		anpInformer,
-		banpInformer,
 		cfg,
 	)
 	if err != nil {

@@ -185,7 +185,11 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 				return nil, false
 			}
 
-			evaluator := NewBaselineAdminNetworkPolicyEvaluator(getPodInfo, banpInformer.Lister())
+			// Create the provider instance from the closure
+			podInfoProvider := &FuncProvider{
+				GetFunc: getPodInfo,
+			}
+			evaluator := NewBaselineAdminNetworkPolicyEvaluator(podInfoProvider, banpInformer.Lister())
 
 			verdict, err := evaluator.Evaluate(context.TODO(), &tt.packet)
 			if err != nil {
