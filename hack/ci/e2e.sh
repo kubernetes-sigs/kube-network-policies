@@ -246,6 +246,8 @@ main() {
     echo 1 > /proc/sys/vm/drop_caches || true
   fi
 
+  cd -
+
   # create the cluster and run tests
   res=0
   create_cluster || res=$?
