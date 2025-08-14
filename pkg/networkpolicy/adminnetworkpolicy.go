@@ -57,6 +57,8 @@ func (a *AdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Pac
 		return VerdictAccept, nil
 	case npav1alpha1.AdminNetworkPolicyRuleActionDeny:
 		return VerdictDeny, nil
+	case npav1alpha1.AdminNetworkPolicyRuleActionPass:
+		return VerdictNext, nil
 	default: // Pass
 		return VerdictNext, nil
 	}
@@ -83,6 +85,8 @@ func (a *AdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Pack
 		return VerdictAccept, nil
 	case npav1alpha1.AdminNetworkPolicyRuleActionDeny:
 		return VerdictDeny, nil
+	case npav1alpha1.AdminNetworkPolicyRuleActionPass:
+		return VerdictNext, nil
 	default: // Pass
 		return VerdictNext, nil
 	}
