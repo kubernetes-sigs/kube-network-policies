@@ -10,60 +10,72 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
-	"sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
+	banpinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
+	banplisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 )
 
-// NewBaselineAdminNetworkPolicyEvaluator creates a new pipeline evaluator for BaselineAdminNetworkPolicies.
-func NewBaselineAdminNetworkPolicyEvaluator(
-	podInfoProvider PodInfoProvider,
-	banpInformer v1alpha1.BaselineAdminNetworkPolicyInformer,
-) Evaluator {
+// BaselineAdminNetworkPolicy implements the PolicyEvaluator interface for the ANP API.
+type BaselineAdminNetworkPolicy struct {
+	banpLister banplisters.BaselineAdminNetworkPolicyLister
+}
 
-	banpLister := banpInformer.Lister()
+var _ PolicyEvaluator = &BaselineAdminNetworkPolicy{}
 
-	return Evaluator{
-		Priority: 100,
-		Name:     "BaselineAdminNetworkPolicy",
-		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
-			logger := klog.FromContext(ctx)
-			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
-			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
+// NewAdminNetworkPolicy creates a new ANP implementation.
+func NewBaselineAdminNetworkPolicy(banpInformer banpinformers.BaselineAdminNetworkPolicyInformer) *BaselineAdminNetworkPolicy {
+	return &BaselineAdminNetworkPolicy{
+		banpLister: banpInformer.Lister(),
+	}
+}
 
-			allPolicies, err := banpLister.List(labels.Everything())
-			if err != nil {
-				return VerdictNext, err
-			}
-			if len(allPolicies) == 0 {
-				return VerdictNext, nil
-			}
-			// 1. Evaluate Egress policies for the source pod.
-			// These policies dictate whether the source pod is allowed to send traffic.
-			if srcPodFound {
-				srcPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(srcPod, allPolicies)
-				egressAction := evaluateBaselineAdminEgress(srcPodBaselineAdminNetworkPolices, dstPod, p.DstIP, p.DstPort, p.Proto)
-				logger.V(2).Info("Egress BaselineAdminNetworkPolicies", "npolicies", len(srcPodBaselineAdminNetworkPolices), "action", egressAction)
-				if egressAction == npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny {
-					return VerdictDeny, nil
-				}
-			}
+func (b *BaselineAdminNetworkPolicy) Name() string {
+	return "BaselineAdminNetworkPolicy"
+}
 
-			// 2. Evaluate Ingress policies for the destination pod.
-			// These policies dictate whether the destination pod is allowed to receive traffic.
-			if dstPodFound {
-				dstPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(dstPod, allPolicies)
-				ingressAction := evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, p.SrcIP, p.SrcPort, p.Proto)
-				logger.V(2).Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", ingressAction)
-				// Egress has to be Allow or Pass if we are here.
-				if ingressAction == npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny {
-					return VerdictDeny, nil
-				}
-				if ingressAction == npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow {
-					return VerdictAccept, nil
-				}
-			}
+func (b *BaselineAdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	logger := klog.FromContext(ctx)
 
-			return VerdictNext, nil
-		},
+	allPolicies, err := b.banpLister.List(labels.Everything())
+	if err != nil || len(allPolicies) == 0 {
+		return VerdictNext, err
+	}
+
+	dstPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(dstPod, allPolicies)
+	if len(dstPodBaselineAdminNetworkPolices) == 0 {
+		return VerdictNext, nil
+	}
+	ingressAction := b.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, p.SrcIP, p.SrcPort, p.Proto)
+	logger.V(2).Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", ingressAction)
+
+	switch ingressAction {
+	case npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow:
+		return VerdictAccept, nil
+	case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny:
+		return VerdictDeny, nil
+	default: // Pass
+		return VerdictNext, nil
+	}
+}
+
+func (b *BaselineAdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	logger := klog.FromContext(ctx)
+
+	allPolicies, err := b.banpLister.List(labels.Everything())
+	if err != nil || len(allPolicies) == 0 {
+		return VerdictNext, err
+	}
+
+	srcPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(srcPod, allPolicies)
+	egressAction := b.evaluateBaselineAdminEgress(srcPodBaselineAdminNetworkPolices, dstPod, p.DstIP, p.DstPort, p.Proto)
+	logger.V(2).Info("Egress BaselineAdminNetworkPolicies", "npolicies", len(srcPodBaselineAdminNetworkPolices), "action", egressAction)
+
+	switch egressAction {
+	case npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow:
+		return VerdictAccept, nil
+	case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny:
+		return VerdictDeny, nil
+	default: // Pass
+		return VerdictNext, nil
 	}
 }
 
@@ -99,7 +111,7 @@ func getBaselineAdminNetworkPoliciesForPod(pod *api.PodInfo, allPolicies []*npav
 	return result
 }
 
-func evaluateBaselineAdminEgress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, pod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
+func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminEgress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, pod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
 	for _, policy := range adminNetworkPolices {
 		for _, rule := range policy.Spec.Egress {
 			// Ports allows for matching traffic based on port and protocols.
@@ -153,7 +165,7 @@ func evaluateBaselineAdminEgress(adminNetworkPolices []*npav1alpha1.BaselineAdmi
 	return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
 }
 
-func evaluateBaselineAdminIngress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, pod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
+func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminIngress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, pod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
 	// Ingress rules only apply to pods
 	if pod == nil {
 		return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow

@@ -199,14 +199,13 @@ func run() int {
 
 	// Create the evaluators for the Pipeline to process the packets
 	// and take a network policy action.
-	evaluators := []networkpolicy.Evaluator{
-		networkpolicy.NewNetworkPolicyEvaluator(nodeName,
-			podInfoProvider,
+	evaluators := []networkpolicy.PolicyEvaluator{
+		networkpolicy.NewStandardNetworkPolicy(
 			networkPolicyInfomer,
 		)}
 
 	if klog.V(2).Enabled() {
-		evaluators = append(evaluators, networkpolicy.NewLoggingEvaluator(podInfoProvider))
+		evaluators = append(evaluators, networkpolicy.NewLoggingPolicy())
 	}
 
 	if adminNetworkPolicy {
@@ -222,16 +221,14 @@ func run() int {
 			}
 		}()
 
-		evaluators = append(evaluators, networkpolicy.NewAdminNetworkPolicyEvaluator(
-			podInfoProvider,
-			domainResolver,
+		evaluators = append(evaluators, networkpolicy.NewAdminNetworkPolicy(
 			anpInformer,
+			domainResolver,
 		))
 	}
 
 	if baselineAdminNetworkPolicy {
-		evaluators = append(evaluators, networkpolicy.NewBaselineAdminNetworkPolicyEvaluator(
-			podInfoProvider,
+		evaluators = append(evaluators, networkpolicy.NewBaselineAdminNetworkPolicy(
 			banpInformer,
 		))
 	}
@@ -248,7 +245,7 @@ func run() int {
 		networkPolicyInfomer,
 		nsInformer,
 		podInformer,
-		networkpolicy.NewPipeline(evaluators...),
+		networkpolicy.NewPolicyEngine(podInfoProvider, evaluators...),
 		cfg,
 	)
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
+	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 )
 
 var (
@@ -38,13 +39,16 @@ type networkpolicyController struct {
 func newTestController(config Config) *networkpolicyController {
 	client := fake.NewSimpleClientset()
 	informersFactory := informers.NewSharedInformerFactory(client, 0)
+	podInformer := informersFactory.Core().V1().Pods()
+	nsInfomer := informersFactory.Core().V1().Namespaces()
 
+	podInfoProvider := podinfo.New(podInformer, nsInfomer, nil, nil)
 	controller, err := newController(
 		client,
 		informersFactory.Networking().V1().NetworkPolicies(),
-		informersFactory.Core().V1().Namespaces(),
-		informersFactory.Core().V1().Pods(),
-		networkpolicy.NewPipeline(),
+		nsInfomer,
+		podInformer,
+		networkpolicy.NewPolicyEngine(podInfoProvider),
 		config,
 	)
 	if err != nil {
@@ -56,8 +60,8 @@ func newTestController(config Config) *networkpolicyController {
 	return &networkpolicyController{
 		Controller:         controller,
 		networkpolicyStore: informersFactory.Networking().V1().NetworkPolicies().Informer().GetStore(),
-		namespaceStore:     informersFactory.Core().V1().Namespaces().Informer().GetStore(),
-		podStore:           informersFactory.Core().V1().Pods().Informer().GetStore(),
+		namespaceStore:     nsInfomer.Informer().GetStore(),
+		podStore:           podInformer.Informer().GetStore(),
 	}
 }
 

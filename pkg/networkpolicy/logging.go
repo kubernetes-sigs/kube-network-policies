@@ -1,32 +1,57 @@
+// SPDX-License-Identifier: APACHE-2.0
+
 package networkpolicy
 
 import (
 	"context"
 
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
 
-// NewLoggingEvaluator creates an evaluator that logs packet details.
-func NewLoggingEvaluator(podInfoProvider PodInfoProvider) Evaluator {
-	return Evaluator{
-		Priority: 0, // Highest priority to log first
-		Name:     "PacketLogger",
-		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
-			logger := klog.FromContext(ctx)
-			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
-			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
+// LoggingPolicy implements the PolicyEvaluator interface to log packet details.
+// It is intended to be the first evaluator in the engine to provide visibility.
+type LoggingPolicy struct{}
 
-			srcPodStr, dstPodStr := "none", "none"
-			if srcPodFound {
-				srcPodStr = srcPod.Namespace.Name + "/" + srcPod.Name
-			}
-			if dstPodFound {
-				dstPodStr = dstPod.Namespace.Name + "/" + dstPod.Name
-			}
+// NewLoggingPolicy creates a new logging policy evaluator.
+func NewLoggingPolicy() *LoggingPolicy {
+	return &LoggingPolicy{}
+}
 
-			logger.V(2).Info("Evaluating packet", "srcPod", srcPodStr, "dstPod", dstPodStr)
-			return VerdictNext, nil
-		},
+// Name returns the name of the policy evaluator.
+func (l *LoggingPolicy) Name() string {
+	return "LoggingPolicy"
+}
+
+// EvaluateIngress logs the details of an ingress packet and passes it to the next evaluator.
+func (l *LoggingPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	logPacket(ctx, "Ingress", p, srcPod, dstPod)
+	return VerdictNext, nil
+}
+
+// EvaluateEgress logs the details of an egress packet and passes it to the next evaluator.
+func (l *LoggingPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	logPacket(ctx, "Egress", p, srcPod, dstPod)
+	return VerdictNext, nil
+}
+
+// logPacket is a helper function to format and write the log message.
+func logPacket(ctx context.Context, direction string, p *network.Packet, srcPod, dstPod *api.PodInfo) {
+	logger := klog.FromContext(ctx)
+
+	srcPodStr, dstPodStr := "external", "external"
+	if srcPod != nil {
+		srcPodStr = srcPod.Namespace.Name + "/" + srcPod.Name
 	}
+	if dstPod != nil {
+		dstPodStr = dstPod.Namespace.Name + "/" + dstPod.Name
+	}
+
+	logger.V(2).Info("Evaluating packet",
+		"direction", direction,
+		"srcPod", srcPodStr,
+		"dstPod", dstPodStr,
+		"packet", p,
+	)
 }

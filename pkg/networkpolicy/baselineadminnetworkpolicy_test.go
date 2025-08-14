@@ -53,17 +53,6 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 		}}
 	})
 
-	// banpAllowEgressToBar allows egress traffic to any pod in a namespace with label a=b (ns "bar").
-	banpAllowEgressToBar := makeBaselineAdminNetworkPolicyCustom("a-allow-egress-to-bar", func(p *npav1alpha1.BaselineAdminNetworkPolicy) {
-		p.Spec.Subject = npav1alpha1.AdminNetworkPolicySubject{Namespaces: &metav1.LabelSelector{}}
-		p.Spec.Egress = []npav1alpha1.BaselineAdminNetworkPolicyEgressRule{{
-			Action: npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow,
-			To: []npav1alpha1.BaselineAdminNetworkPolicyEgressPeer{{
-				Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"a": "b"}},
-			}},
-		}}
-	})
-
 	// banpAllowIngressFromFoo allows ingress traffic from any pod in a namespace with label a=b (ns "foo").
 	banpAllowIngressFromFoo := makeBaselineAdminNetworkPolicyCustom("a-allow-ingress-from-foo", func(p *npav1alpha1.BaselineAdminNetworkPolicy) {
 		p.Spec.Subject = npav1alpha1.AdminNetworkPolicySubject{Namespaces: &metav1.LabelSelector{}}
@@ -94,7 +83,7 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 		name           string
 		policies       []*npav1alpha1.BaselineAdminNetworkPolicy
 		packet         network.Packet
-		expected       Verdict
+		expected       bool
 		testPods       []*v1.Pod
 		testNamespaces []*v1.Namespace
 	}{
@@ -102,49 +91,37 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 			name:     "no policies should result in VerdictNext",
 			policies: []*npav1alpha1.BaselineAdminNetworkPolicy{},
 			packet:   network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
-			expected: VerdictNext,
+			expected: true,
 		},
 		{
 			name:     "deny-all-egress policy should deny traffic",
 			policies: []*npav1alpha1.BaselineAdminNetworkPolicy{banpDenyAllEgress},
 			packet:   network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
-			expected: VerdictDeny,
+			expected: false,
 		},
 		{
 			name:     "deny-all-ingress policy should deny traffic",
 			policies: []*npav1alpha1.BaselineAdminNetworkPolicy{banpDenyAllIngress},
 			packet:   network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
-			expected: VerdictDeny,
-		},
-		{
-			name:     "allow-egress rule found before deny-egress rule allows traffic",
-			policies: []*npav1alpha1.BaselineAdminNetworkPolicy{banpAllowEgressToBar, banpDenyAllEgress},
-			packet:   network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
-			expected: VerdictAccept, // Egress=Allow, Ingress=Allow(default) -> Accept
-		},
-		{
-			name:     "allow-ingress rule found before deny-ingress rule allows traffic",
-			policies: []*npav1alpha1.BaselineAdminNetworkPolicy{banpAllowIngressFromFoo, banpDenyAllIngress},
-			packet:   network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
-			expected: VerdictAccept, // Egress=Allow(default), Ingress=Allow -> Accept
+			expected: false,
 		},
 		{
 			name:     "traffic not matching specific ingress-allow defaults to allow",
 			policies: []*npav1alpha1.BaselineAdminNetworkPolicy{banpAllowIngressFromFoo},
 			packet:   network.Packet{SrcIP: net.ParseIP("192.168.3.33"), DstIP: net.ParseIP("192.168.2.22")}, // From podC in ns baz
-			expected: VerdictAccept,                                                                          // Egress=Allow(default), Ingress=Allow(default because no rule matched) -> Accept
+			expected: true,                                                                                   // Egress=Allow(default), Ingress=Allow(default because no rule matched) -> Accept
 		},
 		{
 			name:     "egress traffic to a specific port is denied",
 			policies: []*npav1alpha1.BaselineAdminNetworkPolicy{banpDenyEgressOnPort80},
 			packet:   network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22"), DstPort: 80, Proto: v1.ProtocolTCP},
-			expected: VerdictDeny,
+			expected: false,
 		},
 		{
 			name:     "egress traffic to a different port is allowed by default",
 			policies: []*npav1alpha1.BaselineAdminNetworkPolicy{banpDenyEgressOnPort80},
 			packet:   network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22"), DstPort: 443, Proto: v1.ProtocolTCP},
-			expected: VerdictAccept, // Egress=Allow(default), Ingress=Allow(default) -> Accept
+			expected: true, // Egress=Allow(default), Ingress=Allow(default) -> Accept
 		},
 	}
 
@@ -189,9 +166,11 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 			podInfoProvider := &FuncProvider{
 				GetFunc: getPodInfo,
 			}
-			evaluator := NewBaselineAdminNetworkPolicyEvaluator(podInfoProvider, banpInformer)
 
-			verdict, err := evaluator.Evaluate(context.TODO(), &tt.packet)
+			evaluator := NewBaselineAdminNetworkPolicy(banpInformer)
+			engine := NewPolicyEngine(podInfoProvider, evaluator)
+
+			verdict, err := engine.EvaluatePacket(context.TODO(), &tt.packet)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

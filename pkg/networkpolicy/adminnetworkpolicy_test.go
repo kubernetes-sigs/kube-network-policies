@@ -230,7 +230,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 		pod           []*v1.Pod
 		node          []*v1.Node
 		p             network.Packet
-		expect        Verdict
+		expect        bool
 	}{
 		{
 			name:          "no network policy",
@@ -244,7 +244,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "deny ingress",
@@ -258,7 +258,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictDeny,
+			expect: false,
 		},
 		{
 			name:          "deny egress",
@@ -272,7 +272,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictDeny,
+			expect: false,
 		},
 		{
 			name:          "allow all override deny ingress if it has higher priority",
@@ -286,7 +286,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "allow ingress",
@@ -300,7 +300,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow egress port",
@@ -314,7 +314,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow egress node port",
@@ -328,7 +328,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport deny egress port",
@@ -342,7 +342,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 30080,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictDeny,
+			expect: false,
 		},
 		{
 			name:          "multiport allow egress",
@@ -356,7 +356,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow egress port selector not match ns",
@@ -370,7 +370,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow egress ns selector",
@@ -384,7 +384,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow egress ns selector fail",
@@ -398,7 +398,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow egress ns and pod selector",
@@ -412,7 +412,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow egress ns and pod selector fail",
@@ -426,7 +426,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow ingress ns and pod selector",
@@ -440,7 +440,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 80,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictNext,
+			expect: true,
 		},
 		{
 			name:          "multiport allow ingress ns and pod selector fail",
@@ -454,7 +454,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				DstPort: 9080,
 				Proto:   v1.ProtocolTCP,
 			},
-			expect: VerdictDeny,
+			expect: false,
 		},
 	}
 
@@ -494,12 +494,10 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 				GetFunc: getPodInfo,
 			}
 
-			evaluator := NewAdminNetworkPolicyEvaluator(podInfoProvider,
-				nil,
-				adminNetworkPolicyInformer,
-			)
+			evaluator := NewAdminNetworkPolicy(npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies(), nil)
+			engine := NewPolicyEngine(podInfoProvider, evaluator)
 
-			verdict, err := evaluator.Evaluate(context.TODO(), &tt.p)
+			verdict, err := engine.EvaluatePacket(context.TODO(), &tt.p)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
@@ -781,7 +779,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 		name           string
 		policy         *npav1alpha1.AdminNetworkPolicy
 		dstIP          net.IP
-		expectedAction Verdict
+		expectedAction bool
 	}{
 		{
 			name: "Allow rule matches domain and IP",
@@ -796,7 +794,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: VerdictAccept,
+			expectedAction: true,
 		},
 		{
 			name: "Allow rule matches domain but not IP",
@@ -810,8 +808,8 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 					}},
 				}}
 			}),
-			dstIP:          ipOther,     // IP not in cache for domainAllow
-			expectedAction: VerdictNext, // Rule doesn't match, pass to next rule/policy
+			dstIP:          ipOther, // IP not in cache for domainAllow
+			expectedAction: true,    // Rule doesn't match, pass to next rule/policy
 		},
 		{
 			name: "Deny rule matches domain and IP",
@@ -826,7 +824,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipDeny,
-			expectedAction: VerdictDeny,
+			expectedAction: false,
 		},
 		{
 			name: "Rule domain does not match cached domains",
@@ -841,7 +839,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: VerdictNext, // Rule doesn't match
+			expectedAction: true, // Rule doesn't match
 		},
 		{
 			name: "Multiple domains in rule, one matches",
@@ -859,7 +857,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: VerdictAccept,
+			expectedAction: true,
 		},
 		{
 			name: "Wildcard domain matches IP",
@@ -877,7 +875,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow, // This IP is associated with test.wild.com in the mock cache
-			expectedAction: VerdictAccept,
+			expectedAction: true,
 		},
 		{
 			name: "Wildcard domain does not match IP",
@@ -892,7 +890,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipOther, // This IP is not associated with any *.wild.com domain
-			expectedAction: VerdictNext,
+			expectedAction: true,
 		},
 		{
 			name: "Rule with multiple peer types, domain matches",
@@ -908,7 +906,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: VerdictAccept,
+			expectedAction: true,
 		},
 		{
 			name: "Rule with multiple peer types, domain does not match",
@@ -924,7 +922,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: VerdictNext, // No peer in the rule matches
+			expectedAction: true, // No peer in the rule matches
 		},
 		{
 			name: "Rule with deny all, domain matches",
@@ -944,7 +942,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipAllow,
-			expectedAction: VerdictAccept, // No peer in the rule matches
+			expectedAction: true, // No peer in the rule matches
 		},
 		{
 			name: "Rule with deny all, domain does not match",
@@ -964,7 +962,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				}}
 			}),
 			dstIP:          ipOther,
-			expectedAction: VerdictDeny, // No peer in the rule matches
+			expectedAction: false, // No peer in the rule matches
 		},
 	}
 
@@ -1010,17 +1008,15 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 				},
 			}
 
-			evaluator := NewAdminNetworkPolicyEvaluator(podInfoProvider,
-				domainResolver,
-				adminNetworkPolicyInformer,
-			)
+			evaluator := NewAdminNetworkPolicy(npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies(), domainResolver)
+			engine := NewPolicyEngine(podInfoProvider, evaluator)
 
 			packet := network.Packet{
 				SrcIP: net.ParseIP("192.168.1.11"),
 				DstIP: tt.dstIP,
 			}
 
-			verdict, err := evaluator.Evaluate(context.TODO(), &packet)
+			verdict, err := engine.EvaluatePacket(context.TODO(), &packet)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}

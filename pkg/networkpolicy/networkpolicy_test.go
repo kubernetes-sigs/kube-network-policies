@@ -535,19 +535,15 @@ func TestSyncPacket(t *testing.T) {
 				GetFunc: getPodInfo,
 			}
 
-			evaluator := NewNetworkPolicyEvaluator("node", podInfoProvider,
-				networkPolicyInformer,
-			)
+			evaluator := NewStandardNetworkPolicy(networkPolicyInformer)
+			engine := NewPolicyEngine(podInfoProvider, evaluator)
 
-			ok, err := evaluator.Evaluate(context.TODO(), &tt.p)
+			ok, err := engine.EvaluatePacket(context.TODO(), &tt.p)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
-			if (ok == VerdictDeny) && tt.expect {
-				t.Errorf("got Deny, but expected  %v", tt.expect)
-			}
-			if (ok == VerdictNext) && !tt.expect {
-				t.Errorf("got Allow, but expected  %v", tt.expect)
+			if ok != tt.expect {
+				t.Errorf("got %v, but expected  %v", ok, tt.expect)
 			}
 
 		})
