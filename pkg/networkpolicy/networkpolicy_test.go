@@ -482,6 +482,58 @@ func TestSyncPacket(t *testing.T) {
 			},
 			expect: false,
 		},
+		{
+			name: "allow egress on named port",
+			networkpolicy: []*networkingv1.NetworkPolicy{
+				makeNetworkPolicyCustom("allow-named-port-egress", "foo",
+					func(np *networkingv1.NetworkPolicy) {
+						np.Spec.PodSelector = metav1.LabelSelector{MatchLabels: map[string]string{"a": "b"}}
+						np.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}
+						np.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{
+							Ports: []networkingv1.NetworkPolicyPort{{
+								Protocol: &protocolTCP,
+								Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "http"},
+							}},
+						}}
+					},
+				),
+			},
+			namespace: []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
+			pod:       []*v1.Pod{podA, podB},
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80, // Corresponds to the "http" named port in podA
+				Proto:   v1.ProtocolTCP,
+			},
+			expect: true,
+		},
+		{
+			name: "deny egress on wrong named port",
+			networkpolicy: []*networkingv1.NetworkPolicy{
+				makeNetworkPolicyCustom("allow-named-port-egress", "foo",
+					func(np *networkingv1.NetworkPolicy) {
+						np.Spec.PodSelector = metav1.LabelSelector{MatchLabels: map[string]string{"a": "b"}}
+						np.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}
+						np.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{
+							Ports: []networkingv1.NetworkPolicyPort{{
+								Protocol: &protocolTCP,
+								Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "https"},
+							}},
+						}}
+					},
+				),
+			},
+			namespace: []*v1.Namespace{makeNamespace("foo"), makeNamespace("bar")},
+			pod:       []*v1.Pod{podA, podB},
+			p: network.Packet{
+				SrcIP:   net.ParseIP("192.168.1.11"),
+				DstIP:   net.ParseIP("192.168.2.22"),
+				DstPort: 80,
+				Proto:   v1.ProtocolTCP,
+			},
+			expect: false,
+		},
 	}
 
 	for _, tt := range tests {
