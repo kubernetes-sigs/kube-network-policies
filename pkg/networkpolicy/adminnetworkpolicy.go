@@ -12,71 +12,79 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
-	"sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
+	anpinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
+	anplisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 )
 
-// NewAdminNetworkPolicyEvaluator creates a new pipeline evaluator for AdminNetworkPolicies.
-// This evaluator determines the fate of a network packet based on the highest-priority
-// AdminNetworkPolicy rules that apply to the source (for Egress) and destination (for Ingress) pods.
-func NewAdminNetworkPolicyEvaluator(
-	podInfoProvider PodInfoProvider,
-	domainResolver DomainResolver,
-	anpInformer v1alpha1.AdminNetworkPolicyInformer,
-) Evaluator {
+// AdminNetworkPolicy implements the PolicyEvaluator interface for the ANP API.
+type AdminNetworkPolicy struct {
+	anpLister      anplisters.AdminNetworkPolicyLister
+	domainResolver DomainResolver
+}
 
-	anpLister := anpInformer.Lister()
+var _ PolicyEvaluator = &AdminNetworkPolicy{}
 
-	return Evaluator{
-		Priority: 10,
-		Name:     "AdminNetworkPolicy",
-		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
-			logger := klog.FromContext(ctx)
-			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
-			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
+// NewAdminNetworkPolicy creates a new ANP implementation.
+func NewAdminNetworkPolicy(anpInformer anpinformers.AdminNetworkPolicyInformer, domainResolver DomainResolver) *AdminNetworkPolicy {
+	return &AdminNetworkPolicy{
+		anpLister:      anpInformer.Lister(),
+		domainResolver: domainResolver,
+	}
+}
 
-			allPolicies, err := anpLister.List(labels.Everything())
-			if err != nil {
-				return VerdictNext, err
-			}
-			if len(allPolicies) == 0 {
-				return VerdictNext, nil
-			}
+func (a *AdminNetworkPolicy) Name() string {
+	return "AdminNetworkPolicy"
+}
 
-			// 1. Evaluate Egress policies for the source pod.
-			// These policies dictate whether the source pod is allowed to send traffic.
-			egressAction := npav1alpha1.AdminNetworkPolicyRuleActionPass
-			if srcPodFound {
-				srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
-				egressAction = evaluateAdminEgress(domainResolver, srcPodAdminNetworkPolicies, dstPod, p.DstIP, p.DstPort, p.Proto)
-				logger.V(2).Info("Egress AdminNetworkPolicies evaluation complete", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
-				if egressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny {
-					return VerdictDeny, nil
-				}
-			}
+func (a *AdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	logger := klog.FromContext(ctx)
 
-			// 2. Evaluate Ingress policies for the destination pod.
-			// These policies dictate whether the destination pod is allowed to receive traffic.
-			ingressAction := npav1alpha1.AdminNetworkPolicyRuleActionPass
-			if dstPodFound {
-				dstPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(dstPod, allPolicies)
-				ingressAction = evaluateAdminIngress(dstPodAdminNetworkPolicies, srcPod, dstPod, p.DstPort, p.Proto)
-				logger.V(2).Info("Ingress AdminNetworkPolicies evaluation complete", "npolicies", len(dstPodAdminNetworkPolicies), "action", ingressAction)
-			}
-			if ingressAction == npav1alpha1.AdminNetworkPolicyRuleActionDeny {
-				return VerdictDeny, nil
-			}
+	allPolicies, err := a.anpLister.List(labels.Everything())
+	if err != nil || len(allPolicies) == 0 {
+		return VerdictNext, err
+	}
 
-			// An ALLOW is only granted if BOTH sides explicitly allow the traffic.
-			if egressAction == npav1alpha1.AdminNetworkPolicyRuleActionAllow && ingressAction == npav1alpha1.AdminNetworkPolicyRuleActionAllow {
-				return VerdictAccept, nil
-			}
+	dstPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(dstPod, allPolicies)
+	if len(dstPodAdminNetworkPolicies) == 0 {
+		logger.V(2).Info("Ingress AdminNetworkPolicies does not apply")
+		return VerdictNext, nil
+	}
+	ingressAction := a.evaluateAdminIngress(dstPodAdminNetworkPolicies, srcPod, dstPod, p.DstPort, p.Proto)
+	logger.V(2).Info("Ingress AdminNetworkPolicies", "npolicies", len(dstPodAdminNetworkPolicies), "action", ingressAction)
 
-			// In all other cases (e.g., Allow+Pass, Pass+Pass), the decision is deferred
-			// to the next evaluator in the pipeline (e.g., standard NetworkPolicy).
-			// This is because a 'Pass' action explicitly delegates control, and an 'Allow'
-			// on one side is not sufficient if the other side has not also made a final decision.
-			return VerdictNext, nil
-		},
+	switch ingressAction {
+	case npav1alpha1.AdminNetworkPolicyRuleActionAllow:
+		return VerdictAccept, nil
+	case npav1alpha1.AdminNetworkPolicyRuleActionDeny:
+		return VerdictDeny, nil
+	default: // Pass
+		return VerdictNext, nil
+	}
+}
+
+func (a *AdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	logger := klog.FromContext(ctx)
+
+	allPolicies, err := a.anpLister.List(labels.Everything())
+	if err != nil || len(allPolicies) == 0 {
+		return VerdictNext, err
+	}
+
+	srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
+	if len(srcPodAdminNetworkPolicies) == 0 {
+		logger.V(2).Info("Egress AdminNetworkPolicies does not apply")
+		return VerdictNext, nil
+	}
+	egressAction := a.evaluateAdminEgress(srcPodAdminNetworkPolicies, dstPod, p.DstIP, p.DstPort, p.Proto)
+	logger.V(2).Info("Egress AdminNetworkPolicies", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
+
+	switch egressAction {
+	case npav1alpha1.AdminNetworkPolicyRuleActionAllow:
+		return VerdictAccept, nil
+	case npav1alpha1.AdminNetworkPolicyRuleActionDeny:
+		return VerdictDeny, nil
+	default: // Pass
+		return VerdictNext, nil
 	}
 }
 
@@ -128,8 +136,7 @@ func getAdminNetworkPoliciesForPod(pod *api.PodInfo, allPolicies []*npav1alpha1.
 // An egress rule matches if its 'To' peer selector matches the traffic's destination
 // and its 'Ports' selector matches the destination port/protocol.
 // If no rule matches, it returns 'Pass'.
-func evaluateAdminEgress(
-	domainResolver DomainResolver,
+func (a *AdminNetworkPolicy) evaluateAdminEgress(
 	policies []*npav1alpha1.AdminNetworkPolicy,
 	dstPod *api.PodInfo,
 	dstIP net.IP,
@@ -172,7 +179,7 @@ func evaluateAdminEgress(
 					}
 				}
 				for _, domain := range to.DomainNames {
-					if domainResolver.ContainsIP(string(domain), dstIP) {
+					if a.domainResolver.ContainsIP(string(domain), dstIP) {
 						return rule.Action
 					}
 				}
@@ -189,7 +196,7 @@ func evaluateAdminEgress(
 // An ingress rule matches if its 'From' peer selector matches the traffic's source
 // and its 'Ports' selector matches the destination port/protocol on the subject pod.
 // If no rule matches, it returns 'Pass'.
-func evaluateAdminIngress(
+func (a *AdminNetworkPolicy) evaluateAdminIngress(
 	policies []*npav1alpha1.AdminNetworkPolicy,
 	srcPod, dstPod *api.PodInfo, // srcPod for peer matching, dstPod for port resolution
 	dstPort int,

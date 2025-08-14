@@ -95,7 +95,7 @@ func NewController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
-	pipeline *networkpolicy.Pipeline,
+	policyEngine *networkpolicy.PolicyEngine,
 	config Config,
 ) (*Controller, error) {
 	err := config.Defaults()
@@ -108,7 +108,7 @@ func NewController(client clientset.Interface,
 		networkpolicyInformer,
 		namespaceInformer,
 		podInformer,
-		pipeline,
+		policyEngine,
 		config,
 	)
 }
@@ -117,7 +117,7 @@ func newController(client clientset.Interface,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 	namespaceInformer coreinformers.NamespaceInformer,
 	podInformer coreinformers.PodInformer,
-	pipeline *networkpolicy.Pipeline,
+	policyEngine *networkpolicy.PolicyEngine,
 	config Config,
 ) (*Controller, error) {
 	klog.V(2).Info("Creating event broadcaster")
@@ -128,9 +128,9 @@ func newController(client clientset.Interface,
 
 	klog.V(2).InfoS("Creating controller", "config", config)
 	c := &Controller{
-		client:   client,
-		pipeline: pipeline,
-		config:   config,
+		client:       client,
+		policyEngine: policyEngine,
+		config:       config,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: controllerName},
@@ -284,8 +284,8 @@ func (c *Controller) getLocalPodsForNetworkPolicy(networkPolicy *networkingv1.Ne
 
 // Controller manages selector-based networkpolicy endpoints.
 type Controller struct {
-	config   Config
-	pipeline *networkpolicy.Pipeline
+	config       Config
+	policyEngine *networkpolicy.PolicyEngine
 
 	client           clientset.Interface
 	eventBroadcaster record.EventBroadcaster
@@ -465,7 +465,7 @@ func verdictString(verdict int) string {
 // priority. Each evaluator can return a final verdict (Allow/Deny) or pass the
 // packet to the next evaluator in the chain.
 func (c *Controller) evaluatePacket(ctx context.Context, p *network.Packet) bool {
-	allowed, err := c.pipeline.Run(ctx, p)
+	allowed, err := c.policyEngine.EvaluatePacket(ctx, p)
 	if err != nil {
 		klog.FromContext(ctx).Error(err, "error evaluating packet")
 		return c.config.FailOpen

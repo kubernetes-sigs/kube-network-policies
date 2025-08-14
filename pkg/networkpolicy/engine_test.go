@@ -29,6 +29,9 @@ type FuncProvider struct {
 
 // GetPodInfoByIP calls the wrapped function.
 func (f *FuncProvider) GetPodInfoByIP(podIP string) (*api.PodInfo, bool) {
+	if f.GetFunc == nil {
+		return nil, false // Default behavior if no function is provided
+	}
 	return f.GetFunc(podIP)
 }
 
@@ -46,90 +49,116 @@ func (f *FuncDomainResolver) ContainsIP(domain string, ip net.IP) bool {
 	return f.ContainsIPFunc(domain, ip)
 }
 
-// mockEvaluator is a helper to create an Evaluator for testing purposes.
-func mockEvaluator(name string, priority int, verdict Verdict, err error) Evaluator {
-	return Evaluator{
-		Name:     name,
-		Priority: priority,
-		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
+// mockPolicyEvaluator is a mock implementation of PolicyEvaluator for testing.
+type mockPolicyEvaluator struct {
+	name            string
+	evaluateIngress func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
+	evaluateEgress  func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
+}
+
+func (m *mockPolicyEvaluator) Name() string {
+	return m.name
+}
+
+func (m *mockPolicyEvaluator) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	if m.evaluateIngress != nil {
+		return m.evaluateIngress(ctx, p, srcPod, dstPod)
+	}
+	return VerdictNext, nil
+}
+
+func (m *mockPolicyEvaluator) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	if m.evaluateEgress != nil {
+		return m.evaluateEgress(ctx, p, srcPod, dstPod)
+	}
+	return VerdictNext, nil
+}
+
+func newMockEvaluator(name string, verdict Verdict, err error) *mockPolicyEvaluator {
+	return &mockPolicyEvaluator{
+		name: name,
+		evaluateIngress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (Verdict, error) {
+			return verdict, err
+		},
+		evaluateEgress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (Verdict, error) {
 			return verdict, err
 		},
 	}
 }
 
-func TestPipeline_Run(t *testing.T) {
+func TestPolicyEngine_EvaluatePacket(t *testing.T) {
 	dummyPacket := &network.Packet{}
 
 	tests := []struct {
 		name       string
-		evaluators []Evaluator
+		evaluators []PolicyEvaluator
 		wantAllow  bool
 		wantErr    bool
 	}{
 		{
 			name:       "empty pipeline should default to allow",
-			evaluators: []Evaluator{},
+			evaluators: []PolicyEvaluator{},
 			wantAllow:  true,
 			wantErr:    false,
 		},
 		{
 			name:       "single evaluator returns Accept",
-			evaluators: []Evaluator{mockEvaluator("acceptor", 10, VerdictAccept, nil)},
+			evaluators: []PolicyEvaluator{newMockEvaluator("acceptor", VerdictAccept, nil)},
 			wantAllow:  true,
 			wantErr:    false,
 		},
 		{
 			name:       "single evaluator returns Deny",
-			evaluators: []Evaluator{mockEvaluator("denier", 10, VerdictDeny, nil)},
+			evaluators: []PolicyEvaluator{newMockEvaluator("denier", VerdictDeny, nil)},
 			wantAllow:  false,
 			wantErr:    false,
 		},
 		{
 			name:       "single evaluator returns Next should default to allow",
-			evaluators: []Evaluator{mockEvaluator("passer", 10, VerdictNext, nil)},
+			evaluators: []PolicyEvaluator{newMockEvaluator("passer", VerdictNext, nil)},
 			wantAllow:  true,
 			wantErr:    false,
 		},
 		{
 			name: "high priority denier should run first and deny",
-			evaluators: []Evaluator{
-				mockEvaluator("acceptor", 20, VerdictAccept, nil),
-				mockEvaluator("denier", 10, VerdictDeny, nil),
+			evaluators: []PolicyEvaluator{
+				newMockEvaluator("denier", VerdictDeny, nil),
+				newMockEvaluator("acceptor", VerdictAccept, nil),
 			},
 			wantAllow: false,
 			wantErr:   false,
 		},
 		{
 			name: "high priority acceptor should run first and allow",
-			evaluators: []Evaluator{
-				mockEvaluator("denier", 20, VerdictDeny, nil),
-				mockEvaluator("acceptor", 10, VerdictAccept, nil),
+			evaluators: []PolicyEvaluator{
+				newMockEvaluator("acceptor", VerdictAccept, nil),
+				newMockEvaluator("denier", VerdictDeny, nil),
 			},
 			wantAllow: true,
 			wantErr:   false,
 		},
 		{
 			name: "evaluator returning Next should proceed to the next one",
-			evaluators: []Evaluator{
-				mockEvaluator("passer", 10, VerdictNext, nil),
-				mockEvaluator("denier", 20, VerdictDeny, nil),
+			evaluators: []PolicyEvaluator{
+				newMockEvaluator("passer", VerdictNext, nil),
+				newMockEvaluator("denier", VerdictDeny, nil),
 			},
 			wantAllow: false,
 			wantErr:   false,
 		},
 		{
 			name: "evaluator returns an error",
-			evaluators: []Evaluator{
-				mockEvaluator("error-producer", 10, VerdictNext, errors.New("evaluation failed")),
+			evaluators: []PolicyEvaluator{
+				newMockEvaluator("error-producer", VerdictNext, errors.New("evaluation failed")),
 			},
 			wantAllow: false,
 			wantErr:   true,
 		},
 		{
 			name: "error from a later evaluator",
-			evaluators: []Evaluator{
-				mockEvaluator("passer", 10, VerdictNext, nil),
-				mockEvaluator("error-producer", 20, VerdictNext, errors.New("evaluation failed")),
+			evaluators: []PolicyEvaluator{
+				newMockEvaluator("passer", VerdictNext, nil),
+				newMockEvaluator("error-producer", VerdictNext, errors.New("evaluation failed")),
 			},
 			wantAllow: false,
 			wantErr:   true,
@@ -138,62 +167,79 @@ func TestPipeline_Run(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pipeline := NewPipeline(tt.evaluators...)
-			gotAllow, err := pipeline.Run(context.Background(), dummyPacket)
+			engine := NewPolicyEngine(&FuncProvider{}, tt.evaluators...)
+			gotAllow, err := engine.EvaluatePacket(context.Background(), dummyPacket)
 
 			if (err != nil) != tt.wantErr {
-				t.Errorf("Pipeline.Run() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("PolicyEngine.EvaluatePacket() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if gotAllow != tt.wantAllow {
-				t.Errorf("Pipeline.Run() gotAllow = %v, want %v", gotAllow, tt.wantAllow)
+				t.Errorf("PolicyEngine.EvaluatePacket() gotAllow = %v, want %v", gotAllow, tt.wantAllow)
 			}
 		})
 	}
 }
 
-func TestPipeline_AddEvaluator(t *testing.T) {
-	p := NewPipeline()
-	e1 := mockEvaluator("evaluator-1", 20, VerdictNext, nil)
-	e2 := mockEvaluator("evaluator-2", 10, VerdictNext, nil)
-	e3 := mockEvaluator("evaluator-3", 15, VerdictNext, nil)
+func TestPolicyEngine_EvaluatorSorting(t *testing.T) {
+	var evaluationOrder []string
+	e1 := &mockPolicyEvaluator{
+		name: "evaluator-1",
+		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+			evaluationOrder = append(evaluationOrder, "evaluator-1")
+			return VerdictNext, nil
+		},
+	}
+	e2 := &mockPolicyEvaluator{
+		name: "evaluator-2",
+		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+			evaluationOrder = append(evaluationOrder, "evaluator-2")
+			return VerdictNext, nil
+		},
+	}
+	e3 := &mockPolicyEvaluator{
+		name: "evaluator-3",
+		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+			evaluationOrder = append(evaluationOrder, "evaluator-3")
+			return VerdictNext, nil
+		},
+	}
 
-	p.AddEvaluator(e1)
-	p.AddEvaluator(e2)
-	p.AddEvaluator(e3)
+	engine := NewPolicyEngine(&FuncProvider{}, e2, e3, e1)
+	_, _ = engine.EvaluatePacket(context.Background(), &network.Packet{})
 
-	if len(p.evaluators) != 3 {
-		t.Fatalf("expected 3 evaluators, got %d", len(p.evaluators))
+	if len(evaluationOrder) != 3 {
+		t.Fatalf("expected 3 evaluators to be called, got %d", len(evaluationOrder))
 	}
 
 	// Check if they are sorted correctly by priority
-	if p.evaluators[0].Name != "evaluator-2" {
-		t.Errorf("expected first evaluator to be 'evaluator-2', got '%s'", p.evaluators[0].Name)
+	if evaluationOrder[0] != "evaluator-2" {
+		t.Errorf("expected first evaluator to be 'evaluator-2', got '%s'", evaluationOrder[0])
 	}
-	if p.evaluators[1].Name != "evaluator-3" {
-		t.Errorf("expected second evaluator to be 'evaluator-3', got '%s'", p.evaluators[1].Name)
+	if evaluationOrder[1] != "evaluator-3" {
+		t.Errorf("expected second evaluator to be 'evaluator-3', got '%s'", evaluationOrder[1])
 	}
-	if p.evaluators[2].Name != "evaluator-1" {
-		t.Errorf("expected third evaluator to be 'evaluator-1', got '%s'", p.evaluators[2].Name)
+	if evaluationOrder[2] != "evaluator-1" {
+		t.Errorf("expected third evaluator to be 'evaluator-1', got '%s'", evaluationOrder[2])
 	}
 }
 
-func TestPipeline_Run_ContextCancellation(t *testing.T) {
+func TestPolicyEngine_EvaluatePacket_ContextCancellation(t *testing.T) {
 	// This evaluator will block until the context is canceled.
-	blockingEvaluator := Evaluator{
-		Name:     "blocker",
-		Priority: 10,
-		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
+	blockingEvaluator := &mockPolicyEvaluator{
+		name: "blocker",
+		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
 			<-ctx.Done() // Wait for cancellation
 			return VerdictNext, ctx.Err()
 		},
 	}
 
-	pipeline := NewPipeline(blockingEvaluator)
+	engine := NewPolicyEngine(&FuncProvider{}, blockingEvaluator)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := pipeline.Run(ctx, &network.Packet{})
+	_, err := engine.EvaluatePacket(ctx, &network.Packet{})
 
 	if err == nil {
 		t.Error("expected an error due to context cancellation, but got nil")
@@ -341,21 +387,21 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 
 			// For this test, we mock the ANP/BANP evaluators to control their output,
 			// but use the real NetworkPolicy evaluator.
-			anpEvaluator := mockEvaluator("AdminNetworkPolicy", 10, tt.anpVerdict, nil)
-			banpEvaluator := mockEvaluator("BaselineAdminNetworkPolicy", 100, tt.banpVerdict, nil)
+			anpEvaluator := newMockEvaluator("AdminNetworkPolicy", tt.anpVerdict, nil)
+			banpEvaluator := newMockEvaluator("BaselineAdminNetworkPolicy", tt.banpVerdict, nil)
 
 			// Use the real NetworkPolicy evaluator, which has a default priority of 50.
-			npEvaluator := NewNetworkPolicyEvaluator("test-node", podInfoProvider, netpolInformer)
+			npEvaluator := NewStandardNetworkPolicy(netpolInformer)
 			for _, np := range tt.nps {
 				netpolInformer.Informer().GetStore().Add(np)
 			}
 
 			// A single pipeline containing all evaluators, sorted by priority.
-			pipeline := NewPipeline(anpEvaluator, banpEvaluator, npEvaluator)
+			engine := NewPolicyEngine(podInfoProvider, anpEvaluator, npEvaluator, banpEvaluator)
 
-			allow, err := pipeline.Run(context.Background(), tt.packet)
+			allow, err := engine.EvaluatePacket(context.Background(), tt.packet)
 			if err != nil {
-				t.Fatalf("pipeline.Run() returned an unexpected error: %v", err)
+				t.Fatalf("engine.EvaluatePacket() returned an unexpected error: %v", err)
 			}
 
 			if allow != tt.wantAllow {

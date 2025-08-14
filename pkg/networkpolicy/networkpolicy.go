@@ -16,7 +16,57 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
 
-func GetNetworkPoliciesForPod(pod *api.PodInfo, networkpolicyLister networkinglisters.NetworkPolicyLister) []*networkingv1.NetworkPolicy {
+// StandardNetworkPolicy implements the PolicyEvaluator interface for standard Kubernetes NetworkPolicies.
+type StandardNetworkPolicy struct {
+	networkpolicyLister networkinglisters.NetworkPolicyLister
+}
+
+var _ PolicyEvaluator = &StandardNetworkPolicy{}
+
+// NewStandardNetworkPolicy creates a new StandardNetworkPolicy implementation.
+func NewStandardNetworkPolicy(
+	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
+) *StandardNetworkPolicy {
+	return &StandardNetworkPolicy{
+		networkpolicyLister: networkpolicyInformer.Lister(),
+	}
+}
+
+func (s *StandardNetworkPolicy) Name() string {
+	return "StandardNetworkPolicy"
+}
+
+func (s *StandardNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	logger := klog.FromContext(ctx)
+
+	policies := getNetworkPoliciesForPod(dstPod, s.networkpolicyLister)
+	if len(policies) == 0 {
+		logger.V(2).Info("Ingress NetworkPolicies does not apply")
+		return VerdictNext, nil
+	}
+
+	if !evaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
+		return VerdictDeny, nil
+	}
+	return VerdictNext, nil
+}
+
+func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+	logger := klog.FromContext(ctx)
+
+	policies := getNetworkPoliciesForPod(srcPod, s.networkpolicyLister)
+	if len(policies) == 0 {
+		logger.V(2).Info("Egress NetworkPolicies does not apply")
+		return VerdictNext, nil
+	}
+
+	if !evaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeEgress, srcPod, p.SrcPort, dstPod, p.DstIP, p.DstPort, p.Proto) {
+		return VerdictDeny, nil
+	}
+	return VerdictNext, nil
+}
+
+func getNetworkPoliciesForPod(pod *api.PodInfo, networkpolicyLister networkinglisters.NetworkPolicyLister) []*networkingv1.NetworkPolicy {
 	if pod == nil {
 		return nil
 	}
@@ -44,63 +94,6 @@ func GetNetworkPoliciesForPod(pod *api.PodInfo, networkpolicyLister networkingli
 		}
 	}
 	return result
-}
-
-// NewNetworkPolicyEvaluator creates a new pipeline evaluator for standard Kubernetes NetworkPolicies.
-// It accepts all necessary dependencies to make it autonomous from the controller.
-func NewNetworkPolicyEvaluator(
-	nodeName string,
-	podInfoProvider PodInfoProvider,
-	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
-) Evaluator {
-
-	networkpolicyLister := networkpolicyInformer.Lister()
-
-	return Evaluator{
-		Priority: 50,
-		Name:     "StandardNetworkPolicy",
-		Evaluate: func(ctx context.Context, p *network.Packet) (Verdict, error) {
-			logger := klog.FromContext(ctx)
-
-			srcPod, srcPodFound := podInfoProvider.GetPodInfoByIP(p.SrcIP.String())
-			dstPod, dstPodFound := podInfoProvider.GetPodInfoByIP(p.DstIP.String())
-
-			// default verdict is to pass to the next evaluator if no network policies apply
-			verdictEgress, verdictIngress := VerdictNext, VerdictNext
-			// --- Egress Evaluation ---
-			if srcPodFound {
-				egressPolicies := GetNetworkPoliciesForPod(srcPod, networkpolicyLister)
-				logger.V(2).Info("NetworkPolicies on Egress", "npolicies", len(egressPolicies), "srcPod", srcPod.Namespace.Name+"/"+srcPod.Name)
-				// Network Policies apply to the source pod, so traffic will be accepted or denied
-				if len(egressPolicies) > 0 {
-					if !evaluatePolicyDirection(ctx, egressPolicies, networkingv1.PolicyTypeEgress, srcPod, p.SrcPort, dstPod, p.DstIP, p.DstPort, p.Proto) {
-						return VerdictDeny, nil
-					} else {
-						verdictEgress = VerdictAccept
-					}
-				}
-			}
-
-			// --- Ingress Evaluation ---
-			if dstPodFound {
-				ingressPolicies := GetNetworkPoliciesForPod(dstPod, networkpolicyLister)
-				logger.V(2).Info("NetworkPolicies on Ingress", "npolicies", len(ingressPolicies), "dstPod", dstPod.Namespace.Name+"/"+dstPod.Name)
-				// Network Policies apply to the destination pod, so traffic will be accepted or denied
-				if len(ingressPolicies) > 0 {
-					if !evaluatePolicyDirection(ctx, ingressPolicies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
-						return VerdictDeny, nil
-					} else {
-						verdictIngress = VerdictAccept
-					}
-				}
-			}
-			if verdictEgress == VerdictAccept && verdictIngress == VerdictAccept {
-				return VerdictAccept, nil
-			}
-
-			return VerdictNext, nil
-		},
-	}
 }
 
 // validator obtains a verdict for network policies that applies to a src Pod in the direction
