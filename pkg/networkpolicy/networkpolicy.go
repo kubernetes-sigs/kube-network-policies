@@ -48,7 +48,7 @@ func (s *StandardNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.
 	if !evaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
 		return VerdictDeny, nil
 	}
-	return VerdictNext, nil
+	return VerdictAccept, nil
 }
 
 func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
@@ -63,7 +63,7 @@ func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.P
 	if !evaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeEgress, srcPod, p.SrcPort, dstPod, p.DstIP, p.DstPort, p.Proto) {
 		return VerdictDeny, nil
 	}
-	return VerdictNext, nil
+	return VerdictAccept, nil
 }
 
 func getNetworkPoliciesForPod(pod *api.PodInfo, networkpolicyLister networkinglisters.NetworkPolicyLister) []*networkingv1.NetworkPolicy {
