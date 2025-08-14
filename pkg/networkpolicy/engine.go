@@ -107,6 +107,7 @@ func (e *PolicyEngine) runEgressPipeline(ctx context.Context, p *network.Packet,
 		if err != nil {
 			return VerdictDeny, err
 		}
+		// Accept or Deny are final verdicts
 		if verdict != VerdictNext {
 			return verdict, nil
 		}
@@ -121,6 +122,7 @@ func (e *PolicyEngine) runIngressPipeline(ctx context.Context, p *network.Packet
 		if err != nil {
 			return VerdictDeny, err
 		}
+		// Accept or Deny are final verdicts
 		if verdict != VerdictNext {
 			return verdict, nil
 		}

@@ -42,6 +42,7 @@ func (b *BaselineAdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *net
 
 	dstPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(dstPod, allPolicies)
 	if len(dstPodBaselineAdminNetworkPolices) == 0 {
+		logger.V(2).Info("Ingress BaselineAdminNetworkPolicies does not apply")
 		return VerdictNext, nil
 	}
 	ingressAction := b.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPod, p.SrcIP, p.SrcPort, p.Proto)
@@ -62,6 +63,7 @@ func (b *BaselineAdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *netw
 
 	allPolicies, err := b.banpLister.List(labels.Everything())
 	if err != nil || len(allPolicies) == 0 {
+		logger.V(2).Info("Egress BaselineAdminNetworkPolicies does not apply")
 		return VerdictNext, err
 	}
 
