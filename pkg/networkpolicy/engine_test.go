@@ -348,6 +348,20 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 			wantAllow:  false, // Final outcome should be Deny
 		},
 		{
+			name:        "NP Allow when ANP Pass and BANP Deny",
+			anpVerdict:  VerdictNext, // ANP passes decision down
+			banpVerdict: VerdictDeny, // BANP passes decision down
+			nps: []*networkingv1.NetworkPolicy{
+				// This NP selects podA and denies all egress traffic
+				makeNP("allow-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress, networkingv1.PolicyTypeIngress}, []networkingv1.NetworkPolicyEgressRule{{ /* empty egress rule allows all */ }}, nil),
+				makeNP("allow-b-ingress", "ns-b", labels.Set{"app": "b"}, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}, nil, []networkingv1.NetworkPolicyIngressRule{{ /* empty egress rule allows all */ }}),
+			},
+			pods:       []*v1.Pod{podA, podB},
+			namespaces: []*v1.Namespace{nsA, nsB},
+			packet:     &network.Packet{SrcIP: net.ParseIP(podA.Status.PodIP), DstIP: net.ParseIP(podB.Status.PodIP), DstPort: 80, Proto: v1.ProtocolTCP},
+			wantAllow:  true, // Final outcome should be Accept
+		},
+		{
 			name:        "Default Allow when all evaluators Pass",
 			anpVerdict:  VerdictNext,
 			banpVerdict: VerdictNext,
