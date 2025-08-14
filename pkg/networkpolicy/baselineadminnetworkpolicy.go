@@ -45,7 +45,7 @@ func (b *BaselineAdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *net
 		logger.V(2).Info("Ingress BaselineAdminNetworkPolicies does not apply")
 		return VerdictNext, nil
 	}
-	ingressAction := b.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPod, p.SrcIP, p.SrcPort, p.Proto)
+	ingressAction := b.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPod, p.SrcIP, p.DstPort, p.Proto)
 	logger.V(2).Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", ingressAction)
 
 	switch ingressAction {
@@ -113,8 +113,8 @@ func getBaselineAdminNetworkPoliciesForPod(pod *api.PodInfo, allPolicies []*npav
 	return result
 }
 
-func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminEgress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, dstPod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
-	for _, policy := range adminNetworkPolices {
+func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminEgress(baselineAdminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, dstPod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
+	for _, policy := range baselineAdminNetworkPolices {
 		for _, rule := range policy.Spec.Egress {
 			// Ports allows for matching traffic based on port and protocols.
 			// This field is a list of destination ports for the outgoing egress traffic.
