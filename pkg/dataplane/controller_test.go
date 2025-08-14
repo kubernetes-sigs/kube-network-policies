@@ -48,7 +48,7 @@ func newTestController(config Config) *networkpolicyController {
 		informersFactory.Networking().V1().NetworkPolicies(),
 		nsInfomer,
 		podInformer,
-		networkpolicy.NewPolicyEngine(podInfoProvider),
+		networkpolicy.NewPolicyEngine(podInfoProvider, nil),
 		config,
 	)
 	if err != nil {

@@ -58,7 +58,7 @@ type PolicyEngine struct {
 }
 
 // NewPolicyEngine creates a new engine with a predefined evaluation order.
-func NewPolicyEngine(podInfoProvider PodInfoProvider, evaluators ...PolicyEvaluator) *PolicyEngine {
+func NewPolicyEngine(podInfoProvider PodInfoProvider, evaluators []PolicyEvaluator) *PolicyEngine {
 	return &PolicyEngine{
 		podInfoProvider: podInfoProvider,
 		evaluators:      evaluators,
