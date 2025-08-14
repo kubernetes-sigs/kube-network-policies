@@ -19,9 +19,9 @@ The following diagram illustrates the flow of a network packet from the kernel t
 
 The key components of the architecture are:
 
-* **Dataplane Controller**: The dataplane/controller.go file contains the main controller that sets up NFQUEUE, intercepts packets, and orchestrates the policy evaluation process. It is responsible for creating the necessary nftables rules to redirect traffic. To avoid the performance penalty of sending all packets to userspace, the controller includes logic to only capture packets for pods that are targeted by at least one network policy.  
-* **Policy Engine**: The networkpolicy/engine.go file defines the PolicyEngine, which manages a pipeline of PolicyEvaluator plugins. The engine is responsible for running each packet through the pipeline and making a final decision based on the verdicts returned by the evaluators.  
-* **Pod Info Provider**: The podinfo/podinfo.go file provides an interface for retrieving pod information. It resolves a packet's IP address to a PodInfo protobuf type (pkg/api/kubenetworkpolicies.proto). This PodInfo object contains all the necessary information for evaluators to match policies, including the pod's name, labels, namespace, and associated node information.  
+* **Dataplane Controller**: The `dataplane/controller.go` file contains the main controller that sets up NFQUEUE, intercepts packets, and orchestrates the policy evaluation process. It is responsible for creating the necessary nftables rules to redirect traffic. To avoid the performance penalty of sending all packets to userspace, the controller includes logic to only capture packets for pods that are targeted by at least one network policy.
+* **Policy Engine**: The `networkpolicy/engine.go` file defines the `PolicyEngine`, which manages a pipeline of `PolicyEvaluator` plugins. The engine is responsible for running each packet through the pipeline and making a final decision based on the verdicts returned by the evaluators.
+* **Pod Info Provider**: The `podinfo/podinfo.go` file provides an interface for retrieving pod information. It resolves a packet's IP address to a PodInfo protobuf type (`pkg/api/kubenetworkpolicies.proto`). This `PodInfo` object contains all the necessary information for evaluators to match policies, including the pod's name, labels, namespace, and associated node information.  
 * **Policy Evaluators**: These are plugins that implement the PolicyEvaluator interface and contain the logic for a specific type of network policy. The project currently includes evaluators for AdminNetworkPolicy, BaselineAdminNetworkPolicy, and the standard Kubernetes NetworkPolicy.
 
 Here is a diagram illustrating the interaction between these components:
@@ -32,7 +32,7 @@ Here is a diagram illustrating the interaction between these components:
 
 The PolicyEvaluator interface is the core of the policy evaluation pipeline. Each evaluator is responsible for determining whether a packet should be allowed, denied, or passed to the next evaluator in the pipeline.
 
-The interface is defined in pkg/networkpolicy/engine.go as follows:
+The interface is defined in `pkg/networkpolicy/engine.go` as follows:
 
 ```go
 type PolicyEvaluator interface {  
@@ -44,23 +44,23 @@ type PolicyEvaluator interface {
 
 The Verdict returned by each evaluator can be one of the following:
 
-* VerdictAccept: The packet is allowed, and no further evaluators are consulted.  
-* VerdictDeny: The packet is denied, and no further evaluators are consulted.  
-* VerdictNext: The packet is passed to the next evaluator in the pipeline.
+* `VerdictAccept`: The packet is allowed, and no further evaluators are consulted.
+* `VerdictDeny`: The packet is denied, and no further evaluators are consulted.
+* `VerdictNext`: The packet is passed to the next evaluator in the pipeline.
 
 ### How to Add a New PolicyEvaluator
 
-Adding a new PolicyEvaluator is straightforward and involves the following steps:
+Adding a new `PolicyEvaluator` is straightforward and involves the following steps:
 
-1. **Create a new file** for your evaluator in the pkg/networkpolicy directory.  
-2. **Define a struct** for your evaluator that implements the PolicyEvaluator interface.  
-3. **Implement the Name method** to return a unique name for your evaluator.  
-4. **Implement the EvaluateIngress and EvaluateEgress methods** to define the logic for your policy.  
-5. **Register your new evaluator** in the PolicyEngine in cmd/main.go.
+1. **Create a new file** for your evaluator in the `pkg/networkpolicy` directory.
+2. **Define a struct** for your evaluator that implements the `PolicyEvaluator` interface.
+3. **Implement the Name method** to return a unique name for your evaluator.
+4. **Implement the EvaluateIngress and EvaluateEgress methods** to define the logic for your policy.
+5. **Register your new evaluator** in the PolicyEngine in `cmd/main.go`.
 
 #### Example: Creating an AllowListPolicy
 
-Let's create a simple AllowListPolicy that only allows traffic from a predefined list of IP addresses.
+Let's create a simple `AllowListPolicy` that only allows traffic from a predefined list of IP addresses.
 
 1. **Create the file** pkg/networkpolicy/allowlistpolicy.go:
 
@@ -76,22 +76,22 @@ Let's create a simple AllowListPolicy that only allows traffic from a predefined
 
    // AllowListPolicy is a simple policy that allows traffic only from a predefined list of IP addresses.  
    type AllowListPolicy struct {  
-       allowedIPs \[\]net.IP  
+       allowedIPs []net.IP
    }
 
    // NewAllowListPolicy creates a new AllowListPolicy.  
-   func NewAllowListPolicy(allowedIPs \[\]net.IP) \*AllowListPolicy {  
-       return \&AllowListPolicy{  
+   func NewAllowListPolicy(allowedIPs []net.IP) *AllowListPolicy {
+       return &AllowListPolicy{
            allowedIPs: allowedIPs,  
        }  
    }
 
-   func (a \*AllowListPolicy) Name() string {  
-       return "AllowListPolicy"  
+   func (a *AllowListPolicy) Name() string {
+       return "AllowListPolicy"
    }
 
-   func (a \*AllowListPolicy) EvaluateIngress(ctx context.Context, p \*network.Packet, srcPod, dstPod \*api.PodInfo) (Verdict, error) {  
-       for \_, ip := range a.allowedIPs {  
+   func (a *AllowListPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+       for \_, ip := range a.allowedIPs {
            if ip.Equal(p.SrcIP) {  
                return VerdictAccept, nil  
            }  
@@ -99,13 +99,13 @@ Let's create a simple AllowListPolicy that only allows traffic from a predefined
        return VerdictDeny, nil  
    }
 
-   func (a \*AllowListPolicy) EvaluateEgress(ctx context.Context, p \*network.Packet, srcPod, dstPod \*api.PodInfo) (Verdict, error) {  
-       // This policy only applies to ingress traffic.  
-       return VerdictNext, nil  
+   func (a *AllowListPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+       // This policy only applies to ingress traffic.
+       return VerdictNext, nil
    }
 ```
 
-2. **Register the new evaluator** in cmd/main.go:
+2. **Register the new evaluator** in `cmd/main.go`:
 
 ```go
    // ... (imports)
@@ -116,11 +116,11 @@ Let's create a simple AllowListPolicy that only allows traffic from a predefined
        // Create the evaluators for the Pipeline to process the packets  
        // and take a network policy action. The evaluators are processed  
        // by the order in the array.  
-       evaluators := \[\]networkpolicy.PolicyEvaluator{}
+       evaluators := []networkpolicy.PolicyEvaluator{}
 
-       // Add the new AllowListPolicy evaluator  
-       allowedIPs := \[\]net.IP{net.ParseIP("10.0.0.1"), net.ParseIP("10.0.0.2")}  
-       evaluators \= append(evaluators, networkpolicy.NewAllowListPolicy(allowedIPs))
+       // Add the new AllowListPolicy evaluator
+       allowedIPs := []net.IP{net.ParseIP("10.0.0.1"), net.ParseIP("10.0.0.2")}
+       evaluators = append(evaluators, networkpolicy.NewAllowListPolicy(allowedIPs))
 
        // ... (rest of the evaluators)
 
@@ -179,7 +179,7 @@ helm install kube-network-policies -n kube-system charts/kube-network-policies
 
 Admin Network Policies and Baseline Admin Network Policies features are controlled by `Values.adminNetworkPolicy` and
 they are enabled by default. Disable them if needed in values.yaml or use `--set adminNetworkPolicy=false` when running
-`helm install` command. 
+`helm install` command.
 
 NOTE: the corresponding CRDs must be installed first.
 
@@ -229,7 +229,7 @@ Current implemented metrics are:
 
 ## Testing
 
-See [TESTING](docs/testing/README.md) 
+See [TESTING](docs/testing/README.md)
 
 There are two github workflows that runs e2e tests aginst the Kubernetes/Kubernetes Network Policy tests and the Network Policy API Working Group conformance tests.
 
