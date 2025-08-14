@@ -248,21 +248,30 @@ func evaluateAdminNetworkPolicyPort(
 
 	for _, policyPort := range policyPorts {
 		// Match by port number and protocol.
-		if p := policyPort.PortNumber; p != nil && p.Port == int32(port) && p.Protocol == protocol {
+		// Port number
+		if policyPort.PortNumber != nil &&
+			policyPort.PortNumber.Port == int32(port) &&
+			policyPort.PortNumber.Protocol == protocol {
 			return true
 		}
 
 		// Match by named port. This requires pod info to look up the container port name.
-		if p := policyPort.NamedPort; p != nil && pod != nil {
+		if policyPort.NamedPort != nil {
+			if pod == nil {
+				continue
+			}
 			for _, containerPort := range pod.ContainerPorts {
-				if containerPort.Name == *p && v1.Protocol(containerPort.Protocol) == protocol && containerPort.Port == int32(port) {
+				if containerPort.Name == *policyPort.NamedPort {
 					return true
 				}
 			}
 		}
 
 		// Match by a range of ports and protocol.
-		if p := policyPort.PortRange; p != nil && p.Protocol == protocol && int32(port) >= p.Start && int32(port) <= p.End {
+		if policyPort.PortRange != nil &&
+			policyPort.PortRange.Protocol == protocol &&
+			policyPort.PortRange.Start <= int32(port) &&
+			policyPort.PortRange.End >= int32(port) {
 			return true
 		}
 	}
