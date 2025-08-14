@@ -46,7 +46,7 @@ jobs:
 
   e2e:
     name: e2e
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 100
     needs:
       - build

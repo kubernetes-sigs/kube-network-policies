@@ -47,7 +47,7 @@ jobs:
 
   e2e_npa:
     name: e2e_npa
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 100
     needs:
       - build
