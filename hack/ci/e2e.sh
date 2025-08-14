@@ -208,8 +208,8 @@ run_tests() {
 }
 
 install_kube_network_policy() {
-  # stop kindnet since it has its own network policies vendored from here
-  kubectl -n kube-system delete ds kindnet
+  # stop kindnet of checking network policies
+  kubectl -n kube-system delete clusterrolebinding kindnet
   # Install kube-network-policies
   export IMAGE_NAME="registry.k8s.io/networking/kube-network-policies"
   # Build the image
