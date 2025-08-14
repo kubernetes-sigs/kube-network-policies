@@ -140,6 +140,11 @@ EOF
 
 # run e2es with ginkgo-e2e.sh
 run_tests() {
+  K8S_PATH=$(find ${GOPATH} -path '*/k8s.io/kubernetes/go.mod' -print -quit)
+  if [ -z "${K8S_PATH}" ]; then
+    K8S_PATH=$(find / -path '*/kubernetes/go.mod' -print -quit)
+  fi
+  cd $(dirname ${K8S_PATH})
   # IPv6 clusters need some CoreDNS changes in order to work in k8s CI:
   # 1. k8s CI doesn´t offer IPv6 connectivity, so CoreDNS should be configured
   # to work in an offline environment:
@@ -199,6 +204,7 @@ run_tests() {
     "--report-dir=${ARTIFACTS}" '--disable-log-dump=true' &
   GINKGO_PID=$!
   wait "$GINKGO_PID"
+  cd -
 }
 
 install_kube_network_policy() {
