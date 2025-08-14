@@ -34,10 +34,6 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const (
-	podIPIndex = "podIPKeyIndex"
-)
-
 var (
 	failOpen                   bool
 	adminNetworkPolicy         bool // 	AdminNetworkPolicy is alpha so keep it feature gated behind a flag
@@ -198,12 +194,11 @@ func run() int {
 		resolvers)
 
 	// Create the evaluators for the Pipeline to process the packets
-	// and take a network policy action.
-	evaluators := []networkpolicy.PolicyEvaluator{
-		networkpolicy.NewStandardNetworkPolicy(
-			networkPolicyInfomer,
-		)}
+	// and take a network policy action. The evaluators are processed
+	// by the order in the array.
+	evaluators := []networkpolicy.PolicyEvaluator{}
 
+	// Logging evaluator must go first if enabled.
 	if klog.V(2).Enabled() {
 		evaluators = append(evaluators, networkpolicy.NewLoggingPolicy())
 	}
@@ -226,6 +221,11 @@ func run() int {
 			domainResolver,
 		))
 	}
+
+	// Standard Network Policy goes after AdminNetworkPolicy and before BaselineAdminNetworkPolicy
+	evaluators = append(evaluators, networkpolicy.NewStandardNetworkPolicy(
+		networkPolicyInfomer,
+	))
 
 	if baselineAdminNetworkPolicy {
 		evaluators = append(evaluators, networkpolicy.NewBaselineAdminNetworkPolicy(
