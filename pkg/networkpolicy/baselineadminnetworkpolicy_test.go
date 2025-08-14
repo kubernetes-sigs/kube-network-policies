@@ -168,7 +168,7 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 			}
 
 			evaluator := NewBaselineAdminNetworkPolicy(banpInformer)
-			engine := NewPolicyEngine(podInfoProvider, evaluator)
+			engine := NewPolicyEngine(podInfoProvider, []PolicyEvaluator{evaluator})
 
 			verdict, err := engine.EvaluatePacket(context.TODO(), &tt.packet)
 			if err != nil {

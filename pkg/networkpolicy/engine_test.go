@@ -167,7 +167,7 @@ func TestPolicyEngine_EvaluatePacket(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			engine := NewPolicyEngine(&FuncProvider{}, tt.evaluators...)
+			engine := NewPolicyEngine(&FuncProvider{}, tt.evaluators)
 			gotAllow, err := engine.EvaluatePacket(context.Background(), dummyPacket)
 
 			if (err != nil) != tt.wantErr {
@@ -205,7 +205,7 @@ func TestPolicyEngine_EvaluatorSorting(t *testing.T) {
 		},
 	}
 
-	engine := NewPolicyEngine(&FuncProvider{}, e2, e3, e1)
+	engine := NewPolicyEngine(&FuncProvider{}, []PolicyEvaluator{e2, e3, e1})
 	_, _ = engine.EvaluatePacket(context.Background(), &network.Packet{})
 
 	if len(evaluationOrder) != 3 {
@@ -234,7 +234,7 @@ func TestPolicyEngine_EvaluatePacket_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	engine := NewPolicyEngine(&FuncProvider{}, blockingEvaluator)
+	engine := NewPolicyEngine(&FuncProvider{}, []PolicyEvaluator{blockingEvaluator})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -397,7 +397,7 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 			}
 
 			// A single pipeline containing all evaluators, sorted by priority.
-			engine := NewPolicyEngine(podInfoProvider, anpEvaluator, npEvaluator, banpEvaluator)
+			engine := NewPolicyEngine(podInfoProvider, []PolicyEvaluator{anpEvaluator, npEvaluator, banpEvaluator})
 
 			allow, err := engine.EvaluatePacket(context.Background(), tt.packet)
 			if err != nil {

@@ -245,7 +245,7 @@ func run() int {
 		networkPolicyInfomer,
 		nsInformer,
 		podInformer,
-		networkpolicy.NewPolicyEngine(podInfoProvider, evaluators...),
+		networkpolicy.NewPolicyEngine(podInfoProvider, evaluators),
 		cfg,
 	)
 	if err != nil {

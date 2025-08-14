@@ -495,7 +495,7 @@ func Test_adminNetworkPolicyAction(t *testing.T) {
 			}
 
 			evaluator := NewAdminNetworkPolicy(npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies(), nil)
-			engine := NewPolicyEngine(podInfoProvider, evaluator)
+			engine := NewPolicyEngine(podInfoProvider, []PolicyEvaluator{evaluator})
 
 			verdict, err := engine.EvaluatePacket(context.TODO(), &tt.p)
 			if err != nil {
@@ -1009,7 +1009,7 @@ func TestController_evaluateAdminEgress_DomainNames(t *testing.T) {
 			}
 
 			evaluator := NewAdminNetworkPolicy(npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies(), domainResolver)
-			engine := NewPolicyEngine(podInfoProvider, evaluator)
+			engine := NewPolicyEngine(podInfoProvider, []PolicyEvaluator{evaluator})
 
 			packet := network.Packet{
 				SrcIP: net.ParseIP("192.168.1.11"),
