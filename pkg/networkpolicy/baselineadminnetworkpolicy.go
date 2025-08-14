@@ -45,7 +45,7 @@ func (b *BaselineAdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *net
 		logger.V(2).Info("Ingress BaselineAdminNetworkPolicies does not apply")
 		return VerdictNext, nil
 	}
-	ingressAction := b.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPod, p.SrcIP, p.DstPort, p.Proto)
+	ingressAction := b.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPod, p.DstPort, p.Proto)
 	logger.V(2).Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", ingressAction)
 
 	switch ingressAction {
@@ -167,7 +167,7 @@ func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminEgress(baselineAdminNe
 	return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
 }
 
-func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminIngress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, srcPod, dstPod *api.PodInfo, ip net.IP, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
+func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminIngress(adminNetworkPolices []*npav1alpha1.BaselineAdminNetworkPolicy, srcPod, dstPod *api.PodInfo, port int, protocol v1.Protocol) npav1alpha1.BaselineAdminNetworkPolicyRuleAction {
 	// Ingress rules only apply if the source is a pod within the cluster.
 	if srcPod == nil {
 		return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
