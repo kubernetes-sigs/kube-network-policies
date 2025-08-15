@@ -2,29 +2,96 @@
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: kube-network-policies
+  name: kube-ip-tracker
 rules:
   - apiGroups:
       - ""
     resources:
+      - nodes
       - pods
       - namespaces
-      - nodes
     verbs:
       - list
       - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-ip-tracker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-ip-tracker
+subjects:
+- kind: ServiceAccount
+  name: kube-ip-tracker
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-ip-tracker
+  namespace: kube-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-ip-tracker
+  namespace: kube-system
+spec:
+  clusterIP: None
+  selector:
+    app: kube-ip-tracker
+  ports:
+  - name: grpc
+    port: 10999
+    targetPort: 10999
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-ip-tracker
+  namespace: kube-system
+  labels:
+    app: kube-ip-tracker
+    k8s-app: kube-ip-tracker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kube-ip-tracker
+  template:
+    metadata:
+      labels:
+        app: kube-ip-tracker
+        k8s-app: kube-ip-tracker
+    spec:
+      hostNetwork: true # do not depend on the network of the cluster
+      serviceAccountName: kube-ip-tracker
+      containers:
+      - name: kube-ip-tracker
+        image: registry.k8s.io/networking/kube-ip-tracker:v0.1.0
+        args:
+        - /bin/kube-ip-tracker
+        - --listen-address=http://0.0.0.0:10999
+        - --v=2
+        ports:
+        - containerPort: 10999
+          name: grpc
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "50Mi"
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-network-policies
+rules:
   - apiGroups:
      - "networking.k8s.io"
     resources:
       - networkpolicies
-    verbs:
-      - list
-      - watch
-  - apiGroups:
-     - "policy.networking.k8s.io"
-    resources:
-      - adminnetworkpolicies
-      - baselineadminnetworkpolicies
     verbs:
       - list
       - watch
@@ -69,6 +136,7 @@ spec:
         k8s-app: kube-network-policies
     spec:
       hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       nodeSelector:
         kubernetes.io/os: linux
       tolerations:
@@ -77,12 +145,13 @@ spec:
       serviceAccountName: kube-network-policies
       containers:
       - name: kube-network-policies
-        image: registry.k8s.io/networking/kube-network-policies:v0.8.0-npa-v1alpha1
+        image: registry.k8s.io/networking/kube-network-policies:v0.8.0-iptracker
         args:
         - /bin/netpol
         - --hostname-override=$(MY_NODE_NAME)
-        - --v=4
-        - --nfqueue-id=89
+        - --v=2
+        - --nfqueue-id=198
+        - --ip-tracker-address=kube-ip-tracker.kube-system.svc.cluster.local:10999
         volumeMounts:
         - name: nri-plugin
           mountPath: /var/run/nri
