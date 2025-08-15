@@ -304,8 +304,8 @@ k8s.io/utils v0.0.0-20250604170112-4c0f3b243397 h1:hwvWFiBzdWw1FhfY1FooPn3kzWuJ8
 k8s.io/utils v0.0.0-20250604170112-4c0f3b243397/go.mod h1:OLgZIPagt7ERELqWJFomSt595RzquPNLL48iOWgYOg0=
 sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 h1:gBQPwqORJ8d8/YNZWEjoZs7npUVDpVXUUOFfW6CgAqE=
 sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8/go.mod h1:mdzfpAEoE6DHQEN0uh9ZbOCuHbLK5wOm7dK4ctXE9Tg=
-sigs.k8s.io/network-policy-api v0.1.6-0.20250401132235-45061d10895e h1:b5Vm5aa0I37gToQmFhQ+gQMZVsPsxSiJzxZWtSCs99w=
-sigs.k8s.io/network-policy-api v0.1.6-0.20250401132235-45061d10895e/go.mod h1:8J+z3UB9HgeqbmYprl6OKIobEDv27A3KRHPcteJ61rw=
+sigs.k8s.io/network-policy-api v0.1.8-0.20250826165010-d5cee02b3c1c h1:ySTDTqw3flKypZ4OnU2Q1lY/MzCBbONPVL6Rmx4BRAQ=
+sigs.k8s.io/network-policy-api v0.1.8-0.20250826165010-d5cee02b3c1c/go.mod h1:QIWX6Th2h0SmCwOwa1+9Urs0W+WDJGL5rujAPUemdkk=
 sigs.k8s.io/randfill v0.0.0-20250304075658-069ef1bbf016/go.mod h1:XeLlZ/jmk4i1HRopwe7/aU3H5n1zNUcX6TM94b3QxOY=
 sigs.k8s.io/randfill v1.0.0 h1:JfjMILfT8A6RbawdsK2JXGBR5AQVfd+9TbzrlneTyrU=
 sigs.k8s.io/randfill v1.0.0/go.mod h1:XeLlZ/jmk4i1HRopwe7/aU3H5n1zNUcX6TM94b3QxOY=

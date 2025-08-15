@@ -276,7 +276,7 @@ func EvaluatePolicyDirection(
 				verdict = false
 				if netpol.Spec.Egress == nil {
 					if tlogger.Enabled() && srcPod != nil {
-						tlogger.Info("Pod has limited all egress traffic", "pod", srcPod.Namespace.Name+"/"+srcPod.Name, "policy", netpol)
+						tlogger.Info("Pod has limited all egress traffic", "pod", srcPod.Namespace.Name+"/"+srcPod.Name, "policy", klog.KObj(netpol))
 					}
 					continue
 				}
