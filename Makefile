@@ -12,17 +12,26 @@ REGISTRY?=gcr.io/k8s-staging-networking
 TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
 PLATFORMS?=linux/amd64,linux/arm64
 
-.PHONY: all build build-standard build-npa-v1alpha1
-all: build
-build: build-standard build-npa-v1alpha1
+.PHONY: all build build-standard build-npa-v1alpha1 build-iptracker build-kube-ip-tracker
+
+build: build-standard build-npa-v1alpha1 build-iptracker build-kube-ip-tracker
 
 build-standard:
 	@echo "Building standard binary..."
-	go build -o ./bin/kube-network-policies-standard ./cmd/standard
+	go build -o ./bin/kube-network-policies-standard ./cmd/kube-network-policies/standard
 
 build-npa-v1alpha1:
 	@echo "Building npa-v1alpha1 binary..."
-	go build -o ./bin/kube-network-policies-npa-v1alpha1 ./cmd/npa-v1alpha1
+	go build -o ./bin/kube-network-policies-npa-v1alpha1 ./cmd/kube-network-policies/npa-v1alpha1
+
+build-iptracker:
+	@echo "Building iptracker binary..."
+	go build -o ./bin/kube-network-policies-iptracker ./cmd/kube-network-policies/iptracker
+
+build-kube-ip-tracker:
+	@echo "Building kube-ip-tracker binary..."
+	go build -o ./bin/kube-ip-tracker ./cmd/kube-ip-tracker
+
 
 clean:
 	rm -rf "$(OUT_DIR)/"
@@ -56,6 +65,17 @@ image-build-npa-v1alpha1: build-npa-v1alpha1
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha1" \
 		--load
 
+image-build-iptracker: build-iptracker
+	docker buildx build . \
+		--build-arg TARGET_BUILD=iptracker \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-iptracker" \
+		--load
+
+image-build-kube-ip-tracker: build-kube-ip-tracker
+	docker buildx build . -f Dockerfile.iptracker \
+		--tag="${REGISTRY}/kube-ip-tracker:$(TAG)" \
+		--load
+
 # Individual image push targets (multi-platform)
 image-push-standard: build-standard
 	docker buildx build . \
@@ -70,6 +90,19 @@ image-push-npa-v1alpha1: build-npa-v1alpha1
 		--platform="${PLATFORMS}" \
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha1" \
 		--push
+
+image-push-iptracker: build-iptracker
+	docker buildx build . \
+		--build-arg TARGET_BUILD=iptracker \
+		--platform="${PLATFORMS}" \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-iptracker" \
+		--push
+
+image-push-kube-ip-tracker: build-kube-ip-tracker
+	docker buildx build . -f Dockerfile.iptracker \
+		--tag="${REGISTRY}/kube-ip-tracker:$(TAG)" \
+		--push
+
 
 # --- Aggregate Targets ---
 .PHONY: images-build images-push release

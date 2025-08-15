@@ -191,7 +191,7 @@ func (s *StandardNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.
 		return api.VerdictNext, nil
 	}
 
-	if !evaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
+	if !EvaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
 		return api.VerdictDeny, nil
 	}
 	return api.VerdictAccept, nil
@@ -206,7 +206,7 @@ func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.P
 		return api.VerdictNext, nil
 	}
 
-	if !evaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeEgress, srcPod, p.SrcPort, dstPod, p.DstIP, p.DstPort, p.Proto) {
+	if !EvaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeEgress, srcPod, p.SrcPort, dstPod, p.DstIP, p.DstPort, p.Proto) {
 		return api.VerdictDeny, nil
 	}
 	return api.VerdictAccept, nil
@@ -244,7 +244,7 @@ func (s *StandardNetworkPolicy) getNetworkPoliciesForPod(pod *api.PodInfo) []*ne
 
 // validator obtains a verdict for network policies that applies to a src Pod in the direction
 // passed as parameter
-func evaluatePolicyDirection(
+func EvaluatePolicyDirection(
 	ctx context.Context, networkPolicies []*networkingv1.NetworkPolicy, networkPolictType networkingv1.PolicyType,
 	srcPod *api.PodInfo, srcPort int, dstPod *api.PodInfo, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
 

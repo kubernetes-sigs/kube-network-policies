@@ -60,7 +60,6 @@ spec:
         k8s-app: kube-network-policies
     spec:
       hostNetwork: true
-      dnsPolicy: ClusterFirst
       nodeSelector:
         kubernetes.io/os: linux
       tolerations:
