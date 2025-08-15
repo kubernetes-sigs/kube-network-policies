@@ -84,3 +84,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.7.0 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
+
+replace sigs.k8s.io/network-policy-api => github.com/npinaeva/network-policy-api v0.0.0-20250813121945-59370c2f182f
