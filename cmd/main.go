@@ -17,9 +17,12 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/dns"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
+
+	npav1alpha2 "sigs.k8s.io/network-policy-api/apis/v1alpha2"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
-	"sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
+	npainformersv1alpha1 "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
+	npainformersv1alpha2 "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha2"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -39,6 +42,7 @@ var (
 	failOpen                   bool
 	adminNetworkPolicy         bool // 	AdminNetworkPolicy is alpha so keep it feature gated behind a flag
 	baselineAdminNetworkPolicy bool // 	BaselineAdminNetworkPolicy is alpha so keep it feature gated behind a flag
+	clusterNetworkPolicy       bool // 	ClusterNetworkPolicy is alpha so keep it feature gated behind a flag
 	queueID                    int
 	metricsBindAddress         string
 	hostnameOverride           string
@@ -50,6 +54,7 @@ func init() {
 	flag.BoolVar(&failOpen, "fail-open", false, "If set, don't drop packets if the controller is not running")
 	flag.BoolVar(&adminNetworkPolicy, "admin-network-policy", false, "If set, enable Admin Network Policy API")
 	flag.BoolVar(&baselineAdminNetworkPolicy, "baseline-admin-network-policy", false, "If set, enable Baseline Admin Network Policy API")
+	flag.BoolVar(&clusterNetworkPolicy, "cluster-network-policy", false, "If set, enable Cluster-network-policy")
 	flag.IntVar(&queueID, "nfqueue-id", 100, "Number of the nfqueue used")
 	flag.StringVar(&metricsBindAddress, "metrics-bind-address", ":9080", "The IP address and port for the metrics server to serve on")
 	flag.StringVar(&hostnameOverride, "hostname-override", "", "If non-empty, will be used as the name of the Node that kube-network-policies is running on. If unset, the node name is assumed to be the same as the node's hostname.")
@@ -91,6 +96,10 @@ func run() int {
 		logger.Info("flag", "name", flag.Name, "value", flag.Value)
 	})
 
+	if clusterNetworkPolicy && (adminNetworkPolicy || baselineAdminNetworkPolicy) {
+		klog.Fatal("clusterNetworkPolicy cannot be enabled with adminNetworkPolicy or baselineAdminNetworkPolicy")
+	}
+
 	if _, _, err := net.SplitHostPort(metricsBindAddress); err != nil {
 		logger.Error(err, "parsing metrics bind address", "address", metricsBindAddress)
 		return 1
@@ -129,7 +138,8 @@ func run() int {
 	var npaClient *npaclient.Clientset
 	var npaInformerFactory npainformers.SharedInformerFactory
 	var nodeInformer coreinformers.NodeInformer
-	if adminNetworkPolicy || baselineAdminNetworkPolicy {
+
+	if adminNetworkPolicy || baselineAdminNetworkPolicy || clusterNetworkPolicy {
 		nodeInformer = informersFactory.Core().V1().Nodes()
 		npaClient, err = npaclient.NewForConfig(npaConfig)
 		if err != nil {
@@ -138,13 +148,17 @@ func run() int {
 		npaInformerFactory = npainformers.NewSharedInformerFactory(npaClient, 0)
 	}
 
-	var anpInformer v1alpha1.AdminNetworkPolicyInformer
+	var anpInformer npainformersv1alpha1.AdminNetworkPolicyInformer
 	if adminNetworkPolicy {
 		anpInformer = npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies()
 	}
-	var banpInformer v1alpha1.BaselineAdminNetworkPolicyInformer
+	var banpInformer npainformersv1alpha1.BaselineAdminNetworkPolicyInformer
 	if baselineAdminNetworkPolicy {
 		banpInformer = npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies()
+	}
+	var cnpInformer npainformersv1alpha2.ClusterNetworkPolicyInformer
+	if clusterNetworkPolicy {
+		cnpInformer = npaInformerFactory.Policy().V1alpha2().ClusterNetworkPolicies()
 	}
 
 	nsInformer := informersFactory.Core().V1().Namespaces()
@@ -201,21 +215,36 @@ func run() int {
 		evaluators = append(evaluators, networkpolicy.NewLoggingPolicy())
 	}
 
-	if adminNetworkPolicy {
+	var domainResolver api.DomainResolver
+	// If AdminNetworkPolicy or ClusterNetworkPolicy are enabled, we need a domain resolver.
+	if adminNetworkPolicy || clusterNetworkPolicy {
+		klog.Infof("AdminNetworkPolicy or ClusterNetworkPolicy enabled, starting domain cache")
 		// Admin Network Policy need to associate IP addresses to Domains
 		// NewDomainCache implements the interface DomainResolver using
 		// nftables to create a cache with the resolved IP addresses from the
 		// Pod domain queries.
-		domainResolver := dns.NewDomainCache(queueID + 1)
+		domainCache := dns.NewDomainCache(queueID + 1)
 		go func() {
-			err := domainResolver.Run(ctx)
+			err := domainCache.Run(ctx)
 			if err != nil {
 				klog.Infof("domain cache controller exited: %v", err)
 			}
 		}()
+		domainResolver = domainCache
 
+	}
+
+	if adminNetworkPolicy {
 		evaluators = append(evaluators, networkpolicy.NewAdminNetworkPolicy(
 			anpInformer,
+			domainResolver,
+		))
+	}
+
+	if clusterNetworkPolicy {
+		evaluators = append(evaluators, networkpolicy.NewClusterNetworkPolicy(
+			npav1alpha2.AdminTier,
+			cnpInformer,
 			domainResolver,
 		))
 	}
@@ -231,6 +260,14 @@ func run() int {
 	if baselineAdminNetworkPolicy {
 		evaluators = append(evaluators, networkpolicy.NewBaselineAdminNetworkPolicy(
 			banpInformer,
+		))
+	}
+
+	if clusterNetworkPolicy {
+		evaluators = append(evaluators, networkpolicy.NewClusterNetworkPolicy(
+			npav1alpha2.BaselineTier,
+			cnpInformer,
+			domainResolver,
 		))
 	}
 
