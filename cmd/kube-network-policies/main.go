@@ -44,6 +44,7 @@ var (
 	hostnameOverride           string
 	netfilterBug1766Fix        bool
 	disableNRI                 bool
+	ipTrackerAddress           string
 )
 
 func init() {
@@ -55,6 +56,7 @@ func init() {
 	flag.StringVar(&hostnameOverride, "hostname-override", "", "If non-empty, will be used as the name of the Node that kube-network-policies is running on. If unset, the node name is assumed to be the same as the node's hostname.")
 	flag.BoolVar(&netfilterBug1766Fix, "netfilter-bug-1766-fix", true, "If set, process DNS packets on the PREROUTING hooks to avoid the race condition on the conntrack subsystem, not needed for kernels 6.12+ (see https://bugzilla.netfilter.org/show_bug.cgi?id=1766)")
 	flag.BoolVar(&disableNRI, "disable-nri", false, "If set, disable NRI, that is used to get the Pod IP information directly from the runtime to avoid the race explained in https://issues.k8s.io/85966")
+	flag.StringVar(&ipTrackerAddress, "ip-tracker-address", "iptracker.kube-system:19090", "The IP address and port for the IP tracker to serve on")
 
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: kube-network-policies [options]\n\n")
