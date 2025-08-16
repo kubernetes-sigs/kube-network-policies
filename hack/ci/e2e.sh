@@ -136,6 +136,9 @@ EOF
   # Patch kube-proxy to set the verbosity level
   kubectl patch -n kube-system daemonset/kube-proxy \
     --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/command/-", "value": "--v='"${KIND_CLUSTER_LOG_LEVEL}"'" }]'
+    
+  # stop kindnet of applying network policies
+  kubectl -n kube-system set image ds kindnet kindnet-cni=docker.io/kindest/kindnetd:v20230809-80a64d96
 }
 
 # run e2es with ginkgo-e2e.sh
@@ -208,8 +211,6 @@ run_tests() {
 }
 
 install_kube_network_policy() {
-  # stop kindnet of checking network policies
-  kubectl -n kube-system delete clusterrolebinding kindnet
   # Install kube-network-policies
   export IMAGE_NAME="registry.k8s.io/networking/kube-network-policies"
   # Build the image

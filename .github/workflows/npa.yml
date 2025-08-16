@@ -109,6 +109,8 @@ jobs:
 
     - name: Install kube-network-policies
       run: |
+        # stop kindnet of applying network policies
+        kubectl -n kube-system set image ds kindnet kindnet-cni=docker.io/kindest/kindnetd:v20230809-80a64d96
         /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
         /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
         # preload kube-network-policies image
@@ -116,8 +118,6 @@ jobs:
         /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test --name ${{ env.KIND_CLUSTER_NAME}}
         sed -i s#registry.k8s.io/networking/kube-network-policies.*#registry.k8s.io/networking/kube-network-policies:test# install-anp.yaml
         /usr/local/bin/kubectl apply -f ./install-anp.yaml
-        # stop kindnet of checking network policies
-        kubectl -n kube-system delete clusterrolebinding kindnet
 
     - name: Get Cluster status
       run: |
