@@ -35,17 +35,17 @@ type mockPolicyEvaluator struct {
 	ips       []netip.Addr
 	divertAll bool
 	isReady   bool
-	sync      networkpolicy.SyncFunc
+	sync      api.SyncFunc
 }
 
 func (m *mockPolicyEvaluator) Name() string { return m.name }
-func (m *mockPolicyEvaluator) EvaluateIngress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (networkpolicy.Verdict, error) {
-	return networkpolicy.VerdictNext, nil
+func (m *mockPolicyEvaluator) EvaluateIngress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+	return api.VerdictNext, nil
 }
-func (m *mockPolicyEvaluator) EvaluateEgress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (networkpolicy.Verdict, error) {
-	return networkpolicy.VerdictNext, nil
+func (m *mockPolicyEvaluator) EvaluateEgress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+	return api.VerdictNext, nil
 }
-func (m *mockPolicyEvaluator) SetDataplaneSyncCallback(syncFn networkpolicy.SyncFunc) {
+func (m *mockPolicyEvaluator) SetDataplaneSyncCallback(syncFn api.SyncFunc) {
 	m.sync = syncFn
 }
 func (m *mockPolicyEvaluator) Ready() bool { return m.isReady }
@@ -54,7 +54,7 @@ func (m *mockPolicyEvaluator) ManagedIPs(context.Context) ([]netip.Addr, bool, e
 }
 
 // newTestController creates a controller instance for testing with mock evaluators.
-func newTestController(config Config, evaluators []networkpolicy.PolicyEvaluator) *Controller {
+func newTestController(config Config, evaluators []api.PolicyEvaluator) *Controller {
 	client := fake.NewSimpleClientset()
 	informersFactory := informers.NewSharedInformerFactory(client, 0)
 	podInformer := informersFactory.Core().V1().Pods()
@@ -219,7 +219,7 @@ func testNetworkPolicies_SyncRules(t *testing.T) {
 	tests := []struct {
 		name             string
 		config           Config
-		evaluators       []networkpolicy.PolicyEvaluator
+		evaluators       []api.PolicyEvaluator
 		expectedNftables string
 	}{
 		{
@@ -230,7 +230,7 @@ func testNetworkPolicies_SyncRules(t *testing.T) {
 				FailOpen:            true,
 				NFTableName:         "kube-network-policies",
 			},
-			evaluators: []networkpolicy.PolicyEvaluator{
+			evaluators: []api.PolicyEvaluator{
 				&mockPolicyEvaluator{
 					name: "test-evaluator",
 					ips: []netip.Addr{
@@ -285,7 +285,7 @@ table inet kube-network-policies {
 				NFTableName:         "kube-network-policies",
 				FailOpen:            false,
 			},
-			evaluators: []networkpolicy.PolicyEvaluator{
+			evaluators: []api.PolicyEvaluator{
 				&mockPolicyEvaluator{
 					name:      "divert-all-evaluator",
 					divertAll: true,
@@ -321,7 +321,7 @@ table inet kube-network-policies {
 				QueueID:     102,
 				NFTableName: "kube-network-policies",
 			},
-			evaluators: []networkpolicy.PolicyEvaluator{
+			evaluators: []api.PolicyEvaluator{
 				&mockPolicyEvaluator{
 					name:    "ip-evaluator",
 					ips:     []netip.Addr{netip.MustParseAddr("10.0.0.1")},

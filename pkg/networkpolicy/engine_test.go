@@ -53,26 +53,26 @@ func (f *FuncDomainResolver) ContainsIP(domain string, ip net.IP) bool {
 // mockPolicyEvaluator is a mock implementation of PolicyEvaluator for testing.
 type mockPolicyEvaluator struct {
 	name            string
-	evaluateIngress func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
-	evaluateEgress  func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
+	evaluateIngress func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error)
+	evaluateEgress  func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error)
 }
 
 func (m *mockPolicyEvaluator) Name() string {
 	return m.name
 }
 
-func (m *mockPolicyEvaluator) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (m *mockPolicyEvaluator) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	if m.evaluateIngress != nil {
 		return m.evaluateIngress(ctx, p, srcPod, dstPod)
 	}
-	return VerdictNext, nil
+	return api.VerdictNext, nil
 }
 
-func (m *mockPolicyEvaluator) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (m *mockPolicyEvaluator) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	if m.evaluateEgress != nil {
 		return m.evaluateEgress(ctx, p, srcPod, dstPod)
 	}
-	return VerdictNext, nil
+	return api.VerdictNext, nil
 }
 
 func (m *mockPolicyEvaluator) Ready() bool {
@@ -80,7 +80,7 @@ func (m *mockPolicyEvaluator) Ready() bool {
 	return true
 }
 
-func (m *mockPolicyEvaluator) SetDataplaneSyncCallback(syncFn SyncFunc) {
+func (m *mockPolicyEvaluator) SetDataplaneSyncCallback(syncFn api.SyncFunc) {
 	// No-op for mock.
 }
 
@@ -88,13 +88,13 @@ func (m *mockPolicyEvaluator) ManagedIPs(ctx context.Context) ([]netip.Addr, boo
 	return nil, false, nil
 }
 
-func newMockEvaluator(name string, verdict Verdict, err error) *mockPolicyEvaluator {
+func newMockEvaluator(name string, verdict api.Verdict, err error) *mockPolicyEvaluator {
 	return &mockPolicyEvaluator{
 		name: name,
-		evaluateIngress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (Verdict, error) {
+		evaluateIngress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
 			return verdict, err
 		},
-		evaluateEgress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (Verdict, error) {
+		evaluateEgress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
 			return verdict, err
 		},
 	}
@@ -105,74 +105,74 @@ func TestPolicyEngine_EvaluatePacket(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		evaluators []PolicyEvaluator
+		evaluators []api.PolicyEvaluator
 		wantAllow  bool
 		wantErr    bool
 	}{
 		{
 			name:       "empty pipeline should default to allow",
-			evaluators: []PolicyEvaluator{},
+			evaluators: []api.PolicyEvaluator{},
 			wantAllow:  true,
 			wantErr:    false,
 		},
 		{
 			name:       "single evaluator returns Accept",
-			evaluators: []PolicyEvaluator{newMockEvaluator("acceptor", VerdictAccept, nil)},
+			evaluators: []api.PolicyEvaluator{newMockEvaluator("acceptor", api.VerdictAccept, nil)},
 			wantAllow:  true,
 			wantErr:    false,
 		},
 		{
 			name:       "single evaluator returns Deny",
-			evaluators: []PolicyEvaluator{newMockEvaluator("denier", VerdictDeny, nil)},
+			evaluators: []api.PolicyEvaluator{newMockEvaluator("denier", api.VerdictDeny, nil)},
 			wantAllow:  false,
 			wantErr:    false,
 		},
 		{
 			name:       "single evaluator returns Next should default to allow",
-			evaluators: []PolicyEvaluator{newMockEvaluator("passer", VerdictNext, nil)},
+			evaluators: []api.PolicyEvaluator{newMockEvaluator("passer", api.VerdictNext, nil)},
 			wantAllow:  true,
 			wantErr:    false,
 		},
 		{
 			name: "high priority denier should run first and deny",
-			evaluators: []PolicyEvaluator{
-				newMockEvaluator("denier", VerdictDeny, nil),
-				newMockEvaluator("acceptor", VerdictAccept, nil),
+			evaluators: []api.PolicyEvaluator{
+				newMockEvaluator("denier", api.VerdictDeny, nil),
+				newMockEvaluator("acceptor", api.VerdictAccept, nil),
 			},
 			wantAllow: false,
 			wantErr:   false,
 		},
 		{
 			name: "high priority acceptor should run first and allow",
-			evaluators: []PolicyEvaluator{
-				newMockEvaluator("acceptor", VerdictAccept, nil),
-				newMockEvaluator("denier", VerdictDeny, nil),
+			evaluators: []api.PolicyEvaluator{
+				newMockEvaluator("acceptor", api.VerdictAccept, nil),
+				newMockEvaluator("denier", api.VerdictDeny, nil),
 			},
 			wantAllow: true,
 			wantErr:   false,
 		},
 		{
 			name: "evaluator returning Next should proceed to the next one",
-			evaluators: []PolicyEvaluator{
-				newMockEvaluator("passer", VerdictNext, nil),
-				newMockEvaluator("denier", VerdictDeny, nil),
+			evaluators: []api.PolicyEvaluator{
+				newMockEvaluator("passer", api.VerdictNext, nil),
+				newMockEvaluator("denier", api.VerdictDeny, nil),
 			},
 			wantAllow: false,
 			wantErr:   false,
 		},
 		{
 			name: "evaluator returns an error",
-			evaluators: []PolicyEvaluator{
-				newMockEvaluator("error-producer", VerdictNext, errors.New("evaluation failed")),
+			evaluators: []api.PolicyEvaluator{
+				newMockEvaluator("error-producer", api.VerdictNext, errors.New("evaluation failed")),
 			},
 			wantAllow: false,
 			wantErr:   true,
 		},
 		{
 			name: "error from a later evaluator",
-			evaluators: []PolicyEvaluator{
-				newMockEvaluator("passer", VerdictNext, nil),
-				newMockEvaluator("error-producer", VerdictNext, errors.New("evaluation failed")),
+			evaluators: []api.PolicyEvaluator{
+				newMockEvaluator("passer", api.VerdictNext, nil),
+				newMockEvaluator("error-producer", api.VerdictNext, errors.New("evaluation failed")),
 			},
 			wantAllow: false,
 			wantErr:   true,
@@ -199,27 +199,27 @@ func TestPolicyEngine_EvaluatorSorting(t *testing.T) {
 	var evaluationOrder []string
 	e1 := &mockPolicyEvaluator{
 		name: "evaluator-1",
-		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 			evaluationOrder = append(evaluationOrder, "evaluator-1")
-			return VerdictNext, nil
+			return api.VerdictNext, nil
 		},
 	}
 	e2 := &mockPolicyEvaluator{
 		name: "evaluator-2",
-		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 			evaluationOrder = append(evaluationOrder, "evaluator-2")
-			return VerdictNext, nil
+			return api.VerdictNext, nil
 		},
 	}
 	e3 := &mockPolicyEvaluator{
 		name: "evaluator-3",
-		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 			evaluationOrder = append(evaluationOrder, "evaluator-3")
-			return VerdictNext, nil
+			return api.VerdictNext, nil
 		},
 	}
 
-	engine := NewPolicyEngine(&FuncProvider{}, []PolicyEvaluator{e2, e3, e1})
+	engine := NewPolicyEngine(&FuncProvider{}, []api.PolicyEvaluator{e2, e3, e1})
 	_, _ = engine.EvaluatePacket(context.Background(), &network.Packet{})
 
 	if len(evaluationOrder) != 3 {
@@ -242,13 +242,13 @@ func TestPolicyEngine_EvaluatePacket_ContextCancellation(t *testing.T) {
 	// This evaluator will block until the context is canceled.
 	blockingEvaluator := &mockPolicyEvaluator{
 		name: "blocker",
-		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 			<-ctx.Done() // Wait for cancellation
-			return VerdictNext, ctx.Err()
+			return api.VerdictNext, ctx.Err()
 		},
 	}
 
-	engine := NewPolicyEngine(&FuncProvider{}, []PolicyEvaluator{blockingEvaluator})
+	engine := NewPolicyEngine(&FuncProvider{}, []api.PolicyEvaluator{blockingEvaluator})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -301,8 +301,8 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		anpVerdict  Verdict // Mocked ANP verdict
-		banpVerdict Verdict // Mocked BANP verdict
+		anpVerdict  api.Verdict // Mocked ANP verdict
+		banpVerdict api.Verdict // Mocked BANP verdict
 		nps         []*networkingv1.NetworkPolicy
 		pods        []*v1.Pod
 		namespaces  []*v1.Namespace
@@ -311,8 +311,8 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 	}{
 		{
 			name:        "ANP Allow overrides NP Deny",
-			anpVerdict:  VerdictAccept, // ANP has high priority and allows
-			banpVerdict: VerdictNext,
+			anpVerdict:  api.VerdictAccept, // ANP has high priority and allows
+			banpVerdict: api.VerdictNext,
 			nps: []*networkingv1.NetworkPolicy{
 				// This NP would otherwise deny the traffic
 				makeNP("deny-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil, nil),
@@ -324,8 +324,8 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 		},
 		{
 			name:        "BANP Allow do not overrides NP Deny",
-			anpVerdict:  VerdictNext,   // ANP passes decision down
-			banpVerdict: VerdictAccept, // BANP allows
+			anpVerdict:  api.VerdictNext,   // ANP passes decision down
+			banpVerdict: api.VerdictAccept, // BANP allows
 			nps: []*networkingv1.NetworkPolicy{
 				// This NP would otherwise deny the traffic
 				makeNP("deny-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil, nil),
@@ -337,8 +337,8 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 		},
 		{
 			name:        "ANP Deny overrides NP Allow",
-			anpVerdict:  VerdictDeny, // ANP has high priority and denies
-			banpVerdict: VerdictNext,
+			anpVerdict:  api.VerdictDeny, // ANP has high priority and denies
+			banpVerdict: api.VerdictNext,
 			nps: []*networkingv1.NetworkPolicy{
 				// This NP would otherwise allow the traffic
 				makeNP("allow-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, []networkingv1.NetworkPolicyEgressRule{{ /* empty egress rule allows all */ }}, nil),
@@ -350,8 +350,8 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 		},
 		{
 			name:        "NP Deny when ANP and BANP Pass",
-			anpVerdict:  VerdictNext, // ANP passes decision down
-			banpVerdict: VerdictNext, // BANP passes decision down
+			anpVerdict:  api.VerdictNext, // ANP passes decision down
+			banpVerdict: api.VerdictNext, // BANP passes decision down
 			nps: []*networkingv1.NetworkPolicy{
 				// This NP selects podA and denies all egress traffic
 				makeNP("deny-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil, nil),
@@ -363,8 +363,8 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 		},
 		{
 			name:        "NP Allow when ANP Pass and BANP Deny",
-			anpVerdict:  VerdictNext, // ANP passes decision down
-			banpVerdict: VerdictDeny, // BANP passes decision down
+			anpVerdict:  api.VerdictNext, // ANP passes decision down
+			banpVerdict: api.VerdictDeny, // BANP passes decision down
 			nps: []*networkingv1.NetworkPolicy{
 				// This NP selects podA and denies all egress traffic
 				makeNP("allow-a-egress", "ns-a", labels.Set{"app": "a"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress, networkingv1.PolicyTypeIngress}, []networkingv1.NetworkPolicyEgressRule{{ /* empty egress rule allows all */ }}, nil),
@@ -377,8 +377,8 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 		},
 		{
 			name:        "Default Allow when all evaluators Pass",
-			anpVerdict:  VerdictNext,
-			banpVerdict: VerdictNext,
+			anpVerdict:  api.VerdictNext,
+			banpVerdict: api.VerdictNext,
 			nps:         []*networkingv1.NetworkPolicy{
 				// No policies select the pod, so NP evaluator should return Next
 			},
@@ -430,7 +430,7 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 			}
 
 			// A single pipeline containing all evaluators, sorted by priority.
-			engine := NewPolicyEngine(podInfoProvider, []PolicyEvaluator{anpEvaluator, npEvaluator, banpEvaluator})
+			engine := NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{anpEvaluator, npEvaluator, banpEvaluator})
 
 			allow, err := engine.EvaluatePacket(context.Background(), tt.packet)
 			if err != nil {

@@ -29,7 +29,7 @@ func (l *LoggingPolicy) Ready() bool {
 	return true
 }
 
-func (l *LoggingPolicy) SetDataplaneSyncCallback(syncFn SyncFunc) {
+func (l *LoggingPolicy) SetDataplaneSyncCallback(syncFn api.SyncFunc) {
 	// No-op for AdminNetworkPolicy as it doesn't directly control dataplane rules.
 	// The controller will handle syncing based on policy changes.
 }
@@ -41,15 +41,15 @@ func (l *LoggingPolicy) ManagedIPs(ctx context.Context) ([]netip.Addr, bool, err
 }
 
 // EvaluateIngress logs the details of an ingress packet and passes it to the next evaluator.
-func (l *LoggingPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (l *LoggingPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	logPacket(ctx, "Ingress", p, srcPod, dstPod)
-	return VerdictNext, nil
+	return api.VerdictNext, nil
 }
 
 // EvaluateEgress logs the details of an egress packet and passes it to the next evaluator.
-func (l *LoggingPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (l *LoggingPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	logPacket(ctx, "Egress", p, srcPod, dstPod)
-	return VerdictNext, nil
+	return api.VerdictNext, nil
 }
 
 // logPacket is a helper function to format and write the log message.

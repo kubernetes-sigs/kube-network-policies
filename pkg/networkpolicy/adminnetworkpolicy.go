@@ -22,13 +22,13 @@ import (
 type AdminNetworkPolicy struct {
 	anpLister      anplisters.AdminNetworkPolicyLister
 	anpSynced      cache.InformerSynced
-	domainResolver DomainResolver
+	domainResolver api.DomainResolver
 }
 
-var _ PolicyEvaluator = &AdminNetworkPolicy{}
+var _ api.PolicyEvaluator = &AdminNetworkPolicy{}
 
 // NewAdminNetworkPolicy creates a new ANP implementation.
-func NewAdminNetworkPolicy(anpInformer anpinformers.AdminNetworkPolicyInformer, domainResolver DomainResolver) *AdminNetworkPolicy {
+func NewAdminNetworkPolicy(anpInformer anpinformers.AdminNetworkPolicyInformer, domainResolver api.DomainResolver) *AdminNetworkPolicy {
 	return &AdminNetworkPolicy{
 		anpLister:      anpInformer.Lister(),
 		anpSynced:      anpInformer.Informer().HasSynced,
@@ -44,7 +44,7 @@ func (a *AdminNetworkPolicy) Ready() bool {
 	return a.anpSynced()
 }
 
-func (a *AdminNetworkPolicy) SetDataplaneSyncCallback(syncFn SyncFunc) {
+func (a *AdminNetworkPolicy) SetDataplaneSyncCallback(syncFn api.SyncFunc) {
 	// No-op for AdminNetworkPolicy as it doesn't directly control dataplane rules.
 	// The controller will handle syncing based on policy changes.
 }
@@ -55,59 +55,59 @@ func (a *AdminNetworkPolicy) ManagedIPs(ctx context.Context) ([]netip.Addr, bool
 	return nil, true, nil
 }
 
-func (a *AdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (a *AdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	logger := klog.FromContext(ctx)
 
 	allPolicies, err := a.anpLister.List(labels.Everything())
 	if err != nil || len(allPolicies) == 0 {
-		return VerdictNext, err
+		return api.VerdictNext, err
 	}
 
 	dstPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(dstPod, allPolicies)
 	if len(dstPodAdminNetworkPolicies) == 0 {
 		logger.V(2).Info("Ingress AdminNetworkPolicies does not apply")
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 	ingressAction := a.evaluateAdminIngress(dstPodAdminNetworkPolicies, srcPod, dstPod, p.DstPort, p.Proto)
 	logger.V(2).Info("Ingress AdminNetworkPolicies", "npolicies", len(dstPodAdminNetworkPolicies), "action", ingressAction)
 
 	switch ingressAction {
 	case npav1alpha1.AdminNetworkPolicyRuleActionAllow:
-		return VerdictAccept, nil
+		return api.VerdictAccept, nil
 	case npav1alpha1.AdminNetworkPolicyRuleActionDeny:
-		return VerdictDeny, nil
+		return api.VerdictDeny, nil
 	case npav1alpha1.AdminNetworkPolicyRuleActionPass:
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	default: // Pass
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 }
 
-func (a *AdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (a *AdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	logger := klog.FromContext(ctx)
 
 	allPolicies, err := a.anpLister.List(labels.Everything())
 	if err != nil || len(allPolicies) == 0 {
-		return VerdictNext, err
+		return api.VerdictNext, err
 	}
 
 	srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
 	if len(srcPodAdminNetworkPolicies) == 0 {
 		logger.V(2).Info("Egress AdminNetworkPolicies does not apply")
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 	egressAction := a.evaluateAdminEgress(srcPodAdminNetworkPolicies, dstPod, p.DstIP, p.DstPort, p.Proto)
 	logger.V(2).Info("Egress AdminNetworkPolicies", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
 
 	switch egressAction {
 	case npav1alpha1.AdminNetworkPolicyRuleActionAllow:
-		return VerdictAccept, nil
+		return api.VerdictAccept, nil
 	case npav1alpha1.AdminNetworkPolicyRuleActionDeny:
-		return VerdictDeny, nil
+		return api.VerdictDeny, nil
 	case npav1alpha1.AdminNetworkPolicyRuleActionPass:
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	default: // Pass
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 }
 
