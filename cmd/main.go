@@ -101,12 +101,9 @@ func run() int {
 	}
 
 	cfg := dataplane.Config{
-		AdminNetworkPolicy:         adminNetworkPolicy,
-		BaselineAdminNetworkPolicy: baselineAdminNetworkPolicy,
-		FailOpen:                   failOpen,
-		QueueID:                    queueID,
-		NodeName:                   nodeName,
-		NetfilterBug1766Fix:        netfilterBug1766Fix,
+		FailOpen:            failOpen,
+		QueueID:             queueID,
+		NetfilterBug1766Fix: netfilterBug1766Fix,
 	}
 	// creates the in-cluster config
 	config, err := rest.InClusterConfig()
@@ -224,6 +221,9 @@ func run() int {
 
 	// Standard Network Policy goes after AdminNetworkPolicy and before BaselineAdminNetworkPolicy
 	evaluators = append(evaluators, networkpolicy.NewStandardNetworkPolicy(
+		nodeName,
+		nsInformer,
+		podInformer,
 		networkPolicyInfomer,
 	))
 
@@ -241,10 +241,6 @@ func run() int {
 
 	// Create the controller that enforces the network policies on the data plane
 	networkPolicyController, err := dataplane.NewController(
-		clientset,
-		networkPolicyInfomer,
-		nsInformer,
-		podInformer,
 		networkpolicy.NewPolicyEngine(podInfoProvider, evaluators),
 		cfg,
 	)

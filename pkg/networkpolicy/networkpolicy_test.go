@@ -587,7 +587,7 @@ func TestSyncPacket(t *testing.T) {
 				GetFunc: getPodInfo,
 			}
 
-			evaluator := NewStandardNetworkPolicy(networkPolicyInformer)
+			evaluator := NewStandardNetworkPolicy("node", namespaceInformer, podInformer, networkPolicyInformer)
 			engine := NewPolicyEngine(podInfoProvider, []PolicyEvaluator{evaluator})
 
 			ok, err := engine.EvaluatePacket(context.TODO(), &tt.p)

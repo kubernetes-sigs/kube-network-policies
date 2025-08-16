@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -72,6 +73,19 @@ func (m *mockPolicyEvaluator) EvaluateEgress(ctx context.Context, p *network.Pac
 		return m.evaluateEgress(ctx, p, srcPod, dstPod)
 	}
 	return VerdictNext, nil
+}
+
+func (m *mockPolicyEvaluator) Ready() bool {
+	// No-op for mock, always ready.
+	return true
+}
+
+func (m *mockPolicyEvaluator) SetDataplaneSyncCallback(syncFn SyncFunc) {
+	// No-op for mock.
+}
+
+func (m *mockPolicyEvaluator) ManagedIPs(ctx context.Context) ([]netip.Addr, bool, error) {
+	return nil, false, nil
 }
 
 func newMockEvaluator(name string, verdict Verdict, err error) *mockPolicyEvaluator {
@@ -381,6 +395,11 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 			kubeClient := fake.NewSimpleClientset()
 			informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
 			netpolInformer := informerFactory.Networking().V1().NetworkPolicies()
+			namespaceInformer := informerFactory.Core().V1().Namespaces()
+			podInformer := informerFactory.Core().V1().Pods()
+
+			// Start informers
+			informerFactory.Start(context.Background().Done())
 
 			podInfoMap := make(map[string]*api.PodInfo)
 			for _, p := range tt.pods {
@@ -405,7 +424,7 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 			banpEvaluator := newMockEvaluator("BaselineAdminNetworkPolicy", tt.banpVerdict, nil)
 
 			// Use the real NetworkPolicy evaluator, which has a default priority of 50.
-			npEvaluator := NewStandardNetworkPolicy(netpolInformer)
+			npEvaluator := NewStandardNetworkPolicy("test", namespaceInformer, podInformer, netpolInformer)
 			for _, np := range tt.nps {
 				netpolInformer.Informer().GetStore().Add(np)
 			}

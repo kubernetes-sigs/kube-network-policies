@@ -4,6 +4,7 @@ package networkpolicy
 
 import (
 	"context"
+	"net/netip"
 
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
@@ -22,6 +23,21 @@ func NewLoggingPolicy() *LoggingPolicy {
 // Name returns the name of the policy evaluator.
 func (l *LoggingPolicy) Name() string {
 	return "LoggingPolicy"
+}
+
+func (l *LoggingPolicy) Ready() bool {
+	return true
+}
+
+func (l *LoggingPolicy) SetDataplaneSyncCallback(syncFn SyncFunc) {
+	// No-op for AdminNetworkPolicy as it doesn't directly control dataplane rules.
+	// The controller will handle syncing based on policy changes.
+}
+
+func (l *LoggingPolicy) ManagedIPs(ctx context.Context) ([]netip.Addr, bool, error) {
+	// ManagedIPs returns nil as the logging policy does not manage any IPs.
+	// It also returns false for divertAll as it does not divert all traffic.
+	return nil, false, nil
 }
 
 // EvaluateIngress logs the details of an ingress packet and passes it to the next evaluator.

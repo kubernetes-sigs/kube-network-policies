@@ -3,8 +3,6 @@ package dataplane
 import (
 	"context"
 	"fmt"
-	"net/netip"
-	"os"
 	"time"
 
 	nfqueue "github.com/florianl/go-nfqueue"
@@ -14,30 +12,13 @@ import (
 	"github.com/mdlayher/netlink"
 	"golang.org/x/sys/unix"
 
-	v1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
-	coreinformers "k8s.io/client-go/informers/core/v1"
-	networkinginformers "k8s.io/client-go/informers/networking/v1"
-	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
-	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
-	corelisters "k8s.io/client-go/listers/core/v1"
-	networkinglisters "k8s.io/client-go/listers/networking/v1"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	netutils "k8s.io/utils/net"
 
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
-	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
-	policylisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
+	"sigs.k8s.io/kube-network-policies/pkg/runner"
 )
 
 // Network policies are hard to implement efficiently, and in large clusters this is
@@ -64,26 +45,17 @@ const (
 )
 
 type Config struct {
-	FailOpen                   bool // allow traffic if the controller is not available
-	AdminNetworkPolicy         bool
-	BaselineAdminNetworkPolicy bool
-	QueueID                    int
-	NodeName                   string
-	NetfilterBug1766Fix        bool
-	NFTableName                string // if other projects use this controllers they need to be able to use their own table name
+	FailOpen            bool // allow traffic if the controller is not available
+	QueueID             int
+	NetfilterBug1766Fix bool
+	NFTableName         string // if other projects use this controllers they need to be able to use their own table name
 }
 
 func (c *Config) Defaults() error {
-	var err error
 	if c.QueueID == 0 {
 		c.QueueID = 100
 	}
-	if c.NodeName == "" {
-		c.NodeName, err = os.Hostname()
-		if err != nil {
-			return err
-		}
-	}
+
 	if c.NFTableName == "" {
 		c.NFTableName = "kube-network-policies"
 	}
@@ -91,10 +63,7 @@ func (c *Config) Defaults() error {
 }
 
 // NewController returns a new *Controller.
-func NewController(client clientset.Interface,
-	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
-	namespaceInformer coreinformers.NamespaceInformer,
-	podInformer coreinformers.PodInformer,
+func NewController(
 	policyEngine *networkpolicy.PolicyEngine,
 	config Config,
 ) (*Controller, error) {
@@ -104,211 +73,46 @@ func NewController(client clientset.Interface,
 	}
 
 	return newController(
-		client,
-		networkpolicyInformer,
-		namespaceInformer,
-		podInformer,
 		policyEngine,
 		config,
 	)
 }
 
-func newController(client clientset.Interface,
-	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
-	namespaceInformer coreinformers.NamespaceInformer,
-	podInformer coreinformers.PodInformer,
+func newController(
 	policyEngine *networkpolicy.PolicyEngine,
 	config Config,
 ) (*Controller, error) {
-	klog.V(2).Info("Creating event broadcaster")
-	broadcaster := record.NewBroadcaster()
-	broadcaster.StartStructuredLogging(0)
-	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: client.CoreV1().Events("")})
-	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: controllerName})
-
 	klog.V(2).InfoS("Creating controller", "config", config)
 	c := &Controller{
-		client:       client,
 		policyEngine: policyEngine,
 		config:       config,
-		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
-			workqueue.DefaultTypedControllerRateLimiter[string](),
-			workqueue.TypedRateLimitingQueueConfig[string]{Name: controllerName},
-		),
 	}
+	// The runner will execute syncNFTablesRules.
+	// - minInterval: Coalesce rapid changes (e.g., multiple pod updates) into a single run.
+	// - retryInterval: If sync fails, retry after a short delay.
+	// - maxInterval: Ensure rules are periodically resynced even if there are no events.
+	c.syncRunner = runner.NewBoundedFrequencyRunner(
+		controllerName,
+		func() error { return c.syncNFTablesRules(context.Background()) },
+		1*time.Second, // minInterval
+		1*time.Second, // retryInterval
+		1*time.Hour,   // maxInterval
+	)
 
-	c.podLister = podInformer.Lister()
-	c.podsSynced = podInformer.Informer().HasSynced
-	c.namespaceLister = namespaceInformer.Lister()
-	c.namespacesSynced = namespaceInformer.Informer().HasSynced
-	c.networkpolicyLister = networkpolicyInformer.Lister()
-	c.networkpoliciesSynced = networkpolicyInformer.Informer().HasSynced
-
-	c.eventBroadcaster = broadcaster
-	c.eventRecorder = recorder
-
-	// process only local Pods that are affected by network policices
-	_, _ = podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			pod := obj.(*v1.Pod)
-			if pod.Spec.NodeName != c.config.NodeName {
-				return
-			}
-			if len(c.getNetworkPoliciesForPod(pod)) > 0 {
-				c.queue.Add(syncKey)
-			}
-		},
-		UpdateFunc: func(old, cur interface{}) {
-			pod := cur.(*v1.Pod)
-			if pod.Spec.NodeName != c.config.NodeName {
-				return
-			}
-			if len(c.getNetworkPoliciesForPod(pod)) > 0 {
-				c.queue.Add(syncKey)
-			}
-		},
-		DeleteFunc: func(obj interface{}) {
-			pod, ok := obj.(*v1.Pod)
-			if !ok {
-				// If we reached here it means the pod was deleted but its final state is unrecorded.
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-				if !ok {
-					utilruntime.HandleError(fmt.Errorf("couldn't get object from tombstone %#v", obj))
-					return
-				}
-				pod, ok = tombstone.Obj.(*v1.Pod)
-				if !ok {
-					utilruntime.HandleError(fmt.Errorf("tombstone contained object that is not a Pod: %#v", obj))
-					return
-				}
-			}
-			if pod.Spec.NodeName != c.config.NodeName {
-				return
-			}
-			if len(c.getNetworkPoliciesForPod(pod)) > 0 {
-				c.queue.Add(syncKey)
-			}
-		},
-	})
-
-	// only process network policies that impact Pods on this node
-	_, _ = networkpolicyInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			networkPolicy := obj.(*networkingv1.NetworkPolicy)
-			if len(c.getLocalPodsForNetworkPolicy(networkPolicy)) > 0 {
-				c.queue.Add(syncKey)
-			}
-		},
-		UpdateFunc: func(old, cur interface{}) {
-			networkPolicy := cur.(*networkingv1.NetworkPolicy)
-			if len(c.getLocalPodsForNetworkPolicy(networkPolicy)) > 0 {
-				c.queue.Add(syncKey)
-			}
-		},
-		DeleteFunc: func(obj interface{}) {
-			networkPolicy, ok := obj.(*networkingv1.NetworkPolicy)
-			if !ok {
-				// If we reached here it means the policy was deleted but its final state is unrecorded.
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-				if !ok {
-					utilruntime.HandleError(fmt.Errorf("couldn't get object from tombstone %#v", obj))
-					return
-				}
-				networkPolicy, ok = tombstone.Obj.(*networkingv1.NetworkPolicy)
-				if !ok {
-					utilruntime.HandleError(fmt.Errorf("tombstone contained object that is not a NetworkPolicy: %#v", obj))
-					return
-				}
-			}
-			if len(c.getLocalPodsForNetworkPolicy(networkPolicy)) > 0 {
-				c.queue.Add(syncKey)
-			}
-		},
-	})
+	// The sync callback now triggers the runner.
+	syncCallback := func() {
+		c.syncRunner.Run()
+	}
+	c.policyEngine.SetDataplaneSyncCallbacks(syncCallback)
 
 	return c, nil
-}
-
-func (c *Controller) getNetworkPoliciesForPod(pod *v1.Pod) []*networkingv1.NetworkPolicy {
-	if pod == nil {
-		return nil
-	}
-	// Get all the network policies that affect this pod
-	networkPolices, err := c.networkpolicyLister.NetworkPolicies(pod.Namespace).List(labels.Everything())
-	if err != nil {
-		return nil
-	}
-	result := []*networkingv1.NetworkPolicy{}
-	for _, policy := range networkPolices {
-		// podSelector selects the pods to which this NetworkPolicy object applies.
-		// The array of ingress rules is applied to any pods selected by this field.
-		// Multiple network policies can select the same set of pods. In this case,
-		// the ingress rules for each are combined additively.
-		// This field is NOT optional and follows standard label selector semantics.
-		// An empty podSelector matches all pods in this namespace.
-		podSelector, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
-		if err != nil {
-			klog.InfoS("parsing PodSelector", "error", err)
-			continue
-		}
-		// networkPolicy does not select the pod try the next network policy
-		if podSelector.Matches(labels.Set(pod.Labels)) {
-			result = append(result, policy)
-		}
-	}
-	return result
-}
-
-// getLocalPodsForNetworkPolicy obtains all the Pods selected by the network policy for current Node
-func (c *Controller) getLocalPodsForNetworkPolicy(networkPolicy *networkingv1.NetworkPolicy) []*v1.Pod {
-	if networkPolicy == nil {
-		return nil
-	}
-	podSelector, err := metav1.LabelSelectorAsSelector(&networkPolicy.Spec.PodSelector)
-	if err != nil {
-		klog.InfoS("parsing PodSelector", "error", err)
-		return nil
-	}
-	pods, err := c.podLister.Pods(networkPolicy.Namespace).List(podSelector)
-	if err != nil {
-		return nil
-	}
-	result := []*v1.Pod{}
-	for _, pod := range pods {
-		if pod.Spec.NodeName == c.config.NodeName {
-			result = append(result, pod)
-		}
-	}
-	return result
 }
 
 // Controller manages selector-based networkpolicy endpoints.
 type Controller struct {
 	config       Config
 	policyEngine *networkpolicy.PolicyEngine
-
-	client           clientset.Interface
-	eventBroadcaster record.EventBroadcaster
-	eventRecorder    record.EventRecorder
-
-	// informers for network policies, namespaces and pods
-	networkpolicyLister   networkinglisters.NetworkPolicyLister
-	networkpoliciesSynced cache.InformerSynced
-	namespaceLister       corelisters.NamespaceLister
-	namespacesSynced      cache.InformerSynced
-	podLister             corelisters.PodLister
-	podsSynced            cache.InformerSynced
-
-	queue workqueue.TypedRateLimitingInterface[string]
-
-	npaClient npaclient.Interface
-
-	adminNetworkPolicyLister         policylisters.AdminNetworkPolicyLister
-	adminNetworkPolicySynced         cache.InformerSynced
-	baselineAdminNetworkPolicyLister policylisters.BaselineAdminNetworkPolicyLister
-	baselineAdminNetworkPolicySynced cache.InformerSynced
-	nodeLister                       corelisters.NodeLister
-	nodesSynced                      cache.InformerSynced
+	syncRunner   *runner.BoundedFrequencyRunner
 
 	nfq     *nfqueue.Nfqueue
 	flushed bool
@@ -318,19 +122,21 @@ type Controller struct {
 // endpoints will be handled in parallel.
 func (c *Controller) Run(ctx context.Context) error {
 	defer utilruntime.HandleCrash()
-	defer c.queue.ShutDown()
 	logger := klog.FromContext(ctx)
 
 	logger.Info("Starting controller", "name", controllerName)
 	defer logger.Info("Shutting down controller", "name", controllerName)
 
-	// Wait for the caches to be synced
-	logger.Info("Waiting for informer caches to sync")
-	caches := []cache.InformerSynced{c.networkpoliciesSynced, c.namespacesSynced, c.podsSynced}
-
-	if !cache.WaitForNamedCacheSync(controllerName, ctx.Done(), caches...) {
-		return fmt.Errorf("error syncing cache")
+	// Wait for the policy engine to be ready
+	// Wait for the policy engine and all its evaluators to become ready.
+	logger.Info("Waiting for the policy engine to become ready...")
+	err := wait.PollUntilContextCancel(ctx, 500*time.Millisecond, true, func(context.Context) (bool, error) {
+		return c.policyEngine.Ready(), nil
+	})
+	if err != nil {
+		return fmt.Errorf("policy engine never became ready: %w", err)
 	}
+	logger.Info("Policy engine is ready.")
 
 	// add metrics
 	registerMetrics(ctx)
@@ -353,10 +159,14 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	}, 30*time.Second)
 
-	// Start the workers after the repair loop to avoid races
-	_ = c.syncNFTablesRules(ctx)
-	defer c.cleanNFTablesRules(ctx)
-	go wait.Until(c.runWorker, time.Second, ctx.Done())
+	// Start the BoundedFrequencyRunner's loop.
+	go c.syncRunner.Loop(ctx.Done())
+
+	// Perform an initial sync to ensure rules are in place at startup.
+	if err := c.syncNFTablesRules(ctx); err != nil {
+		// Log the error but don't block startup. The runner will retry.
+		logger.Error(err, "initial nftables sync failed")
+	}
 
 	var flags uint32
 	// https://netfilter.org/projects/libnetfilter_queue/doxygen/html/group__Queue.html
@@ -473,60 +283,12 @@ func (c *Controller) evaluatePacket(ctx context.Context, p *network.Packet) bool
 	return allowed
 }
 
-func (c *Controller) runWorker() {
-	for c.processNextItem() {
-	}
-}
-
-func (c *Controller) processNextItem() bool {
-	// Wait until there is a new item in the working queue
-	key, quit := c.queue.Get()
-	if quit {
-		return false
-	}
-	// Tell the queue that we are done with processing this key. This unblocks the key for other workers
-	// This allows safe parallel processing because two pods with the same key are never processed in
-	// parallel.
-	defer c.queue.Done(key)
-
-	// Invoke the method containing the business logic
-	err := c.syncNFTablesRules(context.Background())
-	// Handle the error if something went wrong during the execution of the business logic
-	c.handleErr(err, key)
-	return true
-}
-
-// handleErr checks if an error happened and makes sure we will retry later.
-func (c *Controller) handleErr(err error, key string) {
-	if err == nil {
-		// Forget about the #AddRateLimited history of the key on every successful synchronization.
-		// This ensures that future processing of updates for this key is not delayed because of
-		// an outdated error history.
-		c.queue.Forget(key)
-		return
-	}
-
-	// This controller retries 5 times if something goes wrong. After that, it stops trying.
-	if c.queue.NumRequeues(key) < 5 {
-		klog.ErrorS(err, "syncing", "key", key)
-
-		// Re-enqueue the key rate limited. Based on the rate limiter on the
-		// queue and the re-enqueue history, the key will be processed later again.
-		c.queue.AddRateLimited(key)
-		return
-	}
-
-	c.queue.Forget(key)
-	// Report to an external entity that, even after several retries, we could not successfully process this key
-	utilruntime.HandleError(err)
-	klog.InfoS("Dropping out of the queue", "error", err, "key", key)
-}
-
 // syncNFTablesRules adds the necessary rules to process the first connection packets in userspace
 // and check if network policies must apply.
 // TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
 func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	klog.FromContext(ctx).Info("Syncing nftables rules")
+
 	nft, err := nftables.New()
 	if err != nil {
 		return fmt.Errorf("can not start nftables:%v", err)
@@ -541,9 +303,13 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	nft.DelTable(table)
 	nft.AddTable(table)
 
-	// only if no admin network policies are used
-	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
-		// add set with Local Pod IPs impacted by network policies
+	allPodIPs, divertAll, err := c.policyEngine.GetManagedIPs(ctx)
+	if err != nil {
+		return err
+	}
+
+	if !divertAll {
+		// add set with IPs impacted by network policies
 		v4Set := &nftables.Set{
 			Table:   table,
 			Name:    podV4IPsSet,
@@ -555,43 +321,17 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			KeyType: nftables.TypeIP6Addr,
 		}
 
-		networkPolicies, err := c.networkpolicyLister.List(labels.Everything())
-		if err != nil {
-			return err
-		}
-		podV4IPs := sets.New[string]()
-		podV6IPs := sets.New[string]()
-		for _, networkPolicy := range networkPolicies {
-			pods := c.getLocalPodsForNetworkPolicy(networkPolicy)
-			for _, pod := range pods {
-				for _, ip := range pod.Status.PodIPs {
-					if netutils.IsIPv4String(ip.IP) {
-						podV4IPs.Insert(ip.IP)
-					} else {
-						podV6IPs.Insert(ip.IP)
-					}
-				}
-			}
-		}
-
 		var elementsV4, elementsV6 []nftables.SetElement
-		for _, ip := range podV4IPs.UnsortedList() {
-			addr, err := netip.ParseAddr(ip)
-			if err != nil {
-				continue
+		for _, ip := range allPodIPs {
+			if ip.Is4() {
+				elementsV4 = append(elementsV4, nftables.SetElement{
+					Key: ip.AsSlice(),
+				})
+			} else if ip.Is6() {
+				elementsV6 = append(elementsV6, nftables.SetElement{
+					Key: ip.AsSlice(),
+				})
 			}
-			elementsV4 = append(elementsV4, nftables.SetElement{
-				Key: addr.AsSlice(),
-			})
-		}
-		for _, ip := range podV6IPs.UnsortedList() {
-			addr, err := netip.ParseAddr(ip)
-			if err != nil {
-				continue
-			}
-			elementsV6 = append(elementsV6, nftables.SetElement{
-				Key: addr.AsSlice(),
-			})
 		}
 
 		if err := nft.AddSet(v4Set, elementsV4); err != nil {
@@ -743,7 +483,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	}
 
 	// only if no admin network policies are used
-	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
+	if !divertAll {
 		// ip saddr @podips-v4 queue flags bypass to 102
 		nft.AddRule(&nftables.Rule{
 			Table: table,
@@ -803,7 +543,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	}
 
 	if c.config.NetfilterBug1766Fix {
-		c.addDNSRacersWorkaroundRules(nft, table)
+		c.addDNSRacersWorkaroundRules(nft, table, divertAll)
 	}
 
 	if err := nft.Flush(); err != nil {
@@ -821,7 +561,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 // This can be removed once all kernels contain the fix in
 // https://github.com/torvalds/linux/commit/8af79d3edb5fd2dce35ea0a71595b6d4f9962350
 // TODO: remove once kernel fix is on most distros
-func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nftables.Table) {
+func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nftables.Table, divertAll bool) {
 	chain := nft.AddChain(&nftables.Chain{
 		Name:     "prerouting",
 		Table:    table,
@@ -859,7 +599,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 	}
 
 	// only if no admin network policies are used
-	if !c.config.AdminNetworkPolicy && !c.config.BaselineAdminNetworkPolicy {
+	if !divertAll {
 		// ip saddr @podips-v4 queue flags bypass to 102
 		nft.AddRule(&nftables.Rule{
 			Table: table,
