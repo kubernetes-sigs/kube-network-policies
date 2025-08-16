@@ -34,6 +34,9 @@ EOF
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 
+  # stop kindnet of checking network policies
+  kubectl -n kube-system delete clusterrolebinding kindnet
+  
   # Expose a webserver in the default namespace
   kubectl run web --image=httpd:2 --labels="app=web" --expose --port=80
 
