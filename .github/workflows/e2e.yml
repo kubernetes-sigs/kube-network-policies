@@ -125,6 +125,8 @@ jobs:
         /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test --name ${{ env.KIND_CLUSTER_NAME}}
         sed -i s#registry.k8s.io/networking/kube-network-policies.*#registry.k8s.io/networking/kube-network-policies:test# install.yaml
         /usr/local/bin/kubectl apply -f ./install.yaml
+        # stop kindnet of checking network policies
+        kubectl -n kube-system delete clusterrolebinding kindnet
 
     - name: Get Cluster status
       run: |
