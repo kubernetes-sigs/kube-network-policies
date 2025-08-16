@@ -5,7 +5,6 @@ package networkpolicy
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/netip"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -14,31 +13,8 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 )
 
-// Verdict represents the outcome of a packet evaluation.
-type Verdict int
-
-const (
-	// VerdictAccept allows the packet. In a directional pipeline, this means
-	// the packet is allowed for that stage.
-	VerdictAccept Verdict = iota
-	// VerdictDeny denies the packet. This is a final decision for that direction.
-	VerdictDeny
-	// VerdictNext continues to the next evaluator in the pipeline.
-	VerdictNext
-)
-
-// PodInfoProvider defines an interface for components that can provide PodInfo.
-type PodInfoProvider interface {
-	GetPodInfoByIP(podIP string) (*api.PodInfo, bool)
-}
-
-// DomainResolver provides an interface for resolving domain names to IP addresses.
-type DomainResolver interface {
-	ContainsIP(domain string, ip net.IP) bool
-}
-
 // EvaluatorFunc is the function signature for any logic that evaluates a packet.
-type EvaluatorFunc func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
+type EvaluatorFunc func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error)
 
 // Evaluator is a function that can determine a verdict for a packet.
 type Evaluator struct {
@@ -46,44 +22,15 @@ type Evaluator struct {
 	Evaluate EvaluatorFunc
 }
 
-// SyncFunc is a callback function that an evaluator can invoke to trigger
-// a dataplane reconciliation.
-type SyncFunc func()
-
-// PolicyEvaluator is the complete interface for a policy plugin.
-// It is responsible for both evaluating packets against its policies and
-// providing the necessary configuration to the dataplane.
-type PolicyEvaluator interface {
-	// Name returns the identifier for this evaluator.
-	Name() string
-	// Ready returns true if the evaluator is initialized and ready to work.
-	Ready() bool
-
-	// EvaluateIngress/EvaluateEgress perform the runtime packet evaluation.
-	EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
-	EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
-
-	// SetDataplaneSyncCallback allows the dataplane to provide a callback function.
-	// The evaluator MUST call this function whenever its state changes in a way
-	// that requires the dataplane rules to be re-synced.
-	SetDataplaneSyncCallback(syncFn SyncFunc)
-
-	// ManagedIPs returns the set of Pod IPs that this policy evaluator manages.
-	// The dataplane uses this to build optimized nftables sets.
-	// It can also return 'divertAll = true' to signal that all traffic
-	// must be sent to the nfqueue, disabling the IP set optimization.
-	ManagedIPs(ctx context.Context) (ips []netip.Addr, divertAll bool, err error)
-}
-
 // PolicyEngine orchestrates network policy evaluation by running a fixed
 // sequence of policy-specific evaluators.
 type PolicyEngine struct {
-	podInfoProvider PodInfoProvider
-	evaluators      []PolicyEvaluator
+	podInfoProvider api.PodInfoProvider
+	evaluators      []api.PolicyEvaluator
 }
 
 // NewPolicyEngine creates a new engine with a predefined evaluation order.
-func NewPolicyEngine(podInfoProvider PodInfoProvider, evaluators []PolicyEvaluator) *PolicyEngine {
+func NewPolicyEngine(podInfoProvider api.PodInfoProvider, evaluators []api.PolicyEvaluator) *PolicyEngine {
 	return &PolicyEngine{
 		podInfoProvider: podInfoProvider,
 		evaluators:      evaluators,
@@ -105,7 +52,7 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 		logger.Error(err, "Egress pipeline evaluation failed")
 		return false, err
 	}
-	if verdict == VerdictDeny {
+	if verdict == api.VerdictDeny {
 		logger.V(2).Info("Packet denied by egress policy")
 		return false, nil
 	}
@@ -116,7 +63,7 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 		logger.Error(err, "Ingress pipeline evaluation failed")
 		return false, err
 	}
-	if verdict == VerdictDeny {
+	if verdict == api.VerdictDeny {
 		logger.V(2).Info("Packet denied by ingress policy")
 		return false, nil
 	}
@@ -126,38 +73,38 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 }
 
 // runEgressPipeline executes the sequence of egress evaluators.
-func (e *PolicyEngine) runEgressPipeline(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (e *PolicyEngine) runEgressPipeline(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	for _, evaluator := range e.evaluators {
 		verdict, err := evaluator.EvaluateEgress(ctx, p, srcPod, dstPod)
 		if err != nil {
-			return VerdictDeny, err
+			return api.VerdictDeny, err
 		}
 		// Accept or Deny are final verdicts
-		if verdict != VerdictNext {
+		if verdict != api.VerdictNext {
 			return verdict, nil
 		}
 	}
-	return VerdictAccept, nil
+	return api.VerdictAccept, nil
 }
 
 // runIngressPipeline executes the sequence of ingress evaluators.
-func (e *PolicyEngine) runIngressPipeline(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (e *PolicyEngine) runIngressPipeline(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	for _, evaluator := range e.evaluators {
 		verdict, err := evaluator.EvaluateIngress(ctx, p, srcPod, dstPod)
 		if err != nil {
-			return VerdictDeny, err
+			return api.VerdictDeny, err
 		}
 		// Accept or Deny are final verdicts
-		if verdict != VerdictNext {
+		if verdict != api.VerdictNext {
 			return verdict, nil
 		}
 	}
-	return VerdictAccept, nil
+	return api.VerdictAccept, nil
 }
 
 // SetDataplaneSyncCallbacks iterates through all evaluators and registers the
 // dataplane's sync function with each one.
-func (e *PolicyEngine) SetDataplaneSyncCallbacks(syncFn SyncFunc) {
+func (e *PolicyEngine) SetDataplaneSyncCallbacks(syncFn api.SyncFunc) {
 	for _, evaluator := range e.evaluators {
 		evaluator.SetDataplaneSyncCallback(syncFn)
 	}

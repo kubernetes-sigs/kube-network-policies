@@ -34,11 +34,11 @@ type StandardNetworkPolicy struct {
 	podsSynced            cache.InformerSynced
 
 	// syncCallback is the function to call when the dataplane needs to be re-synced.
-	syncCallback SyncFunc
+	syncCallback api.SyncFunc
 }
 
 // Ensure StandardNetworkPolicy implements the PolicyEvaluator interface.
-var _ PolicyEvaluator = &StandardNetworkPolicy{}
+var _ api.PolicyEvaluator = &StandardNetworkPolicy{}
 
 // NewStandardNetworkPolicy creates a new StandardNetworkPolicy implementation.
 func NewStandardNetworkPolicy(
@@ -125,7 +125,7 @@ func (s *StandardNetworkPolicy) Name() string {
 }
 
 // SetDataplaneSyncCallback stores the sync function provided by the controller.
-func (s *StandardNetworkPolicy) SetDataplaneSyncCallback(syncFn SyncFunc) {
+func (s *StandardNetworkPolicy) SetDataplaneSyncCallback(syncFn api.SyncFunc) {
 	if syncFn != nil {
 		s.syncCallback = syncFn
 	}
@@ -182,34 +182,34 @@ func (s *StandardNetworkPolicy) getLocalPodsForNetworkPolicy(networkPolicy *netw
 	return result
 }
 
-func (s *StandardNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (s *StandardNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	logger := klog.FromContext(ctx)
 
 	policies := s.getNetworkPoliciesForPod(dstPod)
 	if len(policies) == 0 {
 		logger.V(2).Info("Ingress NetworkPolicies does not apply")
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 
 	if !evaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
-		return VerdictDeny, nil
+		return api.VerdictDeny, nil
 	}
-	return VerdictAccept, nil
+	return api.VerdictAccept, nil
 }
 
-func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	logger := klog.FromContext(ctx)
 
 	policies := s.getNetworkPoliciesForPod(srcPod)
 	if len(policies) == 0 {
 		logger.V(2).Info("Egress NetworkPolicies does not apply")
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 
 	if !evaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeEgress, srcPod, p.SrcPort, dstPod, p.DstIP, p.DstPort, p.Proto) {
-		return VerdictDeny, nil
+		return api.VerdictDeny, nil
 	}
-	return VerdictAccept, nil
+	return api.VerdictAccept, nil
 }
 
 func (s *StandardNetworkPolicy) getNetworkPoliciesForPod(pod *api.PodInfo) []*networkingv1.NetworkPolicy {

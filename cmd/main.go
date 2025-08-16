@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/dataplane"
 	"sigs.k8s.io/kube-network-policies/pkg/dns"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
@@ -193,7 +194,7 @@ func run() int {
 	// Create the evaluators for the Pipeline to process the packets
 	// and take a network policy action. The evaluators are processed
 	// by the order in the array.
-	evaluators := []networkpolicy.PolicyEvaluator{}
+	evaluators := []api.PolicyEvaluator{}
 
 	// Logging evaluator must go first if enabled.
 	if klog.V(2).Enabled() {

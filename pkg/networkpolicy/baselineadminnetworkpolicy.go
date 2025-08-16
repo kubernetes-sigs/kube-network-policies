@@ -22,7 +22,7 @@ type BaselineAdminNetworkPolicy struct {
 	banpSynced cache.InformerSynced
 }
 
-var _ PolicyEvaluator = &BaselineAdminNetworkPolicy{}
+var _ api.PolicyEvaluator = &BaselineAdminNetworkPolicy{}
 
 // NewAdminNetworkPolicy creates a new ANP implementation.
 func NewBaselineAdminNetworkPolicy(banpInformer banpinformers.BaselineAdminNetworkPolicyInformer) *BaselineAdminNetworkPolicy {
@@ -40,7 +40,7 @@ func (b *BaselineAdminNetworkPolicy) Ready() bool {
 	return b.banpSynced()
 }
 
-func (b *BaselineAdminNetworkPolicy) SetDataplaneSyncCallback(syncFn SyncFunc) {
+func (b *BaselineAdminNetworkPolicy) SetDataplaneSyncCallback(syncFn api.SyncFunc) {
 	// No-op for AdminNetworkPolicy as it doesn't directly control dataplane rules.
 	// The controller will handle syncing based on policy changes.
 }
@@ -51,39 +51,39 @@ func (b *BaselineAdminNetworkPolicy) ManagedIPs(ctx context.Context) ([]netip.Ad
 	return nil, true, nil
 }
 
-func (b *BaselineAdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (b *BaselineAdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	logger := klog.FromContext(ctx)
 
 	allPolicies, err := b.banpLister.List(labels.Everything())
 	if err != nil || len(allPolicies) == 0 {
-		return VerdictNext, err
+		return api.VerdictNext, err
 	}
 
 	dstPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(dstPod, allPolicies)
 	if len(dstPodBaselineAdminNetworkPolices) == 0 {
 		logger.V(2).Info("Ingress BaselineAdminNetworkPolicies does not apply")
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 	ingressAction := b.evaluateBaselineAdminIngress(dstPodBaselineAdminNetworkPolices, srcPod, dstPod, p.DstPort, p.Proto)
 	logger.V(2).Info("Ingress BaselineAdminNetworkPolicies", "npolicies", len(dstPodBaselineAdminNetworkPolices), "action", ingressAction)
 
 	switch ingressAction {
 	case npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow:
-		return VerdictAccept, nil
+		return api.VerdictAccept, nil
 	case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny:
-		return VerdictDeny, nil
+		return api.VerdictDeny, nil
 	default: // Pass
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 }
 
-func (b *BaselineAdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
+func (b *BaselineAdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
 	logger := klog.FromContext(ctx)
 
 	allPolicies, err := b.banpLister.List(labels.Everything())
 	if err != nil || len(allPolicies) == 0 {
 		logger.V(2).Info("Egress BaselineAdminNetworkPolicies does not apply")
-		return VerdictNext, err
+		return api.VerdictNext, err
 	}
 
 	srcPodBaselineAdminNetworkPolices := getBaselineAdminNetworkPoliciesForPod(srcPod, allPolicies)
@@ -92,11 +92,11 @@ func (b *BaselineAdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *netw
 
 	switch egressAction {
 	case npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow:
-		return VerdictAccept, nil
+		return api.VerdictAccept, nil
 	case npav1alpha1.BaselineAdminNetworkPolicyRuleActionDeny:
-		return VerdictDeny, nil
+		return api.VerdictDeny, nil
 	default: // Pass
-		return VerdictNext, nil
+		return api.VerdictNext, nil
 	}
 }
 
