@@ -21,7 +21,6 @@ import (
 	"sync"
 
 	"sigs.k8s.io/kube-network-policies/pkg/api"
-	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 )
 
 // LocalIPCache is an in-memory implementation of the IPCache interface.
@@ -31,7 +30,7 @@ type LocalIPCache struct {
 }
 
 var _ Store = &LocalIPCache{}
-var _ networkpolicy.PodInfoProvider = &LocalIPCache{}
+var _ api.PodInfoProvider = &LocalIPCache{}
 
 // NewLocalIPCache creates a new in-memory IP cache.
 func NewLocalIPCache() *LocalIPCache {

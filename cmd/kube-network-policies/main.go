@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -15,8 +18,10 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/dataplane"
 	"sigs.k8s.io/kube-network-policies/pkg/dns"
+	"sigs.k8s.io/kube-network-policies/pkg/ipcache"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
+
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 	"sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
@@ -24,7 +29,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
-	coreinformers "k8s.io/client-go/informers/core/v1"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -45,6 +49,9 @@ var (
 	netfilterBug1766Fix        bool
 	disableNRI                 bool
 	ipTrackerAddress           string
+	ipTrackerCAFile            string
+	ipTrackerCertFile          string
+	ipTrackerKeyFile           string
 )
 
 func init() {
@@ -56,7 +63,10 @@ func init() {
 	flag.StringVar(&hostnameOverride, "hostname-override", "", "If non-empty, will be used as the name of the Node that kube-network-policies is running on. If unset, the node name is assumed to be the same as the node's hostname.")
 	flag.BoolVar(&netfilterBug1766Fix, "netfilter-bug-1766-fix", true, "If set, process DNS packets on the PREROUTING hooks to avoid the race condition on the conntrack subsystem, not needed for kernels 6.12+ (see https://bugzilla.netfilter.org/show_bug.cgi?id=1766)")
 	flag.BoolVar(&disableNRI, "disable-nri", false, "If set, disable NRI, that is used to get the Pod IP information directly from the runtime to avoid the race explained in https://issues.k8s.io/85966")
-	flag.StringVar(&ipTrackerAddress, "ip-tracker-address", "iptracker.kube-system:19090", "The IP address and port for the IP tracker to serve on")
+	flag.StringVar(&ipTrackerAddress, "ip-tracker-address", "", "The IP address and port for the IP tracker to serve on, if empty it will use the Kubernetes API")
+	flag.StringVar(&ipTrackerCAFile, "ip-tracker-ca-file", "", "The CA file for the IP tracker")
+	flag.StringVar(&ipTrackerCertFile, "ip-tracker-cert-file", "", "The certificate file for the IP tracker")
+	flag.StringVar(&ipTrackerKeyFile, "ip-tracker-key-file", "", "The key file for the IP tracker")
 
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: kube-network-policies [options]\n\n")
@@ -67,6 +77,27 @@ func init() {
 // This is a pattern to ensure that deferred functions executes before os.Exit
 func main() {
 	os.Exit(run())
+}
+
+func newTLSConfig(caFile, certFile, keyFile string) (*tls.Config, error) {
+	// Load client cert
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load client key pair: %w", err)
+	}
+
+	// Load CA cert
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA file: %w", err)
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caCertPool,
+	}, nil
 }
 
 func run() int {
@@ -126,13 +157,73 @@ func run() int {
 		panic(err.Error())
 	}
 
+	var podInfoProvider api.PodInfoProvider
+	var ipcacheClient *ipcache.Client
 	informersFactory := informers.NewSharedInformerFactory(clientset, 0)
+	networkPolicyInfomer := informersFactory.Networking().V1().NetworkPolicies()
+
+	if ipTrackerAddress != "" {
+		dbPath := filepath.Join(os.TempDir(), "ipcache.bolt")
+		boltStore, err := ipcache.NewBoltStore(dbPath)
+		if err != nil {
+			klog.Fatalf("Failed to create bolt store: %v", err)
+		}
+		lruStore := ipcache.NewLRUStore(boltStore, 256)
+		var tlsConfig *tls.Config
+		if ipTrackerCAFile != "" && ipTrackerCertFile != "" && ipTrackerKeyFile != "" {
+			tlsConfig, err = newTLSConfig(ipTrackerCAFile, ipTrackerCertFile, ipTrackerKeyFile)
+			if err != nil {
+				klog.Fatalf("Failed to create TLS config: %v", err)
+			}
+		}
+		ipcacheClient, err = ipcache.NewClient(ctx, ipTrackerAddress, tlsConfig, lruStore, boltStore, nodeName)
+		if err != nil {
+			klog.Fatalf("Failed to create ipcache client: %v", err)
+		}
+		podInfoProvider = ipcacheClient
+	} else {
+		// Create the Pod IP resolvers.
+		// First, given an IP address they return the Pod name/namespace.
+		nsInformer := informersFactory.Core().V1().Namespaces()
+		podInformer := informersFactory.Core().V1().Pods()
+		nodeInformer := informersFactory.Core().V1().Nodes()
+		// Set the memory-saving transform function on the pod informer.
+		err = podInformer.Informer().SetTransform(func(obj interface{}) (interface{}, error) {
+			if accessor, err := meta.Accessor(obj); err == nil {
+				accessor.SetManagedFields(nil)
+			}
+			return obj, nil
+		})
+		if err != nil {
+			klog.Fatalf("Failed to set pod informer transform: %v", err)
+		}
+
+		informerResolver, err := podinfo.NewInformerResolver(podInformer.Informer())
+		if err != nil {
+			klog.Fatalf("Failed to create informer resolver: %v", err)
+		}
+		resolvers := []podinfo.IPResolver{informerResolver}
+		// Create an NRI Pod IP resolver if enabled, since NRI connects to the container runtime
+		// the Pod and IP information is provided at the time the Pod Sandbox is created and before
+		// the containers start running, so policies can be enforced without race conditions.
+		if !disableNRI {
+			nriIPResolver, err := podinfo.NewNRIResolver(ctx)
+			if err != nil {
+				klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
+			} else {
+				resolvers = append(resolvers, nriIPResolver)
+			}
+		}
+		podInfoProvider = podinfo.New(
+			podInformer,
+			nsInformer,
+			nodeInformer,
+			resolvers)
+	}
 
 	var npaClient *npaclient.Clientset
 	var npaInformerFactory npainformers.SharedInformerFactory
-	var nodeInformer coreinformers.NodeInformer
 	if adminNetworkPolicy || baselineAdminNetworkPolicy {
-		nodeInformer = informersFactory.Core().V1().Nodes()
 		npaClient, err = npaclient.NewForConfig(npaConfig)
 		if err != nil {
 			klog.Fatalf("Failed to create Network client: %v", err)
@@ -148,50 +239,6 @@ func run() int {
 	if baselineAdminNetworkPolicy {
 		banpInformer = npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies()
 	}
-
-	nsInformer := informersFactory.Core().V1().Namespaces()
-	networkPolicyInfomer := informersFactory.Networking().V1().NetworkPolicies()
-	podInformer := informersFactory.Core().V1().Pods()
-
-	// Set the memory-saving transform function on the pod informer.
-	err = podInformer.Informer().SetTransform(func(obj interface{}) (interface{}, error) {
-		if accessor, err := meta.Accessor(obj); err == nil {
-			accessor.SetManagedFields(nil)
-		}
-		return obj, nil
-	})
-	if err != nil {
-		klog.Fatalf("Failed to set pod informer transform: %v", err)
-	}
-
-	// Create the Pod IP resolvers.
-	// First, given an IP address they return the Pod name/namespace.
-	informerResolver, err := podinfo.NewInformerResolver(podInformer.Informer())
-	if err != nil {
-		klog.Fatalf("Failed to create informer resolver: %v", err)
-	}
-	resolvers := []podinfo.IPResolver{informerResolver}
-
-	// Create an NRI Pod IP resolver if enabled, since NRI connects to the container runtime
-	// the Pod and IP information is provided at the time the Pod Sandbox is created and before
-	// the containers start running, so policies can be enforced without race conditions.
-	if !disableNRI {
-		nriIPResolver, err := podinfo.NewNRIResolver(ctx)
-		if err != nil {
-			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
-		}
-		resolvers = append(resolvers, nriIPResolver)
-	}
-
-	// Create the pod info provider to obtain the Pod information
-	// necessary for the network policy evaluation, it uses the resolvers
-	// to obtain the key (Pod name and namespace) and use the informers to obtain
-	// the labels that are necessary to match the network policies.
-	podInfoProvider := podinfo.New(
-		podInformer,
-		nsInformer,
-		nodeInformer,
-		resolvers)
 
 	// Create the evaluators for the Pipeline to process the packets
 	// and take a network policy action. The evaluators are processed
@@ -223,12 +270,16 @@ func run() int {
 	}
 
 	// Standard Network Policy goes after AdminNetworkPolicy and before BaselineAdminNetworkPolicy
-	evaluators = append(evaluators, networkpolicy.NewStandardNetworkPolicy(
-		nodeName,
-		nsInformer,
-		podInformer,
-		networkPolicyInfomer,
-	))
+	if ipTrackerAddress != "" {
+		evaluators = append(evaluators, networkpolicy.NewIPTrackerNetworkPolicy(networkPolicyInfomer, ipcacheClient))
+	} else {
+		evaluators = append(evaluators, networkpolicy.NewStandardNetworkPolicy(
+			nodeName,
+			informersFactory.Core().V1().Namespaces(),
+			informersFactory.Core().V1().Pods(),
+			networkPolicyInfomer,
+		))
+	}
 
 	if baselineAdminNetworkPolicy {
 		evaluators = append(evaluators, networkpolicy.NewBaselineAdminNetworkPolicy(

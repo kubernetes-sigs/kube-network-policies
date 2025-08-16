@@ -34,7 +34,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/kube-network-policies/pkg/api"
-	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 )
 
 const (
@@ -77,7 +76,7 @@ type EtcdStore struct {
 
 var _ Store = &EtcdStore{}
 var _ SyncMetadataStore = &EtcdStore{}
-var _ networkpolicy.PodInfoProvider = &EtcdStore{}
+var _ api.PodInfoProvider = &EtcdStore{}
 
 // EtcdOption configures the embedded etcd server.
 type EtcdOption func(*embed.Config)
@@ -94,6 +93,12 @@ func WithTLS(certFile, keyFile, clientCAFile string) EtcdOption {
 
 // NewEtcdStore creates and starts a new EtcdStore.
 func NewEtcdStore(listenURL, etcdDir string, opts ...EtcdOption) (*EtcdStore, error) {
+	// Ensure the provided path is a valid directory.
+	if stat, err := os.Stat(etcdDir); err != nil {
+		return nil, fmt.Errorf("etcd directory check failed: %w", err)
+	} else if !stat.IsDir() {
+		return nil, fmt.Errorf("etcd path is not a directory: %s", etcdDir)
+	}
 	internalSocketPath := filepath.Join(etcdDir, internalSocketName)
 	if err := os.RemoveAll(internalSocketPath); err != nil {
 		return nil, fmt.Errorf("failed to remove old internal socket file: %w", err)

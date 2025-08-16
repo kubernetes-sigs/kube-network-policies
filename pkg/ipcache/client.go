@@ -31,7 +31,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/kube-network-policies/pkg/api"
-	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 )
 
 const (
@@ -50,11 +49,13 @@ type Client struct {
 	readyOnce  sync.Once
 	errChan    chan error
 
-	listenURL string
+	listenURL    string
+	syncCallback func()
+	nodeName     string
 }
 
 var _ Store = &Client{}
-var _ networkpolicy.PodInfoProvider = &Client{}
+var _ api.PodInfoProvider = &Client{}
 
 // NewClient creates a new ipcache client. It blocks until the initial synchronization
 // is complete or the context is cancelled. A background goroutine is started to
@@ -65,7 +66,7 @@ var _ networkpolicy.PodInfoProvider = &Client{}
 // - tlsConfig: TLS configuration for connecting to the endpoint.
 // - store: The local store to be kept in sync (e.g., *LRUStore or *EtcdStore).
 // - syncStore: The store for persisting synchronization metadata (e.g., *BoltStore or *EtcdStore).
-func NewClient(ctx context.Context, listenURL string, tlsConfig *tls.Config, store Store, syncStore SyncMetadataStore) (*Client, error) {
+func NewClient(ctx context.Context, listenURL string, tlsConfig *tls.Config, store Store, syncStore SyncMetadataStore, nodeName string) (*Client, error) {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{listenURL},
 		DialTimeout: 5 * time.Second,
@@ -84,12 +85,14 @@ func NewClient(ctx context.Context, listenURL string, tlsConfig *tls.Config, sto
 	}
 
 	c := &Client{
-		etcdClient: cli,
-		Store:      store,
-		syncStore:  syncStore,
-		readyChan:  make(chan struct{}),
-		errChan:    make(chan error, 1),
-		listenURL:  listenURL,
+		etcdClient:   cli,
+		Store:        store,
+		syncStore:    syncStore,
+		readyChan:    make(chan struct{}),
+		errChan:      make(chan error, 1),
+		listenURL:    listenURL,
+		syncCallback: func() {}, // no-op callback by default
+		nodeName:     nodeName,
 	}
 
 	go c.run(ctx)
@@ -104,6 +107,11 @@ func NewClient(ctx context.Context, listenURL string, tlsConfig *tls.Config, sto
 		c.Close()
 		return nil, ctx.Err()
 	}
+}
+
+// SetSyncCallback sets a function to be called when the cache is updated.
+func (c *Client) SetSyncCallback(callback func()) {
+	c.syncCallback = callback
 }
 
 // Run starts the main synchronization loop. This function will block until the context is cancelled
@@ -187,6 +195,10 @@ func (c *Client) startWatch(ctx context.Context) (bool, error) {
 		if err := c.fullSync(ctx); err != nil {
 			return false, fmt.Errorf("full sync failed: %w", err)
 		}
+		if c.syncCallback != nil {
+			c.syncCallback()
+		}
+
 		// Reload metadata after the full sync.
 		meta, err = c.syncStore.GetSyncMetadata()
 		if err != nil {
@@ -263,6 +275,7 @@ func (c *Client) fullSync(ctx context.Context) error {
 
 // processEvents applies a batch of events to the store and updates the sync revision.
 func (c *Client) processEvents(events []*clientv3.Event, revision int64) error {
+	needsSync := false
 	for _, event := range events {
 		ip, err := keyToIP(event.Kv.Key)
 		if err != nil {
@@ -273,15 +286,26 @@ func (c *Client) processEvents(events []*clientv3.Event, revision int64) error {
 		case mvccpb.PUT:
 			var podInfo api.PodInfo
 			if err := proto.Unmarshal(event.Kv.Value, &podInfo); err == nil {
+				if podInfo.Node.Name == c.nodeName {
+					needsSync = true
+				}
 				if err := c.Upsert(ip, &podInfo); err != nil {
 					return err // Return error to trigger reconnect
 				}
 			}
 		case mvccpb.DELETE:
+			// For deletes, we check the old value if it's a local pod
+			if info, ok := c.GetPodInfoByIP(ip); ok && info.Node.Name == c.nodeName {
+				needsSync = true
+			}
 			if err := c.Delete(ip); err != nil {
 				return err // Return error to trigger reconnect
 			}
 		}
+	}
+
+	if c.syncCallback != nil && needsSync {
+		c.syncCallback()
 	}
 
 	// Persist the latest revision.

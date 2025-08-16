@@ -224,7 +224,7 @@ func setupTest(t *testing.T, ctx context.Context) (*EtcdStore, *Client, func()) 
 		t.Fatalf("Failed to create bolt store: %v", err)
 	}
 	lruStore := NewLRUStore(boltStore, 128)
-	client, err := NewClient(context.Background(), listenURL, nil, lruStore, boltStore)
+	client, err := NewClient(context.Background(), listenURL, nil, lruStore, boltStore, "nodeA")
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestServerClientIntegration(t *testing.T) {
 				t.Fatalf("Failed to create bolt store: %v", err)
 			}
 			lruStore := NewLRUStore(boltStore, 128)
-			client, err = NewClient(ctx, listenURL, clientTLSConfig, lruStore, boltStore)
+			client, err = NewClient(ctx, listenURL, clientTLSConfig, lruStore, boltStore, "node")
 			if err != nil {
 				t.Fatalf("Failed to create TLS client: %v", err)
 			}
@@ -390,7 +390,7 @@ func TestClientRestart(t *testing.T) {
 		t.Fatalf("Failed to create bolt store: %v", err)
 	}
 	lruStore := NewLRUStore(boltStore, 128)
-	client2, err := NewClient(context.Background(), server.listenURL, nil, lruStore, boltStore)
+	client2, err := NewClient(context.Background(), server.listenURL, nil, lruStore, boltStore, "nodeA")
 	if err != nil {
 		t.Fatalf("Failed to create second client: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestFullSyncOnServerRestart(t *testing.T) {
 		t.Fatalf("Failed to create bolt store: %v", err)
 	}
 	lruStore := NewLRUStore(boltStore, 128)
-	client2, err := NewClient(context.Background(), listenURL2, nil, lruStore, boltStore)
+	client2, err := NewClient(context.Background(), listenURL2, nil, lruStore, boltStore, "nodeA")
 	if err != nil {
 		t.Fatalf("Failed to create client2: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestStress(t *testing.T) {
 			t.Fatalf("Failed to create bolt store: %v", err)
 		}
 		lruStore := NewLRUStore(boltStore, totalIPs*2)
-		client, err := NewClient(context.Background(), listenURL, nil, lruStore, boltStore)
+		client, err := NewClient(context.Background(), listenURL, nil, lruStore, boltStore, "nodeA")
 		if err != nil {
 			t.Fatalf("Failed to create client %d: %v", i, err)
 		}
@@ -647,7 +647,7 @@ func TestNewClientFailsOnBadEndpoint(t *testing.T) {
 	}
 	lruStore := NewLRUStore(boltStore, 128)
 
-	_, err = NewClient(context.Background(), listenURL, nil, lruStore, boltStore)
+	_, err = NewClient(context.Background(), listenURL, nil, lruStore, boltStore, "nodeA")
 	if err == nil {
 		t.Fatal("Expected NewClient to fail with a bad endpoint, but it succeeded")
 	}
@@ -675,7 +675,7 @@ func TestServerProxyClientIntegration(t *testing.T) {
 	}
 	defer proxyStore.Close()
 
-	proxyClient, err := NewClient(ctx, server.listenURL, nil, proxyStore, proxyStore)
+	proxyClient, err := NewClient(ctx, server.listenURL, nil, proxyStore, proxyStore, "nodeA")
 	if err != nil {
 		t.Fatalf("Failed to create proxy client: %v", err)
 	}
@@ -688,7 +688,7 @@ func TestServerProxyClientIntegration(t *testing.T) {
 		t.Fatalf("Failed to create final bolt store: %v", err)
 	}
 	finalLruStore := NewLRUStore(finalBoltStore, 128)
-	finalClient, err := NewClient(ctx, proxyListenURL, nil, finalLruStore, finalBoltStore)
+	finalClient, err := NewClient(ctx, proxyListenURL, nil, finalLruStore, finalBoltStore, "nodeA")
 	if err != nil {
 		t.Fatalf("Failed to create final client: %v", err)
 	}

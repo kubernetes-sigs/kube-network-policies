@@ -7,10 +7,10 @@ RUN go mod download
 
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -o /go/bin/netpol ./cmd/kube-ip-tracker
+    go build -o /go/bin/kube-ip-tracker ./cmd/kube-ip-tracker
 
 # STEP 2: Build small image
 FROM gcr.io/distroless/static-debian12
-COPY --from=builder --chown=root:root /go/bin/netpol /bin/netpol
+COPY --from=builder --chown=root:root /go/bin/kube-ip-tracker /bin/kube-ip-tracker
 
-CMD ["/bin/ip-tracker"]
+CMD ["/bin/kube-ip-tracker"]

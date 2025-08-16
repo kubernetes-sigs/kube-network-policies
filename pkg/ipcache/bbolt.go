@@ -25,7 +25,6 @@ import (
 	bbolterrors "go.etcd.io/bbolt/errors"
 	"google.golang.org/protobuf/proto"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
-	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 )
 
 var (
@@ -48,7 +47,7 @@ type BoltStore struct {
 
 var _ Store = &BoltStore{}
 var _ SyncMetadataStore = &BoltStore{}
-var _ networkpolicy.PodInfoProvider = &BoltStore{}
+var _ api.PodInfoProvider = &BoltStore{}
 
 // NewBoltStore creates or opens a BoltDB database and ensures the required buckets exist.
 func NewBoltStore(path string) (*BoltStore, error) {

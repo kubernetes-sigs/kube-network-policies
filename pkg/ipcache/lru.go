@@ -21,7 +21,6 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/lru"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
-	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 )
 
 // LRUStore is a decorator for a Store that adds an in-memory LRU cache.
@@ -33,7 +32,7 @@ type LRUStore struct {
 }
 
 var _ Store = &LRUStore{}
-var _ networkpolicy.PodInfoProvider = &LRUStore{}
+var _ api.PodInfoProvider = &LRUStore{}
 
 // NewLRUStore creates a new LRUStore.
 // Size 0 means no limit.

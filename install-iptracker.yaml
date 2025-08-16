@@ -7,6 +7,7 @@ rules:
   - apiGroups:
       - ""
     resources:
+      - nodes
       - pods
       - namespaces
     verbs:
@@ -71,8 +72,9 @@ spec:
       - name: kube-ip-tracker
         image: registry.k8s.io/networking/kube-ip-tracker:v0.1.0
         args:
-        - /bin/ip-tracker
-        - --bind-address=0.0.0.0:10999
+        - /bin/kube-ip-tracker
+        - --listen-address=http://0.0.0.0:10999
+        - --v=2
         ports:
         - containerPort: 10999
           name: grpc
@@ -86,14 +88,6 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: kube-network-policies
 rules:
-  - apiGroups:
-      - ""
-    resources:
-      - pods
-      - namespaces
-    verbs:
-      - list
-      - watch
   - apiGroups:
      - "networking.k8s.io"
     resources:

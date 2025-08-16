@@ -24,7 +24,6 @@ import (
 	"os/signal"
 	"sync/atomic"
 	"syscall"
-	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,11 +40,14 @@ import (
 )
 
 var (
-	listenAddr = flag.String("listen-addr", "http://0.0.0.0:19090", "The address for the cache server to listen on.")
+	listenAddr = flag.String("listen-address", "http://0.0.0.0:19090", "The address for the cache server to listen on.")
 	kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-
-	clusterID string // uses the kube-system uid as clusterId
-	ready     atomic.Bool
+	etcdDir    = flag.String("etcd-dir", "./ipcache.etcd", "The directory for the embedded etcd server.")
+	caFile     = flag.String("tls-ca-file", "", "The CA file for the server.")
+	certFile   = flag.String("tls-cert-file", "", "The certificate file for the server.")
+	keyFile    = flag.String("tls-key-file", "", "The key file for the server.")
+	clusterID  string // uses the kube-system uid as clusterId
+	ready      atomic.Bool
 )
 
 func main() {
@@ -62,8 +64,15 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// 1. Start the IPCache Server, which will serve the data collected by this tracker.
-	cacheServer, err := ipcache.NewEtcdStore(*listenAddr, "./ipcache.etcd")
+	// Start the IPCache Server, which will serve the data collected by this tracker.
+	if err := os.MkdirAll(*etcdDir, 0700); err != nil {
+		klog.Fatalf("Failed to create etcd directory: %v", err)
+	}
+	var opts []ipcache.EtcdOption
+	if *caFile != "" && *certFile != "" && *keyFile != "" {
+		opts = append(opts, ipcache.WithTLS(*certFile, *keyFile, *caFile))
+	}
+	cacheServer, err := ipcache.NewEtcdStore(*listenAddr, *etcdDir, opts...)
 	if err != nil {
 		klog.Fatalf("Failed to create ipcache server: %v", err)
 	}
@@ -87,16 +96,17 @@ func main() {
 	factory := informers.NewSharedInformerFactory(clientset, 0)
 	podInformer := factory.Core().V1().Pods().Informer()
 	nsInformer := factory.Core().V1().Namespaces().Informer()
+	nodeInformer := factory.Core().V1().Nodes().Informer()
 
 	// 3. Define event handlers that will update the cache server on every change.
 	_, _ = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*v1.Pod)
-			updatePodInCache(cacheServer, nsInformer.GetStore(), pod)
+			updatePodInCache(cacheServer, nsInformer.GetStore(), nodeInformer.GetStore(), pod)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			pod := newObj.(*v1.Pod)
-			updatePodInCache(cacheServer, nsInformer.GetStore(), pod)
+			updatePodInCache(cacheServer, nsInformer.GetStore(), nodeInformer.GetStore(), pod)
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod, ok := obj.(*v1.Pod)
@@ -130,14 +140,14 @@ func main() {
 				return
 			}
 			for _, pod := range pods {
-				updatePodInCache(cacheServer, nsInformer.GetStore(), pod)
+				updatePodInCache(cacheServer, nsInformer.GetStore(), nodeInformer.GetStore(), pod)
 			}
 		},
 	})
 
 	// 4. Start informers and wait for shutdown.
 	factory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced, nsInformer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced, nsInformer.HasSynced, nodeInformer.HasSynced) {
 		klog.Fatal("Failed to sync informers")
 	}
 	// use the kube-system uid as clusterId
@@ -153,13 +163,13 @@ func main() {
 }
 
 // updatePodInCache gets the required info from a pod and its namespace and upserts it into the cache.
-func updatePodInCache(server *ipcache.EtcdStore, nsStore cache.Store, pod *v1.Pod) {
+func updatePodInCache(server *ipcache.EtcdStore, nsStore cache.Store, nodeStore cache.Store, pod *v1.Pod) {
 	// Skip host-network pods or pods that don't have an IP address yet.
 	if pod.Spec.HostNetwork || len(pod.Status.PodIPs) == 0 {
-		// If the pod had IPs before and now it doesn't, we should treat it as a deletion.
-		deletePodFromCache(server, pod)
 		return
 	}
+
+	var nodeLabels, nsLabels = map[string]string{}, map[string]string{}
 
 	nsObj, exists, err := nsStore.GetByKey(pod.Namespace)
 	if err != nil || !exists {
@@ -167,26 +177,23 @@ func updatePodInCache(server *ipcache.EtcdStore, nsStore cache.Store, pod *v1.Po
 		return
 	}
 	namespace := nsObj.(*v1.Namespace)
+	nsLabels = namespace.Labels
 
-	podInfo := &api.PodInfo{
-		Name:   pod.Name,
-		Labels: pod.Labels,
-		Namespace: &api.Namespace{
-			Name:   pod.Namespace,
-			Labels: namespace.Labels,
-		},
-		Node: &api.Node{
-			Name: pod.Spec.NodeName,
-		},
-		ClusterId:   clusterID,
-		LastUpdated: time.Now().Unix(), // TODO: maybe get it from the managedFields metadata
+	nodeObj, exists, err := nodeStore.GetByKey(pod.Spec.NodeName)
+	if err != nil || !exists {
+		klog.Infof("Warning: node %s for pod %s not found, cannot update cache", pod.Spec.NodeName, pod.Name)
+	} else {
+		node := nodeObj.(*v1.Node)
+		nodeLabels = node.Labels
 	}
 
+	podInfo := api.NewPodInfo(pod, nsLabels, nodeLabels, clusterID)
+
 	for _, podIP := range pod.Status.PodIPs {
-		klog.V(2).Infof("Upserting: IP=%s Pod=%s/%s", podIP.String(), pod.Namespace, pod.Name)
-		err := server.Upsert(podIP.String(), podInfo)
+		klog.V(2).Infof("Upserting: IP=%s Pod=%s/%s", podIP.IP, pod.Namespace, pod.Name)
+		err := server.Upsert(podIP.IP, podInfo)
 		if err != nil {
-			klog.Errorf("Failed to upsert IP %s for pod %s/%s: %v", podIP.String(), pod.Namespace, pod.Name, err)
+			klog.Errorf("Failed to upsert IP %s for pod %s/%s: %v", podIP.IP, pod.Namespace, pod.Name, err)
 		}
 	}
 }
@@ -194,10 +201,10 @@ func updatePodInCache(server *ipcache.EtcdStore, nsStore cache.Store, pod *v1.Po
 // deletePodFromCache removes all IPs associated with a given pod from the cache.
 func deletePodFromCache(server *ipcache.EtcdStore, pod *v1.Pod) {
 	for _, podIP := range pod.Status.PodIPs {
-		klog.V(2).Infof("Deleting: IP=%s Pod=%s/%s", podIP.String(), pod.Namespace, pod.Name)
-		err := server.Delete(podIP.String())
+		klog.V(2).Infof("Deleting: IP=%s Pod=%s/%s", podIP.IP, pod.Namespace, pod.Name)
+		err := server.Delete(podIP.IP)
 		if err != nil {
-			klog.Errorf("Failed to delete IP %s for pod %s/%s: %v", podIP.String(), pod.Namespace, pod.Name, err)
+			klog.Errorf("Failed to delete IP %s for pod %s/%s: %v", podIP.IP, pod.Namespace, pod.Name, err)
 		}
 	}
 }
