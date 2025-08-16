@@ -287,7 +287,13 @@ func (c *Controller) evaluatePacket(ctx context.Context, p *network.Packet) bool
 // and check if network policies must apply.
 // TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
 func (c *Controller) syncNFTablesRules(ctx context.Context) error {
-	klog.FromContext(ctx).Info("Syncing nftables rules")
+	logger := klog.FromContext(ctx)
+
+	logger.Info("Syncing nftables rules")
+	start := time.Now()
+	defer func() {
+		logger.Info("Syncing nftables rules", "elapsed", time.Since(start))
+	}()
 
 	nft, err := nftables.New()
 	if err != nil {
