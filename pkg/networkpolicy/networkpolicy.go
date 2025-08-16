@@ -2,12 +2,18 @@ package networkpolicy
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/netip"
 
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	coreinformers "k8s.io/client-go/informers/core/v1"
 	networkinginformers "k8s.io/client-go/informers/networking/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 
 	"k8s.io/apimachinery/pkg/labels"
 	networkinglisters "k8s.io/client-go/listers/networking/v1"
@@ -18,28 +24,168 @@ import (
 
 // StandardNetworkPolicy implements the PolicyEvaluator interface for standard Kubernetes NetworkPolicies.
 type StandardNetworkPolicy struct {
-	networkpolicyLister networkinglisters.NetworkPolicyLister
+	nodeName string
+
+	networkpolicyLister   networkinglisters.NetworkPolicyLister
+	networkpoliciesSynced cache.InformerSynced
+	namespaceLister       corelisters.NamespaceLister
+	namespacesSynced      cache.InformerSynced
+	podLister             corelisters.PodLister
+	podsSynced            cache.InformerSynced
+
+	// syncCallback is the function to call when the dataplane needs to be re-synced.
+	syncCallback SyncFunc
 }
 
+// Ensure StandardNetworkPolicy implements the PolicyEvaluator interface.
 var _ PolicyEvaluator = &StandardNetworkPolicy{}
 
 // NewStandardNetworkPolicy creates a new StandardNetworkPolicy implementation.
 func NewStandardNetworkPolicy(
+	nodeName string,
+	namespaceInformer coreinformers.NamespaceInformer,
+	podInformer coreinformers.PodInformer,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 ) *StandardNetworkPolicy {
-	return &StandardNetworkPolicy{
-		networkpolicyLister: networkpolicyInformer.Lister(),
+	s := &StandardNetworkPolicy{
+		nodeName:              nodeName,
+		networkpolicyLister:   networkpolicyInformer.Lister(),
+		networkpoliciesSynced: networkpolicyInformer.Informer().HasSynced,
+		podLister:             podInformer.Lister(),
+		podsSynced:            podInformer.Informer().HasSynced,
+		namespaceLister:       namespaceInformer.Lister(),
+		namespacesSynced:      namespaceInformer.Informer().HasSynced,
+		// Default to a no-op function until the controller sets the real callback.
+		syncCallback: func() {},
+	}
+
+	// Set up event handlers to trigger dataplane syncs on relevant changes.
+	_, _ = podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			pod := obj.(*v1.Pod)
+			if pod.Spec.NodeName == s.nodeName &&
+				len(s.getNetworkPoliciesForPod(api.NewPodInfo(pod, nil, nil, ""))) > 0 {
+				s.syncCallback()
+			}
+		},
+		UpdateFunc: func(old, cur interface{}) {
+			pod := cur.(*v1.Pod)
+			if pod.Spec.NodeName == s.nodeName &&
+				len(s.getNetworkPoliciesForPod(api.NewPodInfo(pod, nil, nil, ""))) > 0 {
+				s.syncCallback()
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			pod, ok := obj.(*v1.Pod)
+			if !ok {
+				if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+					pod, _ = tombstone.Obj.(*v1.Pod)
+				}
+			}
+			if pod != nil &&
+				pod.Spec.NodeName == s.nodeName &&
+				len(s.getNetworkPoliciesForPod(api.NewPodInfo(pod, nil, nil, ""))) > 0 {
+				s.syncCallback()
+			}
+		},
+	})
+
+	_, _ = networkpolicyInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			np := obj.(*networkingv1.NetworkPolicy)
+			if len(s.getLocalPodsForNetworkPolicy(np)) > 0 {
+				s.syncCallback()
+			}
+		},
+		UpdateFunc: func(old, cur interface{}) {
+			np := cur.(*networkingv1.NetworkPolicy)
+			if len(s.getLocalPodsForNetworkPolicy(np)) > 0 {
+				s.syncCallback()
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			np, ok := obj.(*networkingv1.NetworkPolicy)
+			if !ok {
+				if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+					np, _ = tombstone.Obj.(*networkingv1.NetworkPolicy)
+				}
+			}
+			if np != nil && len(s.getLocalPodsForNetworkPolicy(np)) > 0 {
+				s.syncCallback()
+			}
+		},
+	})
+
+	return s
+}
+
+// Name returns the name of the evaluator.
+func (s *StandardNetworkPolicy) Name() string {
+	return "StandardNetworkPolicy"
+}
+
+// SetDataplaneSyncCallback stores the sync function provided by the controller.
+func (s *StandardNetworkPolicy) SetDataplaneSyncCallback(syncFn SyncFunc) {
+	if syncFn != nil {
+		s.syncCallback = syncFn
 	}
 }
 
-func (s *StandardNetworkPolicy) Name() string {
-	return "StandardNetworkPolicy"
+// Ready returns true if all required informers have synced.
+func (s *StandardNetworkPolicy) Ready() bool {
+	return s.podsSynced() && s.networkpoliciesSynced() && s.namespacesSynced()
+}
+
+// ManagedIPs returns the IP addresses of all local pods that are selected by a NetworkPolicy.
+func (s *StandardNetworkPolicy) ManagedIPs(ctx context.Context) ([]netip.Addr, bool, error) {
+	allPolicies, err := s.networkpolicyLister.List(labels.Everything())
+	if err != nil {
+		return nil, false, fmt.Errorf("listing network policies: %w", err)
+	}
+
+	managedIPs := sets.New[netip.Addr]()
+	for _, policy := range allPolicies {
+		pods := s.getLocalPodsForNetworkPolicy(policy)
+		for _, pod := range pods {
+			for _, podIP := range pod.Status.PodIPs {
+				addr, err := netip.ParseAddr(podIP.IP)
+				if err == nil {
+					managedIPs.Insert(addr)
+				}
+			}
+		}
+	}
+	// Standard K8s NetworkPolicy never requires diverting all traffic.
+	return managedIPs.UnsortedList(), false, nil
+}
+
+// getLocalPodsForNetworkPolicy finds all pods on the current node that are selected by a given policy.
+func (s *StandardNetworkPolicy) getLocalPodsForNetworkPolicy(networkPolicy *networkingv1.NetworkPolicy) []*v1.Pod {
+	if networkPolicy == nil {
+		return nil
+	}
+	podSelector, err := metav1.LabelSelectorAsSelector(&networkPolicy.Spec.PodSelector)
+	if err != nil {
+		klog.ErrorS(err, "Error parsing PodSelector", "networkPolicy", klog.KObj(networkPolicy))
+		return nil
+	}
+	pods, err := s.podLister.Pods(networkPolicy.Namespace).List(podSelector)
+	if err != nil {
+		return nil
+	}
+	result := []*v1.Pod{}
+	for _, pod := range pods {
+		if pod.Spec.NodeName == s.nodeName {
+			result = append(result, pod)
+		}
+	}
+	return result
 }
 
 func (s *StandardNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
 	logger := klog.FromContext(ctx)
 
-	policies := getNetworkPoliciesForPod(dstPod, s.networkpolicyLister)
+	policies := s.getNetworkPoliciesForPod(dstPod)
 	if len(policies) == 0 {
 		logger.V(2).Info("Ingress NetworkPolicies does not apply")
 		return VerdictNext, nil
@@ -54,7 +200,7 @@ func (s *StandardNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.
 func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {
 	logger := klog.FromContext(ctx)
 
-	policies := getNetworkPoliciesForPod(srcPod, s.networkpolicyLister)
+	policies := s.getNetworkPoliciesForPod(srcPod)
 	if len(policies) == 0 {
 		logger.V(2).Info("Egress NetworkPolicies does not apply")
 		return VerdictNext, nil
@@ -66,12 +212,12 @@ func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.P
 	return VerdictAccept, nil
 }
 
-func getNetworkPoliciesForPod(pod *api.PodInfo, networkpolicyLister networkinglisters.NetworkPolicyLister) []*networkingv1.NetworkPolicy {
+func (s *StandardNetworkPolicy) getNetworkPoliciesForPod(pod *api.PodInfo) []*networkingv1.NetworkPolicy {
 	if pod == nil {
 		return nil
 	}
 	// Get all the network policies that affect this pod
-	networkPolices, err := networkpolicyLister.NetworkPolicies(pod.Namespace.Name).List(labels.Everything())
+	networkPolices, err := s.networkpolicyLister.NetworkPolicies(pod.Namespace.Name).List(labels.Everything())
 	if err != nil {
 		return nil
 	}

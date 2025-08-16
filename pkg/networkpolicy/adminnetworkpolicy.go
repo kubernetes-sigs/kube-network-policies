@@ -4,10 +4,12 @@ import (
 	"cmp"
 	"context"
 	"net"
+	"net/netip"
 	"slices"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
@@ -19,6 +21,7 @@ import (
 // AdminNetworkPolicy implements the PolicyEvaluator interface for the ANP API.
 type AdminNetworkPolicy struct {
 	anpLister      anplisters.AdminNetworkPolicyLister
+	anpSynced      cache.InformerSynced
 	domainResolver DomainResolver
 }
 
@@ -28,12 +31,28 @@ var _ PolicyEvaluator = &AdminNetworkPolicy{}
 func NewAdminNetworkPolicy(anpInformer anpinformers.AdminNetworkPolicyInformer, domainResolver DomainResolver) *AdminNetworkPolicy {
 	return &AdminNetworkPolicy{
 		anpLister:      anpInformer.Lister(),
+		anpSynced:      anpInformer.Informer().HasSynced,
 		domainResolver: domainResolver,
 	}
 }
 
 func (a *AdminNetworkPolicy) Name() string {
 	return "AdminNetworkPolicy"
+}
+
+func (a *AdminNetworkPolicy) Ready() bool {
+	return a.anpSynced()
+}
+
+func (a *AdminNetworkPolicy) SetDataplaneSyncCallback(syncFn SyncFunc) {
+	// No-op for AdminNetworkPolicy as it doesn't directly control dataplane rules.
+	// The controller will handle syncing based on policy changes.
+}
+
+func (a *AdminNetworkPolicy) ManagedIPs(ctx context.Context) ([]netip.Addr, bool, error) {
+	// divert all traffic to user space to evaluate all traffic to ensure that the correct
+	// AdminNetworkPolicies are applied.
+	return nil, true, nil
 }
 
 func (a *AdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {

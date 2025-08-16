@@ -4,8 +4,11 @@ package networkpolicy
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/netip"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
@@ -43,11 +46,33 @@ type Evaluator struct {
 	Evaluate EvaluatorFunc
 }
 
-// PolicyEvaluator represents a collection of evaluators for a single policy type.
+// SyncFunc is a callback function that an evaluator can invoke to trigger
+// a dataplane reconciliation.
+type SyncFunc func()
+
+// PolicyEvaluator is the complete interface for a policy plugin.
+// It is responsible for both evaluating packets against its policies and
+// providing the necessary configuration to the dataplane.
 type PolicyEvaluator interface {
+	// Name returns the identifier for this evaluator.
 	Name() string
+	// Ready returns true if the evaluator is initialized and ready to work.
+	Ready() bool
+
+	// EvaluateIngress/EvaluateEgress perform the runtime packet evaluation.
 	EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
 	EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error)
+
+	// SetDataplaneSyncCallback allows the dataplane to provide a callback function.
+	// The evaluator MUST call this function whenever its state changes in a way
+	// that requires the dataplane rules to be re-synced.
+	SetDataplaneSyncCallback(syncFn SyncFunc)
+
+	// ManagedIPs returns the set of Pod IPs that this policy evaluator manages.
+	// The dataplane uses this to build optimized nftables sets.
+	// It can also return 'divertAll = true' to signal that all traffic
+	// must be sent to the nfqueue, disabling the IP set optimization.
+	ManagedIPs(ctx context.Context) (ips []netip.Addr, divertAll bool, err error)
 }
 
 // PolicyEngine orchestrates network policy evaluation by running a fixed
@@ -128,4 +153,47 @@ func (e *PolicyEngine) runIngressPipeline(ctx context.Context, p *network.Packet
 		}
 	}
 	return VerdictAccept, nil
+}
+
+// SetDataplaneSyncCallbacks iterates through all evaluators and registers the
+// dataplane's sync function with each one.
+func (e *PolicyEngine) SetDataplaneSyncCallbacks(syncFn SyncFunc) {
+	for _, evaluator := range e.evaluators {
+		evaluator.SetDataplaneSyncCallback(syncFn)
+	}
+}
+
+// Ready returns true if all evaluators are ready.
+func (e *PolicyEngine) Ready() bool {
+	for _, evaluator := range e.evaluators {
+		if !evaluator.Ready() {
+			return false
+		}
+	}
+	return true
+}
+
+// GetManagedIPs aggregates the IPs and diversion signals from all registered evaluators.
+// This is the single method the dataplane controller will call to get its configuration.
+func (e *PolicyEngine) GetManagedIPs(ctx context.Context) (allIPs []netip.Addr, divertAll bool, err error) {
+	ipSet := sets.New[netip.Addr]()
+
+	for _, evaluator := range e.evaluators {
+		ips, divert, err := evaluator.ManagedIPs(ctx)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to get managed IPs from evaluator %s: %w", evaluator.Name(), err)
+		}
+
+		// If any single evaluator requires diverting all traffic, the whole system must.
+		if divert {
+			return nil, true, nil
+		}
+
+		// Add the IPs from this evaluator to the global set to handle duplicates.
+		for _, ip := range ips {
+			ipSet.Insert(ip)
+		}
+	}
+
+	return ipSet.UnsortedList(), false, nil
 }

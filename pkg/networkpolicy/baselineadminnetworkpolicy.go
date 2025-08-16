@@ -3,9 +3,11 @@ package networkpolicy
 import (
 	"context"
 	"net"
+	"net/netip"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
@@ -17,6 +19,7 @@ import (
 // BaselineAdminNetworkPolicy implements the PolicyEvaluator interface for the ANP API.
 type BaselineAdminNetworkPolicy struct {
 	banpLister banplisters.BaselineAdminNetworkPolicyLister
+	banpSynced cache.InformerSynced
 }
 
 var _ PolicyEvaluator = &BaselineAdminNetworkPolicy{}
@@ -25,11 +28,27 @@ var _ PolicyEvaluator = &BaselineAdminNetworkPolicy{}
 func NewBaselineAdminNetworkPolicy(banpInformer banpinformers.BaselineAdminNetworkPolicyInformer) *BaselineAdminNetworkPolicy {
 	return &BaselineAdminNetworkPolicy{
 		banpLister: banpInformer.Lister(),
+		banpSynced: banpInformer.Informer().HasSynced,
 	}
 }
 
 func (b *BaselineAdminNetworkPolicy) Name() string {
 	return "BaselineAdminNetworkPolicy"
+}
+
+func (b *BaselineAdminNetworkPolicy) Ready() bool {
+	return b.banpSynced()
+}
+
+func (b *BaselineAdminNetworkPolicy) SetDataplaneSyncCallback(syncFn SyncFunc) {
+	// No-op for AdminNetworkPolicy as it doesn't directly control dataplane rules.
+	// The controller will handle syncing based on policy changes.
+}
+
+func (b *BaselineAdminNetworkPolicy) ManagedIPs(ctx context.Context) ([]netip.Addr, bool, error) {
+	// divert all traffic to user space to evaluate all traffic to ensure that the correct
+	// BaselineAdminNetworkPolicies are applied.
+	return nil, true, nil
 }
 
 func (b *BaselineAdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (Verdict, error) {

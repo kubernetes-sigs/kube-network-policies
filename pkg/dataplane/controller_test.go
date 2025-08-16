@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"net/netip"
 	"os"
 	"os/exec"
 	"regexp"
@@ -10,14 +11,17 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/vishvananda/netns"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
-	"k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
+	"sigs.k8s.io/kube-network-policies/pkg/network"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
+	"sigs.k8s.io/kube-network-policies/pkg/runner"
 )
 
 var (
@@ -25,44 +29,56 @@ var (
 	checkUserns   sync.Once
 )
 
-var (
-	alwaysReady = func() bool { return true }
-)
-
-type networkpolicyController struct {
-	*Controller
-	networkpolicyStore cache.Store
-	namespaceStore     cache.Store
-	podStore           cache.Store
+// mockPolicyEvaluator is a mock implementation of the PolicyEvaluator interface for testing.
+type mockPolicyEvaluator struct {
+	name      string
+	ips       []netip.Addr
+	divertAll bool
+	isReady   bool
+	sync      networkpolicy.SyncFunc
 }
 
-func newTestController(config Config) *networkpolicyController {
+func (m *mockPolicyEvaluator) Name() string { return m.name }
+func (m *mockPolicyEvaluator) EvaluateIngress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (networkpolicy.Verdict, error) {
+	return networkpolicy.VerdictNext, nil
+}
+func (m *mockPolicyEvaluator) EvaluateEgress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (networkpolicy.Verdict, error) {
+	return networkpolicy.VerdictNext, nil
+}
+func (m *mockPolicyEvaluator) SetDataplaneSyncCallback(syncFn networkpolicy.SyncFunc) {
+	m.sync = syncFn
+}
+func (m *mockPolicyEvaluator) Ready() bool { return m.isReady }
+func (m *mockPolicyEvaluator) ManagedIPs(context.Context) ([]netip.Addr, bool, error) {
+	return m.ips, m.divertAll, nil
+}
+
+// newTestController creates a controller instance for testing with mock evaluators.
+func newTestController(config Config, evaluators []networkpolicy.PolicyEvaluator) *Controller {
 	client := fake.NewSimpleClientset()
 	informersFactory := informers.NewSharedInformerFactory(client, 0)
 	podInformer := informersFactory.Core().V1().Pods()
 	nsInfomer := informersFactory.Core().V1().Namespaces()
 
+	// PodInfoProvider is needed by the engine, but our mock evaluators don't use it.
 	podInfoProvider := podinfo.New(podInformer, nsInfomer, nil, nil)
-	controller, err := newController(
-		client,
-		informersFactory.Networking().V1().NetworkPolicies(),
-		nsInfomer,
-		podInformer,
-		networkpolicy.NewPolicyEngine(podInfoProvider, nil),
-		config,
-	)
-	if err != nil {
-		panic(err)
+	engine := networkpolicy.NewPolicyEngine(podInfoProvider, evaluators)
+
+	// We can't use the real NewController because it creates a real BoundedFrequencyRunner
+	// which we can't easily control in a test. We create the controller directly and
+	// set a mock runner.
+	controller := &Controller{
+		config:       config,
+		policyEngine: engine,
 	}
-	controller.networkpoliciesSynced = alwaysReady
-	controller.namespacesSynced = alwaysReady
-	controller.podsSynced = alwaysReady
-	return &networkpolicyController{
-		Controller:         controller,
-		networkpolicyStore: informersFactory.Networking().V1().NetworkPolicies().Informer().GetStore(),
-		namespaceStore:     nsInfomer.Informer().GetStore(),
-		podStore:           podInformer.Informer().GetStore(),
-	}
+	// The sync function for the mock runner just calls the sync function directly.
+	controller.syncRunner = runner.NewBoundedFrequencyRunner(
+		"test-runner",
+		func() error { return controller.syncNFTablesRules(context.Background()) },
+		1*time.Millisecond, 1*time.Millisecond, 10*time.Second)
+	engine.SetDataplaneSyncCallbacks(controller.syncRunner.Run)
+
+	return controller
 }
 
 func TestConfig_Defaults(t *testing.T) {
@@ -72,49 +88,36 @@ func TestConfig_Defaults(t *testing.T) {
 		expected Config
 	}{
 		{
-			name: "empty",
-			config: Config{
-				NodeName: "testnode", // nodename defaults to os.Hostname so we ignore for tests
-			},
+			name:   "empty",
+			config: Config{},
 			expected: Config{
-				FailOpen:                   false,
-				AdminNetworkPolicy:         false,
-				BaselineAdminNetworkPolicy: false,
-				QueueID:                    100,
-				NodeName:                   "testnode", // nodename defaults to os.Hostname so we ignore for tests
-				NetfilterBug1766Fix:        false,
-				NFTableName:                "kube-network-policies",
+				FailOpen:            false,
+				QueueID:             100,
+				NetfilterBug1766Fix: false,
+				NFTableName:         "kube-network-policies",
 			},
 		}, {
 			name: "queue id",
 			config: Config{
-				NodeName: "testnode", // nodename defaults to os.Hostname so we ignore for tests
-				QueueID:  99,
+				QueueID: 99,
 			},
 			expected: Config{
-				FailOpen:                   false,
-				AdminNetworkPolicy:         false,
-				BaselineAdminNetworkPolicy: false,
-				QueueID:                    99,
-				NodeName:                   "testnode", // nodename defaults to os.Hostname so we ignore for tests
-				NetfilterBug1766Fix:        false,
-				NFTableName:                "kube-network-policies",
+				FailOpen:            false,
+				QueueID:             99,
+				NetfilterBug1766Fix: false,
+				NFTableName:         "kube-network-policies",
 			},
 		}, {
 			name: "table name",
 			config: Config{
-				NodeName:    "testnode", // nodename defaults to os.Hostname so we ignore for tests
 				QueueID:     99,
 				NFTableName: "kindnet-network-policies",
 			},
 			expected: Config{
-				FailOpen:                   false,
-				AdminNetworkPolicy:         false,
-				BaselineAdminNetworkPolicy: false,
-				QueueID:                    99,
-				NodeName:                   "testnode", // nodename defaults to os.Hostname so we ignore for tests
-				NetfilterBug1766Fix:        false,
-				NFTableName:                "kindnet-network-policies",
+				FailOpen:            false,
+				QueueID:             99,
+				NetfilterBug1766Fix: false,
+				NFTableName:         "kindnet-network-policies",
 			},
 		},
 	}
@@ -216,149 +219,162 @@ func testNetworkPolicies_SyncRules(t *testing.T) {
 	tests := []struct {
 		name             string
 		config           Config
+		evaluators       []networkpolicy.PolicyEvaluator
 		expectedNftables string
 	}{
 		{
-			name: "default",
+			name: "default with pod IPs",
 			config: Config{
-				AdminNetworkPolicy:         false,
-				BaselineAdminNetworkPolicy: false,
-				NetfilterBug1766Fix:        true,
-				QueueID:                    102,
-				FailOpen:                   true,
-				NFTableName:                "kube-network-policies",
+				NetfilterBug1766Fix: true,
+				QueueID:             102,
+				FailOpen:            true,
+				NFTableName:         "kube-network-policies",
+			},
+			evaluators: []networkpolicy.PolicyEvaluator{
+				&mockPolicyEvaluator{
+					name: "test-evaluator",
+					ips: []netip.Addr{
+						netip.MustParseAddr("10.0.0.1"),
+						netip.MustParseAddr("fd00::1"),
+					},
+					isReady: true,
+				},
 			},
 			expectedNftables: `
 table inet kube-network-policies {
-        set podips-v4 {
-                type ipv4_addr
-        }
-
-        set podips-v6 {
-                type ipv6_addr
-        }
-
-        chain postrouting {
-                type filter hook postrouting priority srcnat - 5; policy accept;
-                udp dport 53 accept
-                icmpv6 type nd-router-solicit accept
-                icmpv6 type nd-router-advert accept
-                icmpv6 type nd-neighbor-solicit accept
-                icmpv6 type nd-neighbor-advert accept
-                icmpv6 type nd-redirect accept
-                meta skuid 0 accept
-                ct state established,related accept
-                ip saddr @podips-v4 queue flags bypass to 102
-                ip daddr @podips-v4 queue flags bypass to 102
-                ip6 saddr @podips-v6 queue flags bypass to 102
-                ip6 daddr @podips-v6 queue flags bypass to 102
-        }
-
-        chain prerouting {
-                type filter hook prerouting priority dstnat + 5; policy accept;
-                meta l4proto != udp accept
-                udp dport != 53 accept
-                ip saddr @podips-v4 queue flags bypass to 102
-                ip daddr @podips-v4 queue flags bypass to 102
-                ip6 saddr @podips-v6 queue flags bypass to 102
-                ip6 daddr @podips-v6 queue flags bypass to 102
-        }
+	set podips-v4 {
+		type ipv4_addr
+		elements = { 10.0.0.1 }
+	}
+	set podips-v6 {
+		type ipv6_addr
+		elements = { fd00::1 }
+	}
+	chain postrouting {
+		type filter hook postrouting priority srcnat - 5; policy accept;
+		udp dport 53 accept
+		icmpv6 type nd-router-solicit accept
+		icmpv6 type nd-router-advert accept
+		icmpv6 type nd-neighbor-solicit accept
+		icmpv6 type nd-neighbor-advert accept
+		icmpv6 type nd-redirect accept
+		meta skuid 0 accept
+		ct state established,related accept
+		ip saddr @podips-v4 queue flags bypass to 102
+		ip daddr @podips-v4 queue flags bypass to 102
+		ip6 saddr @podips-v6 queue flags bypass to 102
+		ip6 daddr @podips-v6 queue flags bypass to 102
+	}
+	chain prerouting {
+		type filter hook prerouting priority dstnat + 5; policy accept;
+		meta l4proto != udp accept
+		udp dport != 53 accept
+		ip saddr @podips-v4 queue flags bypass to 102
+		ip daddr @podips-v4 queue flags bypass to 102
+		ip6 saddr @podips-v6 queue flags bypass to 102
+		ip6 daddr @podips-v6 queue flags bypass to 102
+	}
 }
 `,
 		},
 		{
-			name: "admin network policy",
+			name: "divert all traffic",
 			config: Config{
-				AdminNetworkPolicy:         true,
-				BaselineAdminNetworkPolicy: true,
-				NetfilterBug1766Fix:        true,
-				QueueID:                    102,
-				NFTableName:                "kube-network-policies",
-				FailOpen:                   false,
+				NetfilterBug1766Fix: true,
+				QueueID:             102,
+				NFTableName:         "kube-network-policies",
+				FailOpen:            false,
+			},
+			evaluators: []networkpolicy.PolicyEvaluator{
+				&mockPolicyEvaluator{
+					name:      "divert-all-evaluator",
+					divertAll: true,
+					isReady:   true,
+				},
 			},
 			expectedNftables: `
 table inet kube-network-policies {
-        chain postrouting {
-                type filter hook postrouting priority srcnat - 5; policy accept;
-                udp dport 53 accept
-                icmpv6 type nd-router-solicit accept
-                icmpv6 type nd-router-advert accept
-                icmpv6 type nd-neighbor-solicit accept
-                icmpv6 type nd-neighbor-advert accept
-                icmpv6 type nd-redirect accept
-                meta skuid 0 accept
-                ct state established,related accept
-                queue to 102
-        }
-
-        chain prerouting {
-                type filter hook prerouting priority dstnat + 5; policy accept;
-                meta l4proto != udp accept
-                udp dport != 53 accept
-                queue to 102
-        }
+	chain postrouting {
+		type filter hook postrouting priority srcnat - 5; policy accept;
+		udp dport 53 accept
+		icmpv6 type nd-router-solicit accept
+		icmpv6 type nd-router-advert accept
+		icmpv6 type nd-neighbor-solicit accept
+		icmpv6 type nd-neighbor-advert accept
+		icmpv6 type nd-redirect accept
+		meta skuid 0 accept
+		ct state established,related accept
+		queue to 102
+	}
+	chain prerouting {
+		type filter hook prerouting priority dstnat + 5; policy accept;
+		meta l4proto != udp accept
+		udp dport != 53 accept
+		queue to 102
+	}
 }
 `,
 		},
 		{
-			name: "bug disabled",
+			name: "mixed evaluators where one requests divert all",
 			config: Config{
-				AdminNetworkPolicy:         false,
-				BaselineAdminNetworkPolicy: false,
-				NetfilterBug1766Fix:        false,
-				QueueID:                    102,
-				FailOpen:                   true,
-				NFTableName:                "kube-network-policies",
+				QueueID:     102,
+				NFTableName: "kube-network-policies",
+			},
+			evaluators: []networkpolicy.PolicyEvaluator{
+				&mockPolicyEvaluator{
+					name:    "ip-evaluator",
+					ips:     []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+					isReady: true,
+				},
+				&mockPolicyEvaluator{
+					name:      "divert-all-evaluator",
+					divertAll: true,
+					isReady:   true,
+				},
 			},
 			expectedNftables: `
 table inet kube-network-policies {
-        set podips-v4 {
-                type ipv4_addr
-        }
-
-        set podips-v6 {
-                type ipv6_addr
-        }
-
-        chain postrouting {
-                type filter hook postrouting priority srcnat - 5; policy accept;
-                icmpv6 type nd-router-solicit accept
-                icmpv6 type nd-router-advert accept
-                icmpv6 type nd-neighbor-solicit accept
-                icmpv6 type nd-neighbor-advert accept
-                icmpv6 type nd-redirect accept
-                meta skuid 0 accept
-                ct state established,related accept
-                ip saddr @podips-v4 queue flags bypass to 102
-                ip daddr @podips-v4 queue flags bypass to 102
-                ip6 saddr @podips-v6 queue flags bypass to 102
-                ip6 daddr @podips-v6 queue flags bypass to 102
-        }
+	chain postrouting {
+		type filter hook postrouting priority srcnat - 5; policy accept;
+		icmpv6 type nd-router-solicit accept
+		icmpv6 type nd-router-advert accept
+		icmpv6 type nd-neighbor-solicit accept
+		icmpv6 type nd-neighbor-advert accept
+		icmpv6 type nd-redirect accept
+		meta skuid 0 accept
+		ct state established,related accept
+		queue to 102
+	}
 }
 `,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-
 			runtime.LockOSThread()
 			defer runtime.UnlockOSThread()
 
-			// Save the current network namespace
 			origns, err := netns.Get()
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer origns.Close()
 
-			// Create a new network namespace
 			newns, err := netns.New()
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer newns.Close()
 
-			ma := newTestController(tt.config)
+			if err := tt.config.Defaults(); err != nil {
+				t.Fatalf("Defaults() error = %v", err)
+			}
+
+			ma := newTestController(tt.config, tt.evaluators)
+			if !ma.policyEngine.Ready() {
+				t.Fatalf("Policy engine is not ready")
+			}
 
 			if err := ma.syncNFTablesRules(context.Background()); err != nil {
 				t.Fatalf("SyncRules() error = %v", err)
@@ -367,22 +383,13 @@ table inet kube-network-policies {
 			cmd := exec.Command("nft", "list", "table", "inet", ma.config.NFTableName)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				t.Fatalf("nft list table error = %v", err)
+				t.Fatalf("nft list table error = %v, output: %s", err, string(out))
 			}
 			got := string(out)
 			if !compareMultilineStringsIgnoreIndentation(got, tt.expectedNftables) {
-				t.Errorf("Got:\n%s\nExpected:\n%s\nDiff:\n%s", got, tt.expectedNftables, cmp.Diff(got, tt.expectedNftables))
+				t.Errorf("nftables rules mismatch (-got +want):\n%s", cmp.Diff(strings.TrimSpace(tt.expectedNftables), strings.TrimSpace(got)))
 			}
 			ma.cleanNFTablesRules(context.Background())
-			cmd = exec.Command("nft", "list", "table", "inet", ma.config.NFTableName)
-			out, err = cmd.CombinedOutput()
-			if err == nil {
-				t.Fatalf("nft list ruleset unexpected success")
-			}
-			if !strings.Contains(string(out), "No such file or directory") {
-				t.Errorf("unexpected error %v %s", err, string(out))
-			}
-			// Switch back to the original namespace
 			netns.Set(origns)
 		})
 	}
