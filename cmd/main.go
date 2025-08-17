@@ -25,6 +25,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -36,6 +37,7 @@ import (
 )
 
 var (
+	kubeconfig                 string
 	failOpen                   bool
 	adminNetworkPolicy         bool // 	AdminNetworkPolicy is alpha so keep it feature gated behind a flag
 	baselineAdminNetworkPolicy bool // 	BaselineAdminNetworkPolicy is alpha so keep it feature gated behind a flag
@@ -47,6 +49,7 @@ var (
 )
 
 func init() {
+	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
 	flag.BoolVar(&failOpen, "fail-open", false, "If set, don't drop packets if the controller is not running")
 	flag.BoolVar(&adminNetworkPolicy, "admin-network-policy", false, "If set, enable Admin Network Policy API")
 	flag.BoolVar(&baselineAdminNetworkPolicy, "baseline-admin-network-policy", false, "If set, enable Baseline Admin Network Policy API")
@@ -106,10 +109,16 @@ func run() int {
 		QueueID:             queueID,
 		NetfilterBug1766Fix: netfilterBug1766Fix,
 	}
-	// creates the in-cluster config
-	config, err := rest.InClusterConfig()
+
+	var config *rest.Config
+	if kubeconfig != "" {
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	} else {
+		// creates the in-cluster config
+		config, err = rest.InClusterConfig()
+	}
 	if err != nil {
-		panic(err.Error())
+		klog.Fatalf("can not create client-go configuration: %v", err)
 	}
 
 	// use protobuf for better performance at scale
