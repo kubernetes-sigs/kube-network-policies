@@ -1,4 +1,4 @@
-package networkpolicy
+package main
 
 import (
 	"context"
@@ -9,10 +9,97 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
+	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	npaclientfake "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned/fake"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 )
+
+func makeNamespace(name string) *v1.Namespace {
+	return &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"kubernetes.io/metadata.name": name,
+				"a":                           "b",
+			},
+		},
+	}
+}
+
+func makeNode(name string) *v1.Node {
+	return &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"kubernetes.io/node": name,
+				"a":                  "b",
+			},
+		},
+	}
+}
+
+func makePod(name, ns string, ip string) *v1.Pod {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Labels: map[string]string{
+				"a": "b",
+			},
+		},
+		Spec: v1.PodSpec{
+			NodeName: "testnode",
+			Containers: []v1.Container{
+				{
+					Name:    "write-pod",
+					Command: []string{"/bin/sh"},
+					Ports: []v1.ContainerPort{{
+						Name:          "http",
+						ContainerPort: 80,
+						Protocol:      v1.ProtocolTCP,
+					}},
+				},
+			},
+		},
+		Status: v1.PodStatus{
+			PodIPs: []v1.PodIP{
+				{IP: ip},
+			},
+		},
+	}
+
+	return pod
+
+}
+
+// FuncProvider is a test helper that wraps a function to satisfy the
+// podinfo.Provider interface.
+type FuncProvider struct {
+	GetFunc func(podIP string) (*api.PodInfo, bool)
+}
+
+// GetPodInfoByIP calls the wrapped function.
+func (f *FuncProvider) GetPodInfoByIP(podIP string) (*api.PodInfo, bool) {
+	if f.GetFunc == nil {
+		return nil, false // Default behavior if no function is provided
+	}
+	return f.GetFunc(podIP)
+}
+
+// FuncDomainResolver is a test helper that wraps a function to satisfy the
+// DomainResolver interface.
+type FuncDomainResolver struct {
+	ContainsIPFunc func(domain string, ip net.IP) bool
+}
+
+// ContainsIP calls the wrapped function.
+func (f *FuncDomainResolver) ContainsIP(domain string, ip net.IP) bool {
+	if f.ContainsIPFunc == nil {
+		return false // Default behavior if no function is provided
+	}
+	return f.ContainsIPFunc(domain, ip)
+}
 
 // makeBaselineAdminNetworkPolicyCustom is a helper to build BANP objects for tests.
 func makeBaselineAdminNetworkPolicyCustom(name string, tweaks ...func(policy *npav1alpha1.BaselineAdminNetworkPolicy)) *npav1alpha1.BaselineAdminNetworkPolicy {
@@ -168,7 +255,7 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 			}
 
 			evaluator := NewBaselineAdminNetworkPolicy(banpInformer)
-			engine := NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{evaluator})
+			engine := networkpolicy.NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{evaluator})
 
 			verdict, err := engine.EvaluatePacket(context.TODO(), &tt.packet)
 			if err != nil {

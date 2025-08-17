@@ -1,4 +1,4 @@
-package networkpolicy
+package main
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -15,6 +16,16 @@ import (
 	banpinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
 	banplisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 )
+
+// matchesSelector returns true if the selector matches the given labels.
+func matchesSelector(selector *metav1.LabelSelector, lbls map[string]string) bool {
+	s, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		klog.Errorf("error parsing label selector: %v", err)
+		return false
+	}
+	return s.Matches(labels.Set(lbls))
+}
 
 // BaselineAdminNetworkPolicy implements the PolicyEvaluator interface for the ANP API.
 type BaselineAdminNetworkPolicy struct {
@@ -225,4 +236,52 @@ func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminIngress(adminNetworkPo
 	}
 
 	return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
+}
+
+// evaluateAdminNetworkPolicyPort checks if a specific port and protocol match any
+// of the port selectors in the given list.
+// A 'pod' parameter is required for resolving NamedPorts.
+func evaluateAdminNetworkPolicyPort(
+	policyPorts []npav1alpha1.AdminNetworkPolicyPort,
+	pod *api.PodInfo, // The pod on which a NamedPort should be resolved.
+	port int,
+	protocol v1.Protocol,
+) bool {
+	// If the port list is empty, the rule matches all ports.
+	if len(policyPorts) == 0 {
+		return true
+	}
+
+	for _, policyPort := range policyPorts {
+		// Match by port number and protocol.
+		// Port number
+		if policyPort.PortNumber != nil &&
+			policyPort.PortNumber.Port == int32(port) &&
+			policyPort.PortNumber.Protocol == protocol {
+			return true
+		}
+
+		// Match by named port. This requires pod info to look up the container port name.
+		if policyPort.NamedPort != nil {
+			if pod == nil {
+				continue
+			}
+			for _, containerPort := range pod.ContainerPorts {
+				if containerPort.Name == *policyPort.NamedPort {
+					return true
+				}
+			}
+		}
+
+		// Match by a range of ports and protocol.
+		if policyPort.PortRange != nil &&
+			policyPort.PortRange.Protocol == protocol &&
+			policyPort.PortRange.Start <= int32(port) &&
+			policyPort.PortRange.End >= int32(port) {
+			return true
+		}
+	}
+
+	// No selector matched the given port and protocol.
+	return false
 }

@@ -1,4 +1,4 @@
-package networkpolicy
+package main
 
 import (
 	"cmp"
@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -17,6 +18,16 @@ import (
 	anpinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
 	anplisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
 )
+
+// matchesSelector returns true if the selector matches the given labels.
+func matchesSelector(selector *metav1.LabelSelector, lbls map[string]string) bool {
+	s, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		klog.Errorf("error parsing label selector: %v", err)
+		return false
+	}
+	return s.Matches(labels.Set(lbls))
+}
 
 // AdminNetworkPolicy implements the PolicyEvaluator interface for the ANP API.
 type AdminNetworkPolicy struct {

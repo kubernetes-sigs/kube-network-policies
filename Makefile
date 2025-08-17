@@ -14,6 +14,15 @@ export GOROOT GO111MODULE CGO_ENABLED
 build:
 	go build -v -o "$(OUT_DIR)/$(BINARY_NAME)" $(KIND_CLOUD_BUILD_FLAGS) cmd/main.go
 
+PLUGINS_DIR := $(REPO_ROOT)/plugins
+PLUGINS_OUT_DIR := $(OUT_DIR)/plugins
+
+build-plugins:
+	@echo "Building plugins..."
+	@mkdir -p $(PLUGINS_OUT_DIR)
+	@cd $(PLUGINS_DIR)/anp && go build -buildmode=plugin -o $(PLUGINS_OUT_DIR)/10-anp.so .
+	@cd $(PLUGINS_DIR)/banp && go build -buildmode=plugin -o $(PLUGINS_OUT_DIR)/20-banp.so .
+
 clean:
 	rm -rf "$(OUT_DIR)/"
 
