@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
+	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	npaclientfake "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned/fake"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
@@ -168,7 +169,7 @@ func Test_baselineAdminNetworkPolicyAction(t *testing.T) {
 			}
 
 			evaluator := NewBaselineAdminNetworkPolicy(banpInformer)
-			engine := NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{evaluator})
+			engine := networkpolicy.NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{evaluator})
 
 			verdict, err := engine.EvaluatePacket(context.TODO(), &tt.packet)
 			if err != nil {

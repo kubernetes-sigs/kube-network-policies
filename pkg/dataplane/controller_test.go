@@ -61,7 +61,7 @@ func newTestController(config Config, evaluators []api.PolicyEvaluator) *Control
 	nsInfomer := informersFactory.Core().V1().Namespaces()
 
 	// PodInfoProvider is needed by the engine, but our mock evaluators don't use it.
-	podInfoProvider := podinfo.New(podInformer, nsInfomer, nil, nil)
+	podInfoProvider := podinfo.NewInformerProvider(podInformer, nsInfomer, nil, nil)
 	engine := networkpolicy.NewPolicyEngine(podInfoProvider, evaluators)
 
 	// We can't use the real NewController because it creates a real BoundedFrequencyRunner

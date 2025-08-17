@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -24,7 +25,7 @@ type BaselineAdminNetworkPolicy struct {
 
 var _ api.PolicyEvaluator = &BaselineAdminNetworkPolicy{}
 
-// NewAdminNetworkPolicy creates a new ANP implementation.
+// NewBaselineAdminNetworkPolicy creates a new BANP implementation.
 func NewBaselineAdminNetworkPolicy(banpInformer banpinformers.BaselineAdminNetworkPolicyInformer) *BaselineAdminNetworkPolicy {
 	return &BaselineAdminNetworkPolicy{
 		banpLister: banpInformer.Lister(),
@@ -225,4 +226,14 @@ func (b *BaselineAdminNetworkPolicy) evaluateBaselineAdminIngress(adminNetworkPo
 	}
 
 	return npav1alpha1.BaselineAdminNetworkPolicyRuleActionAllow
+}
+
+// matchesSelector returns true if the selector matches the given labels.
+func matchesSelector(selector *metav1.LabelSelector, lbls map[string]string) bool {
+	s, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		klog.Errorf("error parsing label selector: %v", err)
+		return false
+	}
+	return s.Matches(labels.Set(lbls))
 }

@@ -1,18 +1,28 @@
 REPO_ROOT:=${CURDIR}
 OUT_DIR=$(REPO_ROOT)/bin
-BINARY_NAME?=kube-network-policies
 
-# go1.9+ can autodetect GOROOT, but if some other tool sets it ...
-GOROOT:=
-# enable modules
+# Go build settings
 GO111MODULE=on
-# disable CGO by default for static binaries
 CGO_ENABLED=0
-export GOROOT GO111MODULE CGO_ENABLED
+export GO111MODULE CGO_ENABLED
 
+# Docker image settings
+IMAGE_NAME?=kube-network-policies
+REGISTRY?=gcr.io/k8s-staging-networking
+TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
+PLATFORMS?=linux/amd64,linux/arm64
 
-build:
-	go build -v -o "$(OUT_DIR)/$(BINARY_NAME)" $(KIND_CLOUD_BUILD_FLAGS) cmd/main.go
+.PHONY: all build build-standard build-npa-v1alpha1
+all: build
+build: build-standard build-npa-v1alpha1
+
+build-standard:
+	@echo "Building standard binary..."
+	go build -o ./bin/kube-network-policies-standard ./cmd/standard
+
+build-npa-v1alpha1:
+	@echo "Building npa-v1alpha1 binary..."
+	go build -o ./bin/kube-network-policies-npa-v1alpha1 ./cmd/npa-v1alpha1
 
 clean:
 	rm -rf "$(OUT_DIR)/"
@@ -20,41 +30,55 @@ clean:
 test:
 	CGO_ENABLED=1 go test -v -race -count 1 ./...
 
-# code linters
 lint:
 	hack/lint.sh
 
 update:
 	go mod tidy
 
-# Generate Go code from the proto definition
 proto:
 	hack/generate-proto.sh
-
-# get image name from directory we're building
-IMAGE_NAME=kube-network-policies
-# docker image registry, default to upstream
-REGISTRY?=gcr.io/k8s-staging-networking
-# tag based on date-sha
-TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
-# the full image tag
-KNP_IMAGE?=$(REGISTRY)/$(IMAGE_NAME):$(TAG)
-PLATFORMS?=linux/amd64,linux/arm64
 
 .PHONY: ensure-buildx
 ensure-buildx:
 	./hack/init-buildx.sh
-	
-image-build:
+
+# Individual image build targets (load into local docker)
+image-build-standard: build-standard
 	docker buildx build . \
-		--tag="${KNP_IMAGE}" \
+		--build-arg TARGET_BUILD=standard \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)" \
 		--load
 
-image-push:
+image-build-npa-v1alpha1: build-npa-v1alpha1
 	docker buildx build . \
+		--build-arg TARGET_BUILD=npa-v1alpha1 \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha1" \
+		--load
+
+# Individual image push targets (multi-platform)
+image-push-standard: build-standard
+	docker buildx build . \
+		--build-arg TARGET_BUILD=standard \
 		--platform="${PLATFORMS}" \
-		--tag="${KNP_IMAGE}" \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)" \
 		--push
 
-.PHONY: release # Build a multi-arch docker image
-release: ensure-buildx image-push
+image-push-npa-v1alpha1: build-npa-v1alpha1
+	docker buildx build . \
+		--build-arg TARGET_BUILD=npa-v1alpha1 \
+		--platform="${PLATFORMS}" \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha1" \
+		--push
+
+# --- Aggregate Targets ---
+.PHONY: images-build images-push release
+
+# Build all image variants and load them into the local Docker daemon
+images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1
+
+# Build and push all multi-platform image variants to the registry
+images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1
+
+# The main release target, which pushes all images
+release: images-push

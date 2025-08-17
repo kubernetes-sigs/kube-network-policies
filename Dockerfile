@@ -1,18 +1,22 @@
+# Use an ARG to select which build target to compile and use
+ARG TARGET_BUILD=standard
+ARG BINARY_NAME=kube-network-policies-${TARGET_BUILD}
+
 FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
-
 WORKDIR /src
-
-COPY go.mod go.sum .
+COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
 
-ARG TARGETOS TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -o /go/bin/netpol ./cmd
+# Build the specific binary based on the build argument
+ARG TARGET_BUILD
+RUN make build-${TARGET_BUILD}
 
-# STEP 2: Build small image
 FROM gcr.io/distroless/static-debian12
-COPY --from=builder --chown=root:root /go/bin/netpol /bin/netpol
 
+# Copy the correct, compiled binary and give it a generic name inside the container
+ARG BINARY_NAME
+COPY --from=builder /src/bin/${BINARY_NAME} /bin/netpol
+
+# The entrypoint is always the same, regardless of the build
 CMD ["/bin/netpol"]

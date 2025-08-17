@@ -19,7 +19,7 @@ type InformerProvider struct {
 
 // NewInformerProvider creates a new pod info provider.
 // The nodeLister can be nil if node information is not required.
-func New(
+func NewInformerProvider(
 	podInformer coreinformers.PodInformer,
 	nsInfomer coreinformers.NamespaceInformer,
 	nodeInformer coreinformers.NodeInformer,
