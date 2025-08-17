@@ -35,18 +35,6 @@ func makeNamespace(name string) *v1.Namespace {
 	}
 }
 
-func makeNode(name string) *v1.Node {
-	return &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"kubernetes.io/node": name,
-				"a":                  "b",
-			},
-		},
-	}
-}
-
 func makePod(name, ns string, ip string) *v1.Pod {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

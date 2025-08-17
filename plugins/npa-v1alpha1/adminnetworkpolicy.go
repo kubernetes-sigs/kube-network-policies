@@ -13,6 +13,7 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
+	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	npav1alpha1 "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	anpinformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions/apis/v1alpha1"
 	anplisters "sigs.k8s.io/network-policy-api/pkg/client/listers/apis/v1alpha1"
@@ -127,13 +128,13 @@ func getAdminNetworkPoliciesForPod(pod *api.PodInfo, allPolicies []*npav1alpha1.
 		// a combination of namespace and pod labels.
 		subject := policy.Spec.Subject
 		matches := false
-		if subject.Namespaces != nil && matchesSelector(subject.Namespaces, pod.Namespace.Labels) {
+		if subject.Namespaces != nil && networkpolicy.MatchesSelector(subject.Namespaces, pod.Namespace.Labels) {
 			matches = true
 		}
 
 		if !matches && subject.Pods != nil &&
-			matchesSelector(&subject.Pods.NamespaceSelector, pod.Namespace.Labels) &&
-			matchesSelector(&subject.Pods.PodSelector, pod.Labels) {
+			networkpolicy.MatchesSelector(&subject.Pods.NamespaceSelector, pod.Namespace.Labels) &&
+			networkpolicy.MatchesSelector(&subject.Pods.PodSelector, pod.Labels) {
 			matches = true
 		}
 
@@ -177,17 +178,17 @@ func (a *AdminNetworkPolicy) evaluateAdminEgress(
 			}
 			// The 'To' field lists destinations. The rule applies if any peer matches.
 			for _, to := range rule.To {
-				if to.Namespaces != nil && dstPod != nil && matchesSelector(to.Namespaces, dstPod.Namespace.Labels) {
+				if to.Namespaces != nil && dstPod != nil && networkpolicy.MatchesSelector(to.Namespaces, dstPod.Namespace.Labels) {
 					return rule.Action
 				}
 
 				if to.Pods != nil && dstPod != nil &&
-					matchesSelector(&to.Pods.NamespaceSelector, dstPod.Namespace.Labels) &&
-					matchesSelector(&to.Pods.PodSelector, dstPod.Labels) {
+					networkpolicy.MatchesSelector(&to.Pods.NamespaceSelector, dstPod.Namespace.Labels) &&
+					networkpolicy.MatchesSelector(&to.Pods.PodSelector, dstPod.Labels) {
 					return rule.Action
 				}
 
-				if to.Nodes != nil && dstPod != nil && matchesSelector(to.Nodes, dstPod.Node.Labels) {
+				if to.Nodes != nil && dstPod != nil && networkpolicy.MatchesSelector(to.Nodes, dstPod.Node.Labels) {
 					return rule.Action
 				}
 
@@ -239,13 +240,13 @@ func (a *AdminNetworkPolicy) evaluateAdminIngress(
 				}
 			}
 			for _, from := range rule.From {
-				if from.Namespaces != nil && matchesSelector(from.Namespaces, srcPod.Namespace.Labels) {
+				if from.Namespaces != nil && networkpolicy.MatchesSelector(from.Namespaces, srcPod.Namespace.Labels) {
 					return rule.Action
 				}
 
 				if from.Pods != nil &&
-					matchesSelector(&from.Pods.NamespaceSelector, srcPod.Namespace.Labels) &&
-					matchesSelector(&from.Pods.PodSelector, srcPod.Labels) {
+					networkpolicy.MatchesSelector(&from.Pods.NamespaceSelector, srcPod.Namespace.Labels) &&
+					networkpolicy.MatchesSelector(&from.Pods.PodSelector, srcPod.Labels) {
 					return rule.Action
 				}
 			}

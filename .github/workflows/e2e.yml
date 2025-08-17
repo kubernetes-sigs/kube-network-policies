@@ -14,7 +14,6 @@ env:
   GO_VERSION: "1.24"
   K8S_VERSION: "v1.33.1"
   KIND_VERSION: "v0.29.0"
-  IMAGE_NAME: registry.k8s.io/networking/kube-network-policies
   KIND_CLUSTER_NAME: kind
 
 permissions: write-all
@@ -35,7 +34,7 @@ jobs:
 
     - name: Build
       run: |
-        docker build -t registry.k8s.io/networking/kube-network-policies:test -f Dockerfile .
+        REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-network-policies" TAG="test" make image-build-standard
         mkdir _output
         docker save registry.k8s.io/networking/kube-network-policies:test  > _output/kube-network-policies-image.tar
 

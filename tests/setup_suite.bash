@@ -6,12 +6,17 @@ function setup_suite {
   export BATS_TEST_TIMEOUT=120
   # Define the name of the kind cluster
   export CLUSTER_NAME="netpol-test-cluster"
-  export IMAGE_NAME="registry.k8s.io/networking/kube-network-policies"
+  export REGISTRY="registry.k8s.io/networking"
+  export IMAGE_NAME="kube-network-policies"
+  export TAG="test"
   # Build the image
-  docker build -t "$IMAGE_NAME":test -f Dockerfile "$BATS_TEST_DIRNAME"/.. --load
+  (
+    cd "$BATS_TEST_DIRNAME"/..
+    TAG="test" make image-build-npa-v1alpha1
+    mkdir -p _artifacts
+    rm -rf _artifacts/*
+  )
 
-  mkdir -p _artifacts
-  rm -rf _artifacts/*
   # create cluster
   cat <<EOF | kind create cluster \
   --name $CLUSTER_NAME           \
@@ -29,8 +34,8 @@ EOF
   # Install kube-network-policies
   kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
   kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
-  kind load docker-image "$IMAGE_NAME":test --name "$CLUSTER_NAME"
-  _install=$(sed s#"$IMAGE_NAME".*#"$IMAGE_NAME":test# < "$BATS_TEST_DIRNAME"/../install-anp.yaml)
+  kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha1 --name "$CLUSTER_NAME"
+  _install=$(sed s#"$REGISTRY/$IMAGE_NAME".*#"$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha1# < "$BATS_TEST_DIRNAME"/../install-anp.yaml)
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 

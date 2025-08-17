@@ -6,8 +6,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// matchesSelector returns true if the selector matches the given labels.
-func matchesSelector(selector *metav1.LabelSelector, lbls map[string]string) bool {
+// MatchesSelector returns true if the selector matches the given labels.
+func MatchesSelector(selector *metav1.LabelSelector, lbls map[string]string) bool {
 	s, err := metav1.LabelSelectorAsSelector(selector)
 	if err != nil {
 		klog.Errorf("error parsing label selector: %v", err)
