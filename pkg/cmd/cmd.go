@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime/debug"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -51,6 +52,8 @@ func (o *Options) AddFlags(fs *flag.FlagSet) {
 func Start(ctx context.Context, policyEngine *networkpolicy.PolicyEngine, dpConfig dataplane.Config, metricsBindAddress string) {
 	logger := klog.FromContext(ctx)
 
+	printVersion()
+
 	// Start metrics server
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
@@ -75,4 +78,21 @@ func Start(ctx context.Context, policyEngine *networkpolicy.PolicyEngine, dpConf
 			utilruntime.HandleError(fmt.Errorf("dataplane controller failed: %w", err))
 		}
 	}()
+}
+
+func printVersion() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	var vcsRevision, vcsTime string
+	for _, f := range info.Settings {
+		switch f.Key {
+		case "vcs.revision":
+			vcsRevision = f.Value
+		case "vcs.time":
+			vcsTime = f.Value
+		}
+	}
+	klog.Infof("kube-network-policies go %s build: %s time: %s", info.GoVersion, vcsRevision, vcsTime)
 }
