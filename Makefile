@@ -12,9 +12,9 @@ REGISTRY?=gcr.io/k8s-staging-networking
 TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
 PLATFORMS?=linux/amd64,linux/arm64
 
-.PHONY: all build build-standard build-npa-v1alpha1
+.PHONY: all build build-standard build-npa-v1alpha1 build-npa-v1alpha2
 all: build
-build: build-standard build-npa-v1alpha1
+build: build-standard build-npa-v1alpha1 build-npa-v1alpha2
 
 build-standard:
 	@echo "Building standard binary..."
@@ -23,6 +23,10 @@ build-standard:
 build-npa-v1alpha1:
 	@echo "Building npa-v1alpha1 binary..."
 	go build -o ./bin/kube-network-policies-npa-v1alpha1 ./cmd/npa-v1alpha1
+
+build-npa-v1alpha2:
+	@echo "Building npa-v1alpha2 binary..."
+	go build -o ./bin/kube-network-policies-npa-v1alpha2 ./cmd/npa-v1alpha2
 
 clean:
 	rm -rf "$(OUT_DIR)/"
@@ -56,6 +60,12 @@ image-build-npa-v1alpha1: build-npa-v1alpha1
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha1" \
 		--load
 
+image-build-npa-v1alpha2: build-npa-v1alpha2
+	docker buildx build . \
+		--build-arg TARGET_BUILD=npa-v1alpha2 \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha2" \
+		--load
+
 # Individual image push targets (multi-platform)
 image-push-standard: build-standard
 	docker buildx build . \
@@ -71,14 +81,21 @@ image-push-npa-v1alpha1: build-npa-v1alpha1
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha1" \
 		--push
 
+image-push-npa-v1alpha2: build-npa-v1alpha2
+	docker buildx build . \
+		--build-arg TARGET_BUILD=npa-v1alpha2 \
+		--platform="${PLATFORMS}" \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha2" \
+		--push
+
 # --- Aggregate Targets ---
 .PHONY: images-build images-push release
 
 # Build all image variants and load them into the local Docker daemon
-images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1
+images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1 image-build-npa-v1alpha2
 
 # Build and push all multi-platform image variants to the registry
-images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1
+images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-build-npa-v1alpha2
 
 # The main release target, which pushes all images
 release: images-push
