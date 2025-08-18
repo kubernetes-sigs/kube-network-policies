@@ -797,7 +797,7 @@ func TestEvaluator_evaluateSelectors(t *testing.T) {
 				t.Fatal("namespace not found")
 			}
 			podInfo := api.NewPodInfo(tt.pod, ns.Labels, nil, "")
-			if got := evaluateSelectors(context.TODO(), tt.peerPodSelector, tt.peerNSSelector, podInfo, tt.policyNs); got != tt.want {
+			if got := EvaluateSelectors(context.TODO(), tt.peerPodSelector, tt.peerNSSelector, podInfo, tt.policyNs); got != tt.want {
 				t.Errorf("Controller.evaluateSelectors() = %v, want %v", got, tt.want)
 			}
 		})
@@ -842,7 +842,7 @@ func TestEvaluator_evaluateIPBlocks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := evaluateIPBlocks(tt.ipBlock, tt.ip); got != tt.want {
+			if got := EvaluateIPBlocks(tt.ipBlock, tt.ip); got != tt.want {
 				t.Errorf("Controller.evaluateIPBlocks() = %v, want %v", got, tt.want)
 			}
 		})
@@ -938,7 +938,7 @@ func TestEvaluator_evaluatePorts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			if got := evaluatePorts(tt.networkPolicyPorts, api.NewPodInfo(tt.pod, nil, nil, ""), tt.port, tt.protocol); got != tt.want {
+			if got := EvaluatePorts(tt.networkPolicyPorts, api.NewPodInfo(tt.pod, nil, nil, ""), tt.port, tt.protocol); got != tt.want {
 				t.Errorf("Controller.evaluatePorts() = %v, want %v", got, tt.want)
 			}
 		})
