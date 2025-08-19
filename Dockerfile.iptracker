@@ -1,3 +1,7 @@
+# Use an ARG to select which build target to compile and use
+ARG TARGET_BUILD=standard
+ARG BINARY_NAME=kube-ip-tracker-${TARGET_BUILD}
+
 FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
 
 WORKDIR /src
@@ -5,12 +9,14 @@ WORKDIR /src
 COPY . .
 RUN go mod download
 
-ARG TARGETOS TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -o /go/bin/kube-ip-tracker ./cmd/kube-ip-tracker
+# Build the specific binary based on the build argument
+ARG TARGET_BUILD
+RUN make build-${TARGET_BUILD}
 
 # STEP 2: Build small image
 FROM gcr.io/distroless/static-debian12
-COPY --from=builder --chown=root:root /go/bin/kube-ip-tracker /bin/kube-ip-tracker
+ARG BINARY_NAME
+COPY --from=builder /src/bin/${BINARY_NAME} /bin/kube-ip-tracker
 
+# The entrypoint is always the same, regardless of the build
 CMD ["/bin/kube-ip-tracker"]
