@@ -12,9 +12,9 @@ REGISTRY?=gcr.io/k8s-staging-networking
 TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
 PLATFORMS?=linux/amd64,linux/arm64
 
-.PHONY: all build build-standard build-npa-v1alpha1 build-iptracker build-kube-ip-tracker
+.PHONY: all build build-standard build-npa-v1alpha1 build-iptracker build-multicluster build-kube-ip-tracker-standard build-kube-ip-tracker-multicluster
 
-build: build-standard build-npa-v1alpha1 build-iptracker build-kube-ip-tracker
+build: build-standard build-npa-v1alpha1 build-iptracker build-multicluster build-kube-ip-tracker-standard build-kube-ip-tracker-multicluster
 
 build-standard:
 	@echo "Building standard binary..."
@@ -28,10 +28,17 @@ build-iptracker:
 	@echo "Building iptracker binary..."
 	go build -o ./bin/kube-network-policies-iptracker ./cmd/kube-network-policies/iptracker
 
+build-multicluster:
+	@echo "Building multicluster binary..."
+	go build -o ./bin/kube-network-policies-multicluster ./cmd/kube-network-policies/multicluster
+
 build-kube-ip-tracker-standard:
 	@echo "Building kube-ip-tracker binary..."
 	go build -o ./bin/kube-ip-tracker-standard ./cmd/kube-ip-tracker/standard
 
+build-kube-ip-tracker-multicluster:
+	@echo "Building multicluster binary..."
+	go build -o ./bin/kube-ip-tracker-multicluster ./cmd/kube-ip-tracker/multicluster
 
 clean:
 	rm -rf "$(OUT_DIR)/"
@@ -71,13 +78,25 @@ image-build-iptracker: build-iptracker
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-iptracker" \
 		--load
 
+image-build-multicluster: build-multicluster
+	docker buildx build . \
+		--build-arg TARGET_BUILD=multicluster \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-multicluster" \
+		--load
+
 image-build-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 	docker buildx build . -f Dockerfile.iptracker \
 		--build-arg TARGET_BUILD=standard \
 		--tag="${REGISTRY}/kube-ip-tracker:$(TAG)" \
 		--load
 
-# Individual image push targets (multi-platform)
+image-build-kube-ip-tracker-multicluster: build-kube-ip-tracker-multicluster
+	docker buildx build . -f Dockerfile.iptracker \
+		--build-arg TARGET_BUILD=multicluster \
+		--tag="${REGISTRY}/kube-ip-tracker:$(TAG)-multicluster" \
+		--load
+
+# Individual image push targets (multi-platform)ß
 image-push-standard: build-standard
 	docker buildx build . \
 		--build-arg TARGET_BUILD=standard \
@@ -99,10 +118,17 @@ image-push-iptracker: build-iptracker
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-iptracker" \
 		--push
 
-image-push-kube-ip-tracker-standard: build-kube-ip-tracker-standard
+image-push-multicluster: build-multicluster
+	docker buildx build . \
+		--build-arg TARGET_BUILD=multicluster \
+		--platform="${PLATFORMS}" \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-multicluster" \
+		--push
+
+image-push-kube-ip-tracker-multicluster: build-kube-ip-tracker-multicluster
 	docker buildx build . -f Dockerfile.iptracker \
-		--build-arg TARGET_BUILD=standard \
-		--tag="${REGISTRY}/kube-ip-tracker:$(TAG)" \
+		--build-arg TARGET_BUILD=multicluster \
+		--tag="${REGISTRY}/kube-ip-tracker-multicluster:$(TAG)" \
 		--push
 
 
@@ -110,10 +136,10 @@ image-push-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 .PHONY: images-build images-push release
 
 # Build all image variants and load them into the local Docker daemon
-images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1 image-build-iptracker image-build-kube-ip-tracker-standard
+images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1 image-build-iptracker image-build-kube-ip-tracker-standard image-build-kube-ip-tracker-multicluster
 
 # Build and push all multi-platform image variants to the registry
-images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-push-iptracker image-push-kube-ip-tracker-standard
+images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-push-iptracker image-push-kube-ip-tracker-standard image-push-kube-ip-tracker-multicluster
 
 # The main release target, which pushes all images
 release: images-push

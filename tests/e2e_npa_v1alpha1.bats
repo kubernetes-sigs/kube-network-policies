@@ -1,6 +1,30 @@
 #!/usr/bin/env bats
 
 setup_file() {
+  # Define the name of the kind cluster
+  export CLUSTER_NAME_NPA="netpol-npa-test-cluster"
+
+  kind delete cluster --name $CLUSTER_NAME_NPA || true
+
+  # Create cluster
+  cat <<EOF | kind create cluster \
+    --name $CLUSTER_NAME_NPA \
+    -v7 --wait 1m --retain --config=-
+  kind: Cluster
+  apiVersion: kind.x-k8s.io/v1alpha4
+  networking:
+    ipFamily: dual
+  nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+EOF
+
+  # Stop kindnet from applying network policies
+  kubectl -n kube-system set image ds kindnet kindnet-cni=docker.io/kindest/kindnetd:v20230809-80a64d96
+  # Expose a webserver in the default namespace
+  kubectl run web --image=httpd:2 --labels="app=web" --expose --port=80
+
   export REGISTRY="registry.k8s.io/networking"
   export IMAGE_NAME="kube-network-policies"
   export TAG="test"
@@ -16,7 +40,7 @@ setup_file() {
   kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
 
   # Load the Docker image into the kind cluster
-  kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha1 --name "$CLUSTER_NAME"
+  kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha1 --name "$CLUSTER_NAME_NPA"
 
   # Install kube-network-policies
   _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha1#" < "$BATS_TEST_DIRNAME"/../install-anp.yaml)
@@ -25,11 +49,8 @@ setup_file() {
 }
 
 teardown_file() {
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha1#" < "$BATS_TEST_DIRNAME"/../install-anp.yaml)
-  printf '%s' "${_install}" | kubectl delete -f -
-
-  kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
-  kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+  kind export logs "$BATS_TEST_DIRNAME"/../_artifacts --name "$CLUSTER_NAME_NPA"
+  kind delete cluster --name "$CLUSTER_NAME_NPA"
 }
 
 setup() {
