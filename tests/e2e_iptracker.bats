@@ -9,7 +9,7 @@ setup_file() {
   (
     cd "$BATS_TEST_DIRNAME"/..
     TAG="$TAG" make image-build-iptracker
-    TAG="$TAG" make image-build-kube-ip-tracker
+    TAG="$TAG" make image-build-kube-ip-tracker-standard
   )
 
   # Load the Docker image into the kind cluster

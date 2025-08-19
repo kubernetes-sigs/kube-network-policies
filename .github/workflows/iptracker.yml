@@ -39,7 +39,7 @@ jobs:
         REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-network-policies" TAG="test" make image-build-iptracker
         docker save registry.k8s.io/networking/kube-network-policies:test-iptracker > _output/kube-network-policies-image.tar
         # Build kube-ip-tracker image
-        REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-ip-tracker" TAG="test" make image-build-kube-ip-tracker
+        REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-ip-tracker" TAG="test" make image-build-kube-ip-tracker-standard
         docker save registry.k8s.io/networking/kube-ip-tracker:test > _output/kube-ip-tracker-image.tar
 
     - uses: actions/upload-artifact@v4

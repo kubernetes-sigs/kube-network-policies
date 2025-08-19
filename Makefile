@@ -12,9 +12,9 @@ REGISTRY?=gcr.io/k8s-staging-networking
 TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
 PLATFORMS?=linux/amd64,linux/arm64
 
-.PHONY: all build build-standard build-npa-v1alpha1 build-npa-v1alpha2 build-iptracker build-kube-ip-tracker
+.PHONY: all build build-standard build-npa-v1alpha1 build-npa-v1alpha2 build-iptracker build-kube-ip-tracker-standard
 
-build: build-standard build-npa-v1alpha1 build-npa-v1alpha2 build-iptracker build-kube-ip-tracker
+build: build-standard build-npa-v1alpha1 build-npa-v1alpha2 build-iptracker build-kube-ip-tracker-standard
 
 build-standard:
 	@echo "Building standard binary..."
@@ -32,9 +32,9 @@ build-iptracker:
 	@echo "Building iptracker binary..."
 	go build -o ./bin/kube-network-policies-iptracker ./cmd/kube-network-policies/iptracker
 
-build-kube-ip-tracker:
+build-kube-ip-tracker-standard:
 	@echo "Building kube-ip-tracker binary..."
-	go build -o ./bin/kube-ip-tracker ./cmd/kube-ip-tracker
+	go build -o ./bin/kube-ip-tracker-standard ./cmd/kube-ip-tracker/standard
 
 clean:
 	rm -rf "$(OUT_DIR)/"
@@ -80,8 +80,9 @@ image-build-iptracker: build-iptracker
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-iptracker" \
 		--load
 
-image-build-kube-ip-tracker: build-kube-ip-tracker
+image-build-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 	docker buildx build . -f Dockerfile.iptracker \
+		--build-arg TARGET_BUILD=standard \
 		--tag="${REGISTRY}/kube-ip-tracker:$(TAG)" \
 		--load
 
@@ -114,8 +115,9 @@ image-push-iptracker: build-iptracker
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-iptracker" \
 		--push
 
-image-push-kube-ip-tracker: build-kube-ip-tracker
+image-push-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 	docker buildx build . -f Dockerfile.iptracker \
+		--build-arg TARGET_BUILD=standard \
 		--tag="${REGISTRY}/kube-ip-tracker:$(TAG)" \
 		--push
 
@@ -123,11 +125,10 @@ image-push-kube-ip-tracker: build-kube-ip-tracker
 .PHONY: images-build images-push release
 
 # Build all image variants and load them into the local Docker daemon
-images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1 image-build-npa-v1alpha2 image-build-iptracker image-build-kube-ip-tracker
-
+images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1 image-build-npa-v1alpha2 image-build-iptracker image-build-kube-ip-tracker-standard
 
 # Build and push all multi-platform image variants to the registry
-images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-build-npa-v1alpha2 image-push-iptracker image-push-kube-ip-tracker
+images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-build-npa-v1alpha2 image-push-iptracker image-push-kube-ip-tracker-standard
 
 # The main release target, which pushes all images
 release: images-push
