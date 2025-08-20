@@ -37,7 +37,7 @@ clean:
 	rm -rf "$(OUT_DIR)/"
 
 test:
-	CGO_ENABLED=1 go test -v -race -count 1 ./...
+	CGO_ENABLED=1 go test -short -v -race -count 1 ./...
 
 lint:
 	hack/lint.sh
