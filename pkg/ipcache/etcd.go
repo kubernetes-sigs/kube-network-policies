@@ -110,6 +110,7 @@ func NewEtcdStore(listenURL, etcdDir string, opts ...EtcdOption) (*EtcdStore, er
 	cfg := embed.NewConfig()
 	cfg.Dir = etcdDir
 	cfg.LogLevel = "error"
+	cfg.UnsafeNoFsync = true
 	// Disable peer communication as we're running a single-member cluster.
 	cfg.ListenPeerUrls = []url.URL{}
 

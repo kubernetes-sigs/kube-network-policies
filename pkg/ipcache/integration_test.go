@@ -32,11 +32,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"golang.org/x/time/rate"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
@@ -743,4 +745,172 @@ func TestServerProxyClientIntegration(t *testing.T) {
 		_, found := finalClient.GetPodInfoByIP(ip1)
 		return !found
 	}, 15*time.Second)
+}
+
+// Helper to calculate the size of a directory
+func dirSize(path string) (int64, error) {
+	var size int64
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return err
+	})
+	return size, err
+}
+
+// TestScalability measures propagation delay, memory, and disk usage.
+func TestScalability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
+	const (
+		numClients          = 1
+		numNamespaces       = 10
+		numPodsPerNamespace = 1000000
+		totalPods           = numNamespaces * numPodsPerNamespace
+		qps                 = 1024
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	t.Log("Setting up server")
+	server, _, cleanup := setupTest(t, ctx)
+	defer cleanup()
+	listenURL := server.listenURL
+
+	t.Log("Setting up clients")
+	clients := make([]*Client, numClients)
+	for i := 0; i < numClients; i++ {
+		dbDir := filepath.Join(t.TempDir(), fmt.Sprintf("ipcache%d.bolt", i))
+		boltStore, err := NewBoltStore(dbDir)
+		if err != nil {
+			t.Fatalf("Failed to create bolt store: %v", err)
+		}
+		lruStore := NewLRUStore(boltStore, totalPods*2)
+		client, err := NewClient(context.Background(), listenURL, nil, lruStore, boltStore, fmt.Sprintf("node-%d", i))
+		if err != nil {
+			t.Fatalf("Failed to create client %d: %v", i, err)
+		}
+		defer client.Close()
+		clients[i] = client
+	}
+
+	t.Log("Create namespaces and pods")
+	ips := make([]string, totalPods)
+	podInfos := make([]*api.PodInfo, totalPods)
+	for i := 0; i < numNamespaces; i++ {
+		ns := fmt.Sprintf("ns%d", i)
+		for j := 0; j < numPodsPerNamespace; j++ {
+			podIndex := i*numPodsPerNamespace + j
+			podName := fmt.Sprintf("pod-%d", podIndex)
+			ip := make(net.IP, 4)
+			binary.BigEndian.PutUint32(ip, uint32(podIndex))
+			ips[podIndex] = ip.String()
+			podInfos[podIndex] = &api.PodInfo{Name: podName,
+				Labels: map[string]string{"foo": "bar"},
+				Namespace: &api.Namespace{
+					Name:   ns,
+					Labels: map[string]string{"foo": "bar"},
+				},
+			}
+		}
+	}
+
+	t.Log("Measure initial state")
+	var beforeMemStats runtime.MemStats
+	runtime.ReadMemStats(&beforeMemStats)
+	serverDirSize, err := dirSize(server.etcd.Config().Dir)
+	if err != nil {
+		t.Fatalf("Failed to get server dir size: %v", err)
+	}
+	t.Logf("Initial server disk usage: %.2f KB", float64(serverDirSize)/1024)
+
+	// 5. Upsert all pods and measure propagation delay
+	var totalPropagationDelay time.Duration
+	var propagationDelayCount int64
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	rateLimiter := rate.NewLimiter(rate.Limit(qps), 1)
+	t.Log("Insert all pods")
+
+	for i := 0; i < totalPods; i++ {
+		err := rateLimiter.WaitN(ctx, 1)
+		if err != nil {
+			t.Logf("Rate limiter error: %v", err)
+			continue
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			startTime := time.Now()
+			if err := server.Upsert(ips[i], podInfos[i]); err != nil {
+				t.Errorf("Failed to upsert record: %v", err)
+				return
+			}
+
+			// Wait for the first client to receive the update
+			waitForCondition(t, "client did not sync upsert", func() bool {
+				_, found := clients[0].GetPodInfoByIP(ips[i])
+				return found
+			}, 10*time.Second)
+
+			mu.Lock()
+			totalPropagationDelay += time.Since(startTime)
+			propagationDelayCount++
+			mu.Unlock()
+			t.Logf("Inserted pod %d", i)
+		}(i)
+	}
+	wg.Wait()
+
+	t.Log("Wait for all clients to sync")
+	for i, client := range clients {
+		waitForCondition(t, fmt.Sprintf("client %d did not sync all records", i), func() bool {
+			list, err := client.List()
+			if err != nil {
+				t.Errorf("client %d failed to list records: %v", i, err)
+				return false
+			}
+			t.Logf("Synced %d records", len(list))
+			return len(list) == totalPods
+		}, 30*time.Second)
+	}
+
+	// 7. Measure final state
+	var afterMemStats runtime.MemStats
+	runtime.ReadMemStats(&afterMemStats)
+
+	t.Logf("--- Scalability Metrics ---")
+	t.Logf("Number of clients: %d", numClients)
+	t.Logf("Number of namespaces: %d", numNamespaces)
+	t.Logf("Number of pods: %d", totalPods)
+	t.Logf("Write QPS: %d", qps)
+
+	if propagationDelayCount > 0 {
+		avgPropagationDelay := totalPropagationDelay / time.Duration(propagationDelayCount)
+		t.Logf("Average propagation delay: %s", avgPropagationDelay)
+	}
+
+	// Server metrics
+	serverDirSizeAfter, err := dirSize(server.etcd.Config().Dir)
+	if err != nil {
+		t.Fatalf("Failed to get server dir size: %v", err)
+	}
+	t.Logf("Server memory usage (Alloc): %.2f KB", float64(afterMemStats.Alloc-beforeMemStats.Alloc)/1024)
+	t.Logf("Server disk usage difference: %.2f KB", float64(serverDirSizeAfter-serverDirSize)/1024)
+
+	// Client metrics
+	for i, client := range clients {
+		clientDbPath := client.syncStore.(*BoltStore).db.Path()
+		clientDbSize, err := os.Stat(clientDbPath)
+		if err != nil {
+			t.Fatalf("Failed to get client db size: %v", err)
+		}
+		t.Logf("Client %d disk usage (BoltDB): %.2f KB", i, float64(clientDbSize.Size())/1024)
+	}
 }
