@@ -12,9 +12,8 @@ COPY . .
 ARG TARGET_BUILD
 RUN make build-${TARGET_BUILD}
 
+# STEP 2: Build small image
 FROM gcr.io/distroless/static-debian12
-
-# Copy the correct, compiled binary and give it a generic name inside the container
 ARG BINARY_NAME
 COPY --from=builder /src/bin/${BINARY_NAME} /bin/netpol
 

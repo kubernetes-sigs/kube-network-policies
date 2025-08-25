@@ -1,6 +1,31 @@
 #!/usr/bin/env bats
 
 setup_file() {
+  # Define the name of the kind cluster
+  export CLUSTER_NAME="netpol-test-cluster"
+  
+  # Delete the cluster if it exists
+  kind delete cluster --name $CLUSTER_NAME || true
+
+  # Create cluster
+  cat <<EOF | kind create cluster \
+    --name $CLUSTER_NAME \
+    -v7 --wait 1m --retain --config=-
+  kind: Cluster
+  apiVersion: kind.x-k8s.io/v1alpha4
+  networking:
+    ipFamily: dual
+  nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+EOF
+
+  # Stop kindnet from applying network policies
+  kubectl -n kube-system set image ds kindnet kindnet-cni=docker.io/kindest/kindnetd:v20230809-80a64d96
+  # Expose a webserver in the default namespace
+  kubectl run web --image=httpd:2 --labels="app=web" --expose --port=80
+
   export REGISTRY="registry.k8s.io/networking"
   export IMAGE_NAME="kube-network-policies"
   export TAG="test-standard"
@@ -21,8 +46,8 @@ setup_file() {
 }
 
 teardown_file() {
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" < "$BATS_TEST_DIRNAME"/../install.yaml)
-  printf '%s' "${_install}" | kubectl delete -f -
+  kind export logs "$BATS_TEST_DIRNAME"/../_artifacts --name "$CLUSTER_NAME"
+  kind delete cluster --name "$CLUSTER_NAME"
 }
 
 setup() {

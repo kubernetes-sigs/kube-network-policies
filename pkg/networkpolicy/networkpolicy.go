@@ -329,7 +329,7 @@ func evaluateIngress(ctx context.Context, netpolNamespace string, ingressRules [
 
 	for _, rule := range ingressRules {
 		// Evaluate if Port is accessible in the specified Pod
-		if !evaluatePorts(rule.Ports, srcPod, srcPort, proto) {
+		if !EvaluatePorts(rule.Ports, srcPod, srcPort, proto) {
 			if tlogger.Enabled() {
 				tlogger.Info("Pod is not allowed to be connected on port", "src-port", srcPort)
 			}
@@ -352,7 +352,7 @@ func evaluateIngress(ctx context.Context, netpolNamespace string, ingressRules [
 			// to the pods matched by a NetworkPolicySpec's podSelector. The except entry describes CIDRs
 			// that should not be included within this rule.
 			if peer.IPBlock != nil {
-				if evaluateIPBlocks(peer.IPBlock, dstIP) {
+				if EvaluateIPBlocks(peer.IPBlock, dstIP) {
 					if tlogger.Enabled() {
 						tlogger.Info("Pod is not accessible from dest", "dest", dstIP)
 					}
@@ -367,7 +367,7 @@ func evaluateIngress(ctx context.Context, netpolNamespace string, ingressRules [
 			}
 
 			if peer.NamespaceSelector != nil || peer.PodSelector != nil {
-				if evaluateSelectors(ctx, peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
+				if EvaluateSelectors(ctx, peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
 					if tlogger.Enabled() && dstPod != nil {
 						tlogger.Info("Pod is accessible from Pod because match selectors", "dstPod", dstPod.Namespace.Name+"/"+dstPod.Name)
 					}
@@ -391,7 +391,7 @@ func evaluateEgress(ctx context.Context, netpolNamespace string, egressRules []n
 
 	for _, rule := range egressRules {
 		// Evaluate if Pod is allowed to connect to dstPort
-		if !evaluatePorts(rule.Ports, dstPod, dstPort, proto) {
+		if !EvaluatePorts(rule.Ports, dstPod, dstPort, proto) {
 			if tlogger.Enabled() {
 				tlogger.Info("Pod is not allowed to connect to port", "port", dstPort)
 			}
@@ -413,7 +413,7 @@ func evaluateEgress(ctx context.Context, netpolNamespace string, egressRules []n
 			// to the pods matched by a NetworkPolicySpec's podSelector. The except entry describes CIDRs
 			// that should not be included within this rule.
 			if peer.IPBlock != nil {
-				if evaluateIPBlocks(peer.IPBlock, dstIP) {
+				if EvaluateIPBlocks(peer.IPBlock, dstIP) {
 					if tlogger.Enabled() {
 						tlogger.Info("Pod is allowed to connect to dst", "dst", dstIP)
 					}
@@ -428,7 +428,7 @@ func evaluateEgress(ctx context.Context, netpolNamespace string, egressRules []n
 			}
 
 			if peer.NamespaceSelector != nil || peer.PodSelector != nil {
-				if evaluateSelectors(ctx, peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
+				if EvaluateSelectors(ctx, peer.PodSelector, peer.NamespaceSelector, dstPod, netpolNamespace) {
 					if tlogger.Enabled() {
 						tlogger.Info("Pod is allowed to connect because of Pod and Namespace selectors")
 					}
@@ -440,7 +440,7 @@ func evaluateEgress(ctx context.Context, netpolNamespace string, egressRules []n
 	return false
 }
 
-func evaluateSelectors(ctx context.Context, peerPodSelector *metav1.LabelSelector, peerNSSelector *metav1.LabelSelector, pod *api.PodInfo, policyNs string) bool {
+func EvaluateSelectors(ctx context.Context, peerPodSelector *metav1.LabelSelector, peerNSSelector *metav1.LabelSelector, pod *api.PodInfo, policyNs string) bool {
 	// avoid panics
 	if pod == nil {
 		return true
@@ -494,7 +494,7 @@ func evaluateSelectors(ctx context.Context, peerPodSelector *metav1.LabelSelecto
 	return true
 }
 
-func evaluateIPBlocks(ipBlock *networkingv1.IPBlock, ip net.IP) bool {
+func EvaluateIPBlocks(ipBlock *networkingv1.IPBlock, ip net.IP) bool {
 	if ipBlock == nil {
 		return true
 	}
@@ -521,7 +521,7 @@ func evaluateIPBlocks(ipBlock *networkingv1.IPBlock, ip net.IP) bool {
 	return true
 }
 
-func evaluatePorts(networkPolicyPorts []networkingv1.NetworkPolicyPort, pod *api.PodInfo, port int, protocol v1.Protocol) bool {
+func EvaluatePorts(networkPolicyPorts []networkingv1.NetworkPolicyPort, pod *api.PodInfo, port int, protocol v1.Protocol) bool {
 	// ports is a list of ports,  each item in this list is combined using a logical OR.
 	// If this field is empty or missing, this rule matches all ports (traffic not restricted by port).
 	// If this field is present and contains at least one item, then this rule allows
