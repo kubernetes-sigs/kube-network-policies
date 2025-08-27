@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
 
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -112,6 +113,29 @@ func NewStandardNetworkPolicy(
 			}
 			if np != nil && len(s.getLocalPodsForNetworkPolicy(np)) > 0 {
 				s.syncCallback()
+			}
+		},
+	})
+
+	// When a namespace's labels change, we must re-sync all pods within it
+	// to update the cached namespace labels.
+	_, _ = namespaceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldNs, newNs := oldObj.(*v1.Namespace), newObj.(*v1.Namespace)
+			if reflect.DeepEqual(oldNs.Labels, newNs.Labels) {
+				return
+			}
+			pods, err := s.podLister.Pods(newNs.Name).List(labels.Everything())
+			if err != nil {
+				klog.Infof("Error listing pods in namespace %s: %v", newNs.Name, err)
+				return
+			}
+			for _, pod := range pods {
+				if pod.Spec.NodeName == s.nodeName &&
+					len(s.getNetworkPoliciesForPod(api.NewPodInfo(pod, nil, nil, ""))) > 0 {
+					s.syncCallback()
+					return
+				}
 			}
 		},
 	})
