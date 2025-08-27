@@ -10,6 +10,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
 // --- Helpers ---
@@ -178,7 +179,7 @@ func TestInformerResolver_LookupPod(t *testing.T) {
 // We will test the internal logic of the resolver's methods instead.
 
 func TestNRIResolver_PodLifecycle(t *testing.T) {
-	resolver := &NRIResolver{podIPMap: make(map[string]string)}
+	resolver := &NRIResolver{podInfoByIP: make(map[string]*api.PodInfo)}
 
 	// 1. Add a pod
 	pod1 := makeNRIPod("ns1", "pod1", []string{"10.0.0.1", "192.168.1.1"})
@@ -208,15 +209,15 @@ func TestNRIResolver_PodLifecycle(t *testing.T) {
 	}
 
 	// 3. Synchronize state
-	resolver.podIPMap = make(map[string]string) // Clear map
+	resolver.podInfoByIP = make(map[string]*api.PodInfo) // Clear map
 	pod3 := makeNRIPod("ns3", "pod3", []string{"10.0.0.3"})
 
 	if _, err := resolver.Synchronize(context.Background(), []*nriapi.PodSandbox{pod1, pod2, pod3}, nil); err != nil {
 		t.Fatalf("Synchronize() failed: %v", err)
 	}
 
-	if len(resolver.podIPMap) != 4 {
-		t.Errorf("After Synchronize, map length is %d, want 4", len(resolver.podIPMap))
+	if len(resolver.podInfoByIP) != 4 {
+		t.Errorf("After Synchronize, map length is %d, want 4", len(resolver.podInfoByIP))
 	}
 	key, ok = resolver.LookupPod("10.0.0.3")
 	if !ok || key != "ns3/pod3" {
@@ -245,9 +246,9 @@ func TestNRIResolver_PodLifecycle(t *testing.T) {
 
 func TestNRIResolver_LookupPod(t *testing.T) {
 	resolver := &NRIResolver{
-		podIPMap: map[string]string{
-			"10.0.0.1": "ns1/pod1",
-			"10.0.0.2": "ns2/pod2",
+		podInfoByIP: map[string]*api.PodInfo{
+			"10.0.0.1": &api.PodInfo{Namespace: &api.Namespace{Name: "ns1"}, Name: "pod1"},
+			"10.0.0.2": &api.PodInfo{Namespace: &api.Namespace{Name: "ns2"}, Name: "pod2"},
 		},
 	}
 

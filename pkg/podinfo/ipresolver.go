@@ -11,8 +11,11 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	v1 "k8s.io/api/core/v1"
+	coreinformers "k8s.io/client-go/informers/core/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
 // IPResolver defines an interface for resolving an IP address to a pod's key ("namespace/name").
@@ -83,23 +86,34 @@ func (r *InformerResolver) LookupPod(ip string) (string, bool) {
 }
 
 // --- NRI-based Resolver ---
+// It connects directly to the local container runtime and
+// stores the Pod IP information.
 
-// NRIResolver is an implementation of Resolver that uses an NRI plugin.
+var _ IPResolver = &NRIResolver{}
+var _ api.PodInfoProvider = &NRIResolver{}
+
+// NRIResolver is a standalone component that listens to NRI events
+// and maintains a cache of PodInfo objects.
 type NRIResolver struct {
-	stub     stub.Stub
-	mu       sync.Mutex
-	podIPMap map[string]string // podIP : podName
+	stub        stub.Stub
+	mu          sync.Mutex
+	podInfoByIP map[string]*api.PodInfo
+	nsLister    corelisters.NamespaceLister
 }
 
 // NewNRIResolver creates a new resolver that looks up pods via the NRI plugin.
-func NewNRIResolver(ctx context.Context) (*NRIResolver, error) {
+func NewNRIResolver(ctx context.Context, namespaceInformer coreinformers.NamespaceInformer) (*NRIResolver, error) {
 	const (
 		pluginName = "kube-network-policies-podip-resolver"
 		pluginIdx  = "10"
 	)
 	p := &NRIResolver{
-		podIPMap: map[string]string{},
+		podInfoByIP: make(map[string]*api.PodInfo),
 	}
+	if namespaceInformer != nil {
+		p.nsLister = namespaceInformer.Lister()
+	}
+
 	opts := []stub.Option{
 		stub.WithOnClose(p.onClose),
 		stub.WithPluginName(pluginName),
@@ -111,18 +125,30 @@ func NewNRIResolver(ctx context.Context) (*NRIResolver, error) {
 	}
 	p.stub = stub
 
-	// retry only for a maximum amount of time
+	// retry for a while, but reset the counter if the plugin proves to be stable
 	go func() {
-		maxRetries := 10
+		const initialMaxRetries = 10
+		maxRetries := initialMaxRetries
+		const stabilityThreshold = 5 * time.Minute // if the plugin runs for this long, we consider it stable
+		var err error
+
 		for maxRetries > 0 {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-			err := p.Run(ctx)
+			startTime := time.Now()
+			err = p.Run(ctx)
+
+			// if the plugin was stable for a while, reset the backoff counter
+			if time.Since(startTime) > stabilityThreshold {
+				klog.Infof("nri plugin was stable for more than %v, resetting retry counter", stabilityThreshold)
+				maxRetries = initialMaxRetries
+			}
+
 			if err != nil {
-				klog.Infof("nri plugin exited, retrying %d times in 5 seconds: %v", maxRetries, err)
+				klog.Infof("nri plugin exited, retrying %d times in 5 seconds: %v", maxRetries-1, err)
 			}
 			maxRetries--
 			time.Sleep(5 * time.Second)
@@ -135,22 +161,24 @@ func NewNRIResolver(ctx context.Context) (*NRIResolver, error) {
 }
 
 // LookupPod implements the Resolver interface using the NRI plugin.
-func (r *NRIResolver) LookupPod(ip string) (string, bool) {
-	podKey := r.GetPodFromIP(ip)
-	if podKey == "" {
+func (p *NRIResolver) LookupPod(ip string) (string, bool) {
+	podInfo, found := p.GetPodInfoByIP(ip)
+	if !found {
 		return "", false
 	}
-	return podKey, true
+	return podInfo.Namespace.Name + "/" + podInfo.Name, true
 }
 
 func (p *NRIResolver) Run(ctx context.Context) error {
 	return p.stub.Run(ctx)
 }
 
-func (p *NRIResolver) GetPodFromIP(ip string) string {
+// GetPodInfoByIP returns a PodInfo object from the local cache.
+func (p *NRIResolver) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.podIPMap[ip]
+	podInfo, found := p.podInfoByIP[ip]
+	return podInfo, found
 }
 
 func (p *NRIResolver) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, containers []*nriapi.Container) ([]*nriapi.ContainerUpdate, error) {
@@ -161,12 +189,28 @@ func (p *NRIResolver) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, 
 		ips := getPodIPs(pod)
 		podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
 		klog.V(4).Infof("pod=%s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
+		podInfo := &api.PodInfo{
+			Namespace: &api.Namespace{
+				Name: pod.GetNamespace(),
+			},
+			Name: pod.GetName(),
+			// TODO: remove the specifics from containerd
+			Labels:      pod.GetLabels(),
+			LastUpdated: time.Now().Unix(),
+		}
+		if p.nsLister != nil {
+			ns, err := p.nsLister.Get(pod.GetNamespace())
+			if err == nil {
+				podInfo.Namespace.Labels = ns.Labels
+			}
+		}
 		for _, ip := range ips {
 			p.mu.Lock()
-			p.podIPMap[ip] = podKey
+			p.podInfoByIP[ip] = podInfo
 			p.mu.Unlock()
 		}
 	}
+
 	return nil, nil
 }
 
@@ -178,9 +222,24 @@ func (p *NRIResolver) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) e
 	ips := getPodIPs(pod)
 	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
 	klog.V(4).Infof("Starting Pod %s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
+	podInfo := &api.PodInfo{
+		Namespace: &api.Namespace{
+			Name: pod.GetNamespace(),
+		},
+		Name: pod.GetName(),
+		// TODO: remove the specifics from containerd
+		Labels:      pod.GetLabels(),
+		LastUpdated: time.Now().Unix(),
+	}
+	if p.nsLister != nil {
+		ns, err := p.nsLister.Get(pod.GetNamespace())
+		if err == nil {
+			podInfo.Namespace.Labels = ns.Labels
+		}
+	}
 	for _, ip := range ips {
 		p.mu.Lock()
-		p.podIPMap[ip] = podKey
+		p.podInfoByIP[ip] = podInfo
 		p.mu.Unlock()
 	}
 	return nil
@@ -195,7 +254,7 @@ func (p *NRIResolver) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox
 	klog.V(4).Infof("Removing Pod %s ips=%v", podKey, ips)
 	for _, ip := range ips {
 		p.mu.Lock()
-		delete(p.podIPMap, ip)
+		delete(p.podInfoByIP, ip)
 		p.mu.Unlock()
 	}
 	return nil

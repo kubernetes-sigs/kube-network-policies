@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/dataplane"
 	"sigs.k8s.io/kube-network-policies/pkg/ipcache"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
+	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 	pluginsiptracker "sigs.k8s.io/kube-network-policies/plugins/iptracker"
 
 	"k8s.io/client-go/informers"
@@ -170,20 +171,19 @@ func run() int {
 	if err != nil {
 		klog.Fatalf("Failed to create ipcache client: %v", err)
 	}
-	podInfoProvider := ipcacheClient
-
+	var podInfoProvider api.PodInfoProvider
 	// Create an NRI Pod IP resolver if enabled, since NRI connects to the container runtime
 	// the Pod and IP information is provided at the time the Pod Sandbox is created and before
 	// the containers start running, so policies can be enforced without race conditions.
-	/* TODO use NRI to populate the local cache, it will be invalidated later
 	if !opts.DisableNRI {
-		nriIPResolver, err := podinfo.NewNRIResolver(ctx)
+		nriIPResolver, err := podinfo.NewNRIResolver(ctx, informersFactory.Core().V1().Namespaces())
 		if err != nil {
 			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
 		}
-		resolvers = append(resolvers, nriIPResolver)
+		podInfoProvider = podinfo.NewFallbackPodInfoProvider(ipcacheClient, nriIPResolver)
+	} else {
+		podInfoProvider = ipcacheClient
 	}
-	*/
 
 	// Create the evaluators for the Pipeline to process the packets
 	// and take a network policy action. The evaluators are processed

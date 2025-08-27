@@ -1,0 +1,208 @@
+#!/usr/bin/env bats
+
+setup_file() {
+  export REGISTRY="registry.k8s.io/networking"
+  export IMAGE_NAME="kube-network-policies"
+  export TAG="test"
+
+  # Build the image for the iptracker binary and amd64 architecture
+  (
+    cd "$BATS_TEST_DIRNAME"/..
+    TAG="$TAG" make image-build-iptracker
+    TAG="$TAG" make image-build-kube-ip-tracker
+  )
+
+  # Load the Docker image into the kind cluster
+  kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-iptracker --name "$CLUSTER_NAME"
+  kind load docker-image "$REGISTRY/kube-ip-tracker:$TAG" --name "$CLUSTER_NAME"
+
+  # Install kube-network-policies
+  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-iptracker#" < "$BATS_TEST_DIRNAME"/../install-iptracker.yaml | sed "s#$REGISTRY/kube-ip-tracker.*#$REGISTRY/kube-ip-tracker:$TAG#")
+  printf '%s' "${_install}" | kubectl apply -f -
+  kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
+}
+
+teardown_file() {
+  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-iptracker#" < "$BATS_TEST_DIRNAME"/../install-iptracker.yaml | sed "s#$REGISTRY/kube-ip-tracker.*#$REGISTRY/kube-ip-tracker:$TAG#")
+  printf '%s' "${_install}" | kubectl delete -f -
+}
+
+setup() {
+  kubectl create namespace dev
+  kubectl label namespace/dev purpose=testing
+
+  kubectl create namespace prod
+  kubectl label namespace/prod purpose=production
+}
+
+teardown() {
+  kubectl delete namespace prod
+  kubectl delete namespace dev
+}
+
+# https://github.com/kubernetes-sigs/kube-network-policies/issues/150
+@test "iptracker: liveness probes" {
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: dev
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+EOF
+  # propagation delay
+  sleep 1
+
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+  namespace: dev
+  labels:
+    app: myapp
+spec:
+  containers:
+    - name: agnhost
+      image: registry.k8s.io/e2e-test-images/agnhost:2.39
+      args:
+        - netexec
+        - --http-port=1234
+      livenessProbe:
+        failureThreshold: 5
+        periodSeconds: 2
+        tcpSocket:
+          port: 1234
+      readinessProbe:
+        failureThreshold: 5
+        periodSeconds: 2
+        tcpSocket:
+          port: 1234
+      ports:
+        - containerPort: 1234
+          name: tcp1234
+EOF
+
+  kubectl -n dev wait --for=condition=ready pod/myapp-pod --timeout=20s
+  echo "Pod is ready."
+  restart_count=$(kubectl get pod myapp-pod -n dev -o jsonpath='{.status.containerStatuses[0].restartCount}')
+  echo "Pod restarted $restart_count times"
+  test "$restart_count" = "0"
+  # cleanup
+  kubectl -n dev delete pod myapp-pod
+  kubectl -n dev delete networkpolicy default-deny-all
+}
+
+@test "iptracker: allow traffic from a namespace" {
+  # https://github.com/ahmetb/kubernetes-network-policy-recipes/blob/master/06-allow-traffic-from-a-namespace.md
+
+  kubectl apply -f - <<EOF
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: web-allow-prods
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          purpose: production
+EOF
+  # propagation delay
+  sleep 1
+  # query should be blocked
+  output=$(kubectl run test-$RANDOM --namespace=dev --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --restart=Never -i --command -- bash -c "curl -q -s --connect-timeout 5 --output /dev/null http://web.default && echo ok || echo fail")
+  echo "Connect to webserver should fail: $output"
+  kubectl --namespace=dev get pods -o wide
+  test "$output" = "fail"
+
+  # query should work
+  output=$(kubectl run test-$RANDOM --namespace=prod --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --restart=Never -i --command -- bash -c "curl -q -s --connect-timeout 5 --output /dev/null http://web.default && echo ok || echo fail")
+  echo "Connect to webserver should work: $output"
+  kubectl --namespace=prod get pods -o wide
+  test "$output" = "ok"
+
+  # cleanup
+  kubectl delete networkpolicy web-allow-prods
+}
+
+
+@test "iptracker: ICMPv6 ping6 with network policies" {
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: dev
+  name: client-pod
+spec:
+  containers:
+    - name: busybox
+      image: registry.k8s.io/busybox:1.27
+      command:
+        - sleep
+        - "3600"
+      securityContext:
+        privileged: true
+EOF
+
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: prod
+  name: target-pod
+spec:
+  containers:
+    - name: busybox
+      image: registry.k8s.io/busybox:1.27
+      command:
+        - sleep
+        - "3600"
+      securityContext:
+        privileged: true
+EOF
+
+  kubectl -n dev wait --for=condition=ready pod/client-pod --timeout=30s
+  kubectl -n prod wait --for=condition=ready pod/target-pod --timeout=30s
+
+  TARGET_IPv6=$(kubectl get pod target-pod -n prod -o jsonpath='{.status.podIPs[1].ip}' 2>/dev/null || echo "")
+  test -n "$TARGET_IPv6"
+
+  # query should work
+  output=$(kubectl exec client-pod -n dev -- ping6 -c 2 -W 5 "$TARGET_IPv6" > /dev/null 2>&1 && echo ok || echo fail)
+  test "$output" = "ok"
+
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: prod
+  name: allow-same-namespace
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: {}
+EOF
+
+  # propagation delay
+  sleep 2
+
+  # query should be blocked
+  output=$(kubectl exec client-pod -n dev -- ping6 -c 2 -W 5 "$TARGET_IPv6" > /dev/null 2>&1 && echo ok || echo fail)
+  test "$output" = "fail"
+
+  # cleanup
+  kubectl -n dev delete pod client-pod
+  kubectl -n prod delete pod target-pod
+  kubectl -n prod delete networkpolicy allow-same-namespace
+}
