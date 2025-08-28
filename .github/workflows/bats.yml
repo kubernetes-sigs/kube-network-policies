@@ -38,6 +38,29 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kind-logs-${{ env.JOB_NAME }}-${{ github.run_id }}
+          name: kind-logs-bats-${{ github.run_id }}
+          path: ./_artifacts
+ 
+  bats_multicluster_tests:
+    runs-on: ubuntu-22.04
+    name: Bats e2e multicluster tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Setup Bats and bats libs
+        id: setup-bats
+        uses: bats-core/bats-action@3.0.0
+      - name: Bats tests
+        shell: bash
+        env:
+         BATS_LIB_PATH: ${{ steps.setup-bats.outputs.lib-path }}
+         TERM: xterm
+        run: bats -o _artifacts --print-output-on-failure tests/multicluster/
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-logs-bats-multicluster-${{ github.run_id }}
           path: ./_artifacts
  

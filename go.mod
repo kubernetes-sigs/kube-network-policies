@@ -6,6 +6,7 @@ require (
 	github.com/armon/go-radix v1.0.0
 	github.com/containerd/nri v0.10.0
 	github.com/florianl/go-nfqueue v1.3.2
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
 	github.com/mdlayher/netlink v1.8.0

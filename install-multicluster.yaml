@@ -1,3 +1,29 @@
+# This manifest provides an example of how to deploy the kube-ip-tracker
+# in a multi-cluster configuration. It uses a Secret to store the kubeconfig
+# files for the remote clusters and mounts them into a directory that the
+# tracker monitors.
+# It also deploys the network policy agent.
+---
+# 1. Secret containing the kubeconfig files for all clusters in the mesh.
+#    Each key in the `data` field should be a filename (e.g., cluster-one.yaml).
+#    The value is the base64 encoded content of the corresponding kubeconfig file.
+#
+#    You can create this secret from existing files using a command like:
+#    kubectl create secret generic remote-kubeconfigs \
+#      --from-file=cluster-one.yaml=/path/to/your/cluster-one.yaml \
+#      --from-file=cluster-two.yaml=/path/to/your/cluster-two.yaml \
+#      -n kube-system
+#
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: remote-kubeconfigs
+#   namespace: kube-system
+# type: Opaque
+# data:
+#   cluster-one.yaml: base64-encoded-kubeconfig
+#   cluster-two.yaml: base64-encoded-kubeconfig
+
 ---
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
@@ -73,16 +99,25 @@ spec:
       - key: "node-role.kubernetes.io/control-plane"
         operator: "Exists"
         effect: "NoSchedule"
+      volumes:
+      - name: remote-kubeconfigs
+        secret:
+          secretName: remote-kubeconfigs
       containers:
       - name: kube-ip-tracker
-        image: registry.k8s.io/networking/kube-ip-tracker:v0.1.0
+        image: registry.k8s.io/networking/kube-ip-tracker:v0.1.0-multicluster
         args:
         - /bin/kube-ip-tracker
         - --listen-address=http://0.0.0.0:10999
         - --v=2
+        - --kubeconfig-dir=/etc/kubernetes/kubeconfig
         ports:
         - containerPort: 10999
           name: grpc
+        volumeMounts:
+        - name: remote-kubeconfigs
+          mountPath: /etc/kubernetes/kubeconfig
+          readOnly: true
         resources:
           requests:
             cpu: "100m"
