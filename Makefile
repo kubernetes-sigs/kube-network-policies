@@ -128,7 +128,7 @@ image-push-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1 image-build-npa-v1alpha2 image-build-iptracker image-build-kube-ip-tracker-standard
 
 # Build and push all multi-platform image variants to the registry
-images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-build-npa-v1alpha2 image-push-iptracker image-push-kube-ip-tracker-standard
+images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-push-npa-v1alpha2 image-push-iptracker image-push-kube-ip-tracker-standard
 
 # The main release target, which pushes all images
 release: images-push
