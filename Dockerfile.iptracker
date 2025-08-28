@@ -11,7 +11,7 @@ RUN go mod download
 
 # Build the specific binary based on the build argument
 ARG TARGET_BUILD
-RUN make build-${TARGET_BUILD}
+RUN make build-kube-ip-tracker-${TARGET_BUILD}
 
 # STEP 2: Build small image
 FROM gcr.io/distroless/static-debian12
