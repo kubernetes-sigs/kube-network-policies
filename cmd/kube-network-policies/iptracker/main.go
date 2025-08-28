@@ -195,7 +195,7 @@ func run() int {
 		evaluators = append(evaluators, networkpolicy.NewLoggingPolicy())
 	}
 
-	evaluators = append(evaluators, pluginsiptracker.NewIPTrackerNetworkPolicy(networkPolicyInfomer))
+	evaluators = append(evaluators, pluginsiptracker.NewIPTrackerNetworkPolicy(nodeName, networkPolicyInfomer))
 
 	informersFactory.Start(ctx.Done())
 

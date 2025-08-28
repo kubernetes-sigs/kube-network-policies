@@ -10,6 +10,7 @@ import (
 	networkinginformers "k8s.io/client-go/informers/networking/v1"
 	networkinglisters "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
@@ -17,6 +18,8 @@ import (
 
 // IPTrackerNetworkPolicy implements the PolicyEvaluator interface for standard Kubernetes NetworkPolicies using iptracker.
 type IPTrackerNetworkPolicy struct {
+	nodeName string
+
 	networkpolicyLister   networkinglisters.NetworkPolicyLister
 	networkpoliciesSynced cache.InformerSynced
 	syncCallback          api.SyncFunc
@@ -27,9 +30,11 @@ var _ api.PolicyEvaluator = &IPTrackerNetworkPolicy{}
 
 // NewIPTrackerNetworkPolicy creates a new IPTrackerNetworkPolicy implementation.
 func NewIPTrackerNetworkPolicy(
+	nodeName string,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 ) *IPTrackerNetworkPolicy {
 	s := &IPTrackerNetworkPolicy{
+		nodeName:              nodeName,
 		networkpolicyLister:   networkpolicyInformer.Lister(),
 		networkpoliciesSynced: networkpolicyInformer.Informer().HasSynced,
 		syncCallback:          func() {},
@@ -68,8 +73,11 @@ func (s *IPTrackerNetworkPolicy) ManagedIPs(ctx context.Context) ([]netip.Addr, 
 
 // EvaluateIngress evaluates the ingress traffic for a pod.
 func (s *IPTrackerNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
+	logger := klog.FromContext(ctx)
+
 	policies := s.getNetworkPoliciesForPod(dstPod)
 	if len(policies) == 0 {
+		logger.V(2).Info("Ingress NetworkPolicies does not apply")
 		return api.VerdictNext, nil
 	}
 	if !networkpolicy.EvaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
@@ -80,8 +88,11 @@ func (s *IPTrackerNetworkPolicy) EvaluateIngress(ctx context.Context, p *network
 
 // EvaluateEgress evaluates the egress traffic for a pod.
 func (s *IPTrackerNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
+	logger := klog.FromContext(ctx)
+
 	policies := s.getNetworkPoliciesForPod(srcPod)
 	if len(policies) == 0 {
+		logger.V(2).Info("Ingress NetworkPolicies does not apply")
 		return api.VerdictNext, nil
 	}
 
@@ -93,6 +104,12 @@ func (s *IPTrackerNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.
 
 func (s *IPTrackerNetworkPolicy) getNetworkPoliciesForPod(pod *api.PodInfo) []*networkingv1.NetworkPolicy {
 	if pod == nil {
+		return nil
+	}
+	// keeping the scope local to not enforce policies for a pod in another node
+	// or it will be difficult to debug and increase the blast radious of bugs
+	// in the agent.
+	if pod.Node.Name != s.nodeName {
 		return nil
 	}
 	networkPolices, err := s.networkpolicyLister.NetworkPolicies(pod.Namespace.Name).List(labels.Everything())
