@@ -441,9 +441,10 @@ func evaluateEgress(ctx context.Context, netpolNamespace string, egressRules []n
 }
 
 func evaluateSelectors(ctx context.Context, peerPodSelector *metav1.LabelSelector, peerNSSelector *metav1.LabelSelector, pod *api.PodInfo, policyNs string) bool {
-	// avoid panics
+	// if a pod is nil it has to be considered as not matching
+	// since it means is treated as an external pod or IP
 	if pod == nil {
-		return true
+		return false
 	}
 	logger := klog.FromContext(ctx)
 
