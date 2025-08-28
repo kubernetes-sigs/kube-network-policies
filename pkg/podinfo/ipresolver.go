@@ -95,6 +95,7 @@ var _ api.PodInfoProvider = &NRIResolver{}
 // NRIResolver is a standalone component that listens to NRI events
 // and maintains a cache of PodInfo objects.
 type NRIResolver struct {
+	nodeName    string
 	stub        stub.Stub
 	mu          sync.Mutex
 	podInfoByIP map[string]*api.PodInfo
@@ -102,12 +103,13 @@ type NRIResolver struct {
 }
 
 // NewNRIResolver creates a new resolver that looks up pods via the NRI plugin.
-func NewNRIResolver(ctx context.Context, namespaceInformer coreinformers.NamespaceInformer) (*NRIResolver, error) {
+func NewNRIResolver(ctx context.Context, nodeName string, namespaceInformer coreinformers.NamespaceInformer) (*NRIResolver, error) {
 	const (
 		pluginName = "kube-network-policies-podip-resolver"
 		pluginIdx  = "10"
 	)
 	p := &NRIResolver{
+		nodeName:    nodeName,
 		podInfoByIP: make(map[string]*api.PodInfo),
 	}
 	if namespaceInformer != nil {
@@ -189,21 +191,7 @@ func (p *NRIResolver) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, 
 		ips := getPodIPs(pod)
 		podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
 		klog.V(4).Infof("pod=%s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
-		podInfo := &api.PodInfo{
-			Namespace: &api.Namespace{
-				Name: pod.GetNamespace(),
-			},
-			Name: pod.GetName(),
-			// TODO: remove the specifics from containerd
-			Labels:      pod.GetLabels(),
-			LastUpdated: time.Now().Unix(),
-		}
-		if p.nsLister != nil {
-			ns, err := p.nsLister.Get(pod.GetNamespace())
-			if err == nil {
-				podInfo.Namespace.Labels = ns.Labels
-			}
-		}
+		podInfo := p.getPodInfo(pod)
 		for _, ip := range ips {
 			p.mu.Lock()
 			p.podInfoByIP[ip] = podInfo
@@ -222,21 +210,7 @@ func (p *NRIResolver) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) e
 	ips := getPodIPs(pod)
 	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
 	klog.V(4).Infof("Starting Pod %s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
-	podInfo := &api.PodInfo{
-		Namespace: &api.Namespace{
-			Name: pod.GetNamespace(),
-		},
-		Name: pod.GetName(),
-		// TODO: remove the specifics from containerd
-		Labels:      pod.GetLabels(),
-		LastUpdated: time.Now().Unix(),
-	}
-	if p.nsLister != nil {
-		ns, err := p.nsLister.Get(pod.GetNamespace())
-		if err == nil {
-			podInfo.Namespace.Labels = ns.Labels
-		}
-	}
+	podInfo := p.getPodInfo(pod)
 	for _, ip := range ips {
 		p.mu.Lock()
 		p.podInfoByIP[ip] = podInfo
@@ -262,6 +236,31 @@ func (p *NRIResolver) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox
 
 func (p *NRIResolver) onClose() {
 	klog.Infof("Connection to the runtime lost, exiting...")
+}
+
+// getPodInfo returns an PodInfo object obtained with the local information
+// so it solves the race problem caused by waiting for the kubelet to propagate
+// the local information to the apiserver and the agent receiving it
+func (p *NRIResolver) getPodInfo(pod *nriapi.PodSandbox) *api.PodInfo {
+	podInfo := &api.PodInfo{
+		Name: pod.GetName(),
+		// TODO: remove the specifics from containerd
+		Labels: pod.GetLabels(),
+		Namespace: &api.Namespace{
+			Name: pod.GetNamespace(),
+		},
+		Node: &api.Node{
+			Name: p.nodeName,
+		},
+		LastUpdated: time.Now().Unix(),
+	}
+	if p.nsLister != nil {
+		ns, err := p.nsLister.Get(pod.GetNamespace())
+		if err == nil {
+			podInfo.Namespace.Labels = ns.Labels
+		}
+	}
+	return podInfo
 }
 
 func getNetworkNamespace(pod *nriapi.PodSandbox) string {

@@ -176,7 +176,7 @@ func run() int {
 	// the Pod and IP information is provided at the time the Pod Sandbox is created and before
 	// the containers start running, so policies can be enforced without race conditions.
 	if !opts.DisableNRI {
-		nriIPResolver, err := podinfo.NewNRIResolver(ctx, informersFactory.Core().V1().Namespaces())
+		nriIPResolver, err := podinfo.NewNRIResolver(ctx, nodeName, informersFactory.Core().V1().Namespaces())
 		if err != nil {
 			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
 		}
