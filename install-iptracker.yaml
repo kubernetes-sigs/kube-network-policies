@@ -71,7 +71,7 @@ spec:
       serviceAccountName: kube-ip-tracker
       containers:
       - name: kube-ip-tracker
-        image: registry.k8s.io/networking/kube-ip-tracker:v0.1.0
+        image: registry.k8s.io/networking/kube-ip-tracker:v0.9.1
         args:
         - /bin/kube-ip-tracker
         - --listen-address=http://0.0.0.0:10999
@@ -154,7 +154,7 @@ spec:
       serviceAccountName: kube-network-policies
       containers:
       - name: kube-network-policies
-        image: registry.k8s.io/networking/kube-network-policies:v0.8.0-iptracker
+        image: registry.k8s.io/networking/kube-network-policies:v0.9.1-iptracker
         args:
         - /bin/netpol
         - --hostname-override=$(MY_NODE_NAME)
