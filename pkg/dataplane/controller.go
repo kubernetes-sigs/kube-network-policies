@@ -254,7 +254,34 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 
+	c.Shutdown(context.Background())
+
 	return nil
+}
+
+// Shutdown handles graceful shutdown of the controller.
+func (c *Controller) Shutdown(ctx context.Context) {
+	klog.Info("Shutting down controller logic")
+
+	// On shutdown, we need to decide whether to clean up nftables rules.
+	// - If we clean up, there's a traffic gap during upgrades.
+	// - If we don't clean up, we might blackhole traffic on uninstall if FailOpen is false.
+
+	// If FailOpen is true, we can safely leave the rules. The 'bypass' flag
+	// on the nfqueue rule will allow traffic to pass through if the controller
+	// is not running. The new controller instance will sync the rules.
+	// This avoids service disruption during upgrades.
+	if c.config.FailOpen {
+		klog.Info("FailOpen is true, skipping nftables cleanup on shutdown to avoid traffic disruption.")
+		return
+	}
+
+	// If FailOpen is false, the priority is to not let traffic pass when the
+	// controller is not running. Leaving the rules would cause the kernel to drop
+	// packets queued to a non-existent process, effectively blackholing traffic.
+	// Therefore, we must clean up the rules.
+	klog.Info("FailOpen is false, cleaning up nftables rules on shutdown.")
+	c.cleanNFTablesRules(ctx)
 }
 
 // verifctString coverts nfqueue int vericts to strings for metrics/logging
