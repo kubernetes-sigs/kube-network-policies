@@ -13,7 +13,7 @@ jobs:
     - uses: actions/setup-go@v6
       with:
         go-version: ${{ matrix.go-version }}
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - run: sudo make test
     - run: make lint
 
