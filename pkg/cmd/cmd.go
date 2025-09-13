@@ -35,7 +35,7 @@ func NewOptions() *Options {
 // AddFlags adds the common flags to the provided flag set.
 func (o *Options) AddFlags(fs *flag.FlagSet) {
 	fs.StringVar(&o.Kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
-	fs.BoolVar(&o.FailOpen, "fail-open", false, "If set, don't drop packets if the controller is not running")
+	fs.BoolVar(&o.FailOpen, "fail-open", true, "If set, don't drop packets if the controller is not running")
 	fs.IntVar(&o.QueueID, "nfqueue-id", 100, "Number of the nfqueue used")
 	fs.StringVar(&o.MetricsBindAddress, "metrics-bind-address", ":9080", "The IP address and port for the metrics server to serve on")
 	fs.StringVar(&o.HostnameOverride, "hostname-override", "", "If non-empty, will be used as the name of the Node that kube-network-policies is running on. If unset, the node name is assumed to be the same as the node's hostname.")
