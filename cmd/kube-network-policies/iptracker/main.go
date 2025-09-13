@@ -22,11 +22,11 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 	pluginsiptracker "sigs.k8s.io/kube-network-policies/plugins/iptracker"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
-	"k8s.io/client-go/tools/clientcmd"
-
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/component-base/logs"
 	logsapi "k8s.io/component-base/logs/api/v1"
 	_ "k8s.io/component-base/logs/json/register"
@@ -147,6 +147,12 @@ func run() int {
 		panic(err.Error())
 	}
 
+	nsKubeSystem, err := clientset.CoreV1().Namespaces().Get(ctx, metav1.NamespaceSystem, metav1.GetOptions{})
+	if err != nil {
+		klog.Fatalf("Failed to get kube-system namespace: %v", err)
+	}
+	clusterID := string(nsKubeSystem.UID)
+
 	informersFactory := informers.NewSharedInformerFactory(clientset, 0)
 	networkPolicyInfomer := informersFactory.Networking().V1().NetworkPolicies()
 
@@ -195,7 +201,7 @@ func run() int {
 		evaluators = append(evaluators, networkpolicy.NewLoggingPolicy())
 	}
 
-	evaluators = append(evaluators, pluginsiptracker.NewIPTrackerNetworkPolicy(nodeName, networkPolicyInfomer))
+	evaluators = append(evaluators, pluginsiptracker.NewIPTrackerNetworkPolicy(clusterID, nodeName, networkPolicyInfomer))
 
 	informersFactory.Start(ctx.Done())
 
