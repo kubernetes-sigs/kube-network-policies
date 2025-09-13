@@ -18,7 +18,8 @@ import (
 
 // IPTrackerNetworkPolicy implements the PolicyEvaluator interface for standard Kubernetes NetworkPolicies using iptracker.
 type IPTrackerNetworkPolicy struct {
-	nodeName string
+	clusterID string
+	nodeName  string
 
 	networkpolicyLister   networkinglisters.NetworkPolicyLister
 	networkpoliciesSynced cache.InformerSynced
@@ -30,10 +31,12 @@ var _ api.PolicyEvaluator = &IPTrackerNetworkPolicy{}
 
 // NewIPTrackerNetworkPolicy creates a new IPTrackerNetworkPolicy implementation.
 func NewIPTrackerNetworkPolicy(
+	clusterID string,
 	nodeName string,
 	networkpolicyInformer networkinginformers.NetworkPolicyInformer,
 ) *IPTrackerNetworkPolicy {
 	s := &IPTrackerNetworkPolicy{
+		clusterID:             clusterID,
 		nodeName:              nodeName,
 		networkpolicyLister:   networkpolicyInformer.Lister(),
 		networkpoliciesSynced: networkpolicyInformer.Informer().HasSynced,
@@ -112,6 +115,12 @@ func (s *IPTrackerNetworkPolicy) getNetworkPoliciesForPod(pod *api.PodInfo) []*n
 	if pod.Node.Name != s.nodeName {
 		return nil
 	}
+
+	// If the pod has a ClusterId set, and it's not the current cluster's ID, then this agent shouldn't manage it.
+	if pod.ClusterId != "" && pod.ClusterId != s.clusterID {
+		return nil
+	}
+
 	networkPolices, err := s.networkpolicyLister.NetworkPolicies(pod.Namespace.Name).List(labels.Everything())
 	if err != nil {
 		return nil
