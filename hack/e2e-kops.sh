@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+
+# Copyright 2025 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -e
+set -x
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd ${REPO_ROOT}
+# This is cloned under sigs.k8s.io/kube-network-policies but kops path_alias is just kops
+cd ../..
+WORKSPACE=$(pwd)
+
+# Create bindir
+BINDIR=${WORKSPACE}/bin
+export PATH=${BINDIR}:${PATH}
+mkdir -p "${BINDIR}"
+
+# Setup our cleanup function; as we allocate resources we set a variable to indicate they should be cleaned up
+function cleanup {
+  if [[ "${CLEANUP_BOSKOS:-}" == "true" ]]; then
+    cleanup_boskos
+  fi
+  # shellcheck disable=SC2153
+  if [[ "${DELETE_CLUSTER:-}" == "true" ]]; then
+      kubetest2 kops ${KUBETEST2_ARGS} --down || echo "kubetest2 down failed"
+  fi
+}
+trap cleanup EXIT
+
+# Default cluster name
+SCRIPT_NAME=$(basename $0 .sh)
+if [[ -z "${CLUSTER_NAME:-}" ]]; then
+  CLUSTER_NAME="${SCRIPT_NAME}.k8s.local"
+fi
+echo "CLUSTER_NAME=${CLUSTER_NAME}"
+
+# Default workdir
+if [[ -z "${WORKDIR:-}" ]]; then
+  WORKDIR="${WORKSPACE}/clusters/${CLUSTER_NAME}"
+fi
+mkdir -p "${WORKDIR}"
+
+# Ensure we have a project; get one from boskos if one not provided in GCP_PROJECT
+source "${REPO_ROOT}"/hack/boskos.sh
+if [[ -z "${GCP_PROJECT:-}" ]]; then
+  echo "GCP_PROJECT not set, acquiring project from boskos"
+  acquire_project
+  GCP_PROJECT="${PROJECT}"
+  CLEANUP_BOSKOS="true"
+fi
+echo "GCP_PROJECT=${GCP_PROJECT}"
+
+# Ensure we have an SSH key; needed to dump the node information to artifacts/
+if [[ -z "${SSH_PRIVATE_KEY:-}" ]]; then
+  echo "SSH_PRIVATE_KEY not set, creating one"
+
+  SSH_PRIVATE_KEY="${WORKDIR}/google_compute_engine"
+  gcloud compute --project="${GCP_PROJECT}" config-ssh --ssh-key-file="${SSH_PRIVATE_KEY}"
+  export KUBE_SSH_USER="${KUBE_SSH_USER:-ubuntu}"
+fi
+echo "SSH_PRIVATE_KEY=${SSH_PRIVATE_KEY}"
+
+# Build kubetest-2 kOps support
+pushd ${WORKSPACE}/kops
+GOBIN=${BINDIR} make test-e2e-install
+popd
+
+if [[ -z "${K8S_VERSION:-}" ]]; then
+  K8S_VERSION="$(curl -sL https://dl.k8s.io/release/stable.txt)"
+fi
+
+# Download latest prebuilt kOps
+if [[ -z "${KOPS_BASE_URL:-}" ]]; then
+  KOPS_BRANCH="master"
+  KOPS_BASE_URL="$(curl -s https://storage.googleapis.com/k8s-staging-kops/kops/releases/markers/${KOPS_BRANCH}/latest-ci-updown-green.txt)"
+fi
+export KOPS_BASE_URL
+
+KOPS_BIN=${BINDIR}/kops
+wget -qO "${KOPS_BIN}" "$KOPS_BASE_URL/$(go env GOOS)/$(go env GOARCH)/kops"
+chmod +x "${KOPS_BIN}"
+
+# Set cloud provider to gce
+CLOUD_PROVIDER="gce"
+echo "CLOUD_PROVIDER=${CLOUD_PROVIDER}"
+
+#Set cloud provider location
+GCP_LOCATION="${GCP_LOCATION:-us-central1}"
+
+# KOPS_STATE_STORE holds metadata about the clusters we create
+if [[ -z "${KOPS_STATE_STORE:-}" ]]; then
+  KOPS_STATE_STORE="gs://kops-state-${GCP_PROJECT}"
+  # Ensure the bucket exists
+  gsutil ls -p "${GCP_PROJECT}" "${KOPS_STATE_STORE}" || gsutil mb -p "${GCP_PROJECT}" -l "${GCP_LOCATION}" "${KOPS_STATE_STORE}"
+
+  # Setting ubla off so that kOps can automatically set ACLs for the default serviceACcount
+  gsutil ubla set off "${KOPS_STATE_STORE}"
+
+  # Grant storage.admin on the bucket to our ServiceAccount
+  SA=$(gcloud config list --format 'value(core.account)')
+  gsutil iam ch serviceAccount:${SA}:admin "${KOPS_STATE_STORE}"
+fi
+echo "KOPS_STATE_STORE=${KOPS_STATE_STORE}"
+export KOPS_STATE_STORE
+
+# IMAGE_REPO is used to upload images
+if [[ -z "${IMAGE_REPO:-}" ]]; then
+  IMAGE_REPO="gcr.io/${GCP_PROJECT}"
+fi
+echo "IMAGE_REPO=${IMAGE_REPO}"
+
+cd ${REPO_ROOT}
+if [[ -z "${IMAGE_TAG:-}" ]]; then
+  IMAGE_TAG=$(git rev-parse --short HEAD)-$(date +%Y%m%dT%H%M%S)
+fi
+echo "IMAGE_TAG=${IMAGE_TAG}"
+
+# Build and push kube-network-policies images
+cd ${REPO_ROOT}
+
+echo "Configuring docker auth with gcloud"
+gcloud auth configure-docker
+
+echo "Building and pushing images"
+make ensure-buildx
+PLATFORMS=linux/amd64 REGISTRY=${IMAGE_REPO} TAG=${IMAGE_TAG} make image-push-iptracker
+PLATFORMS=linux/amd64 REGISTRY=${IMAGE_REPO} TAG=${IMAGE_TAG} make image-push-kube-ip-tracker-standard
+
+if [[ -z "${ADMIN_ACCESS:-}" ]]; then
+  ADMIN_ACCESS="0.0.0.0/0" # Or use your IPv4 with /32
+fi
+echo "ADMIN_ACCESS=${ADMIN_ACCESS}"
+
+create_args="--networking gce"
+if [[ -n "${ZONES:-}" ]]; then
+    create_args="${create_args} --zones=${ZONES}"
+fi
+
+# Workaround for test-infra#24747
+create_args="${create_args} --gce-service-account=default"
+
+# Add our manifest
+cp "${REPO_ROOT}/install-iptracker.yaml" "${WORKDIR}/kube-network-policies.yaml"
+sed -i s#registry.k8s.io/networking/kube-network-policies.*#${IMAGE_REPO}/kube-network-policies:${IMAGE_TAG}-iptracker# "${WORKDIR}/kube-network-policies.yaml"
+sed -i s#registry.k8s.io/networking/kube-ip-tracker.*#${IMAGE_REPO}/kube-ip-tracker:${IMAGE_TAG}# "${WORKDIR}/kube-network-policies.yaml"
+create_args="${create_args} --add=${WORKDIR}/kube-network-policies.yaml"
+
+# Enable cluster addons, this enables us to replace the built-in manifest
+KOPS_FEATURE_FLAGS="ClusterAddons,${KOPS_FEATURE_FLAGS:-}"
+echo "KOPS_FEATURE_FLAGS=${KOPS_FEATURE_FLAGS}"
+
+# Note that these arguments for kubetest2 and kOps, not (for example) the arguments passed to the cloud-provider-gcp
+KUBETEST2_ARGS=""
+KUBETEST2_ARGS="${KUBETEST2_ARGS} -v=2 --cloud-provider=${CLOUD_PROVIDER}"
+KUBETEST2_ARGS="${KUBETEST2_ARGS} --cluster-name=${CLUSTER_NAME:-}"
+KUBETEST2_ARGS="${KUBETEST2_ARGS} --kops-binary-path=${KOPS_BIN}"
+KUBETEST2_ARGS="${KUBETEST2_ARGS} --admin-access=${ADMIN_ACCESS:-}"
+KUBETEST2_ARGS="${KUBETEST2_ARGS} --env=KOPS_FEATURE_FLAGS=${KOPS_FEATURE_FLAGS}"
+
+if [[ -n "${GCP_PROJECT:-}" ]]; then
+  KUBETEST2_ARGS="${KUBETEST2_ARGS} --gcp-project=${GCP_PROJECT}"
+fi
+
+if [[ -n "${SSH_PRIVATE_KEY:-}" ]]; then
+  KUBETEST2_ARGS="${KUBETEST2_ARGS} --ssh-private-key=${SSH_PRIVATE_KEY}"
+fi
+
+# Pass through GOOGLE_APPLICATION_CREDENTIALS (we should probably do this automatically in kubetest2-kops)
+if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+  KUBETEST2_ARGS="${KUBETEST2_ARGS} --env=GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}"
+fi
+
+# The caller can set DELETE_CLUSTER=false to stop us deleting the cluster
+if [[ -z "${DELETE_CLUSTER:-}" ]]; then
+  DELETE_CLUSTER="true"
+fi
+
+kubetest2 kops ${KUBETEST2_ARGS} \
+  --up \
+  --kubernetes-version="${K8S_VERSION}" \
+  --create-args="${create_args}" \
+  --control-plane-size="${KOPS_CONTROL_PLANE_SIZE:-1}" \
+  --template-path="${KOPS_TEMPLATE:-}"
+
+kubetest2 kops ${KUBETEST2_ARGS} \
+  --test=kops \
+  --kubernetes-version="${K8S_VERSION}" \
+  -- \
+  --test-package-version="${K8S_VERSION}" \
+  --parallel=30 \
+  --skip-regex="\[Serial\]" \
+  --focus-regex="\[Conformance\]|NetworkPolicy"
+
+if [[ "${DELETE_CLUSTER:-}" == "true" ]]; then
+  kubetest2 kops ${KUBETEST2_ARGS} --down
+  DELETE_CLUSTER=false # Don't delete again in trap
+fi
