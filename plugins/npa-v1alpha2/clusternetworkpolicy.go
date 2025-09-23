@@ -260,7 +260,7 @@ func evaluateClusterNetworkPolicyPort(
 // actionToVerdict translates a CNP action into an internal Verdict.
 func actionToVerdict(action npav1alpha2.ClusterNetworkPolicyRuleAction) api.Verdict {
 	switch action {
-	case npav1alpha2.ClusterNetworkPolicyRuleActionAllow:
+	case npav1alpha2.ClusterNetworkPolicyRuleActionAccept:
 		return api.VerdictAccept
 	case npav1alpha2.ClusterNetworkPolicyRuleActionDeny:
 		return api.VerdictDeny

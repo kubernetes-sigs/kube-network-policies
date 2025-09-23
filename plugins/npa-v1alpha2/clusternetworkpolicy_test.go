@@ -157,7 +157,7 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 	adminAllowEgressToNSBar := makeClusterNetworkPolicy("admin-allow-egress-to-ns-bar", npav1alpha2.AdminTier, 50, func(p *npav1alpha2.ClusterNetworkPolicy) {
 		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "ns-foo"}}}
 		p.Spec.Egress = []npav1alpha2.ClusterNetworkPolicyEgressRule{{
-			Action: npav1alpha2.ClusterNetworkPolicyRuleActionAllow,
+			Action: npav1alpha2.ClusterNetworkPolicyRuleActionAccept,
 			To:     []npav1alpha2.ClusterNetworkPolicyEgressPeer{{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "bar"}}}},
 		}}
 	})
@@ -174,7 +174,7 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 	baselineAllowIngressFromNSFoo := makeClusterNetworkPolicy("baseline-allow-ingress-from-ns-foo", npav1alpha2.BaselineTier, 50, func(p *npav1alpha2.ClusterNetworkPolicy) {
 		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "bar"}}}
 		p.Spec.Ingress = []npav1alpha2.ClusterNetworkPolicyIngressRule{{
-			Action: npav1alpha2.ClusterNetworkPolicyRuleActionAllow,
+			Action: npav1alpha2.ClusterNetworkPolicyRuleActionAccept,
 			From:   []npav1alpha2.ClusterNetworkPolicyIngressPeer{{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "foo"}}}},
 		}}
 	})
