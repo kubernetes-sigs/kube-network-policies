@@ -27,7 +27,8 @@ require (
 	k8s.io/component-helpers v0.33.4
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
-	sigs.k8s.io/network-policy-api v0.1.8-0.20250826165010-d5cee02b3c1c
+	// Temporarily reference latest network-policy-api in anticipation of Beta.
+	sigs.k8s.io/network-policy-api v0.1.8-0.20250912163209-de1b4e9d7da6
 )
 
 require (
