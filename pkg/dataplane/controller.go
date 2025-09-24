@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,15 +11,21 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
+	vishnetlink "github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
+	v1 "k8s.io/api/core/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 
+	"sigs.k8s.io/kube-network-policies/pkg/dataplane/conntrack"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	"sigs.k8s.io/kube-network-policies/pkg/runner"
+	"sigs.k8s.io/kube-network-policies/pkg/socket"
 )
 
 // Network policies are hard to implement efficiently, and in large clusters this is
@@ -99,9 +106,22 @@ func newController(
 		1*time.Hour,   // maxInterval
 	)
 
+	// The conntrack cleaner will run periodically to remove entries
+	// that might have been left behind after network policies changed.
+	// The deletion of the entries will cause the connections to be dropped
+	// and re-evaluated by the new network policies.
+	c.conntrackReconciler = runner.NewBoundedFrequencyRunner(
+		controllerName+"-conntrack",
+		func() error { return c.firewallEnforcer(context.Background()) },
+		60*time.Second, // minInterval is conservative to avoid too much load on conntrack
+		10*time.Second, // retryInterval
+		1*time.Hour,    // maxInterval
+	)
+
 	// The sync callback now triggers the runner.
 	syncCallback := func() {
 		c.syncRunner.Run()
+		c.conntrackReconciler.Run()
 	}
 	c.policyEngine.SetDataplaneSyncCallbacks(syncCallback)
 
@@ -110,9 +130,10 @@ func newController(
 
 // Controller manages selector-based networkpolicy endpoints.
 type Controller struct {
-	config       Config
-	policyEngine *networkpolicy.PolicyEngine
-	syncRunner   *runner.BoundedFrequencyRunner
+	config              Config
+	policyEngine        *networkpolicy.PolicyEngine
+	syncRunner          *runner.BoundedFrequencyRunner
+	conntrackReconciler *runner.BoundedFrequencyRunner
 
 	nfq     *nfqueue.Nfqueue
 	flushed bool
@@ -142,7 +163,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	registerMetrics(ctx)
 	// collect metrics periodically
 	go wait.UntilWithContext(ctx, func(ctx context.Context) {
-		logger := klog.FromContext(ctx)
+		logger := klog.FromContext(ctx).WithName("metrics-collector")
 		queues, err := readNfnetlinkQueueStats()
 		if err != nil {
 			logger.Error(err, "reading nfqueue stats")
@@ -159,8 +180,9 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	}, 30*time.Second)
 
-	// Start the BoundedFrequencyRunner's loop.
+	// Start the BoundedFrequencyRunner's loops.
 	go c.syncRunner.Loop(ctx.Done())
+	go c.conntrackReconciler.Loop(ctx.Done())
 
 	// Perform an initial sync to ensure rules are in place at startup.
 	if err := c.syncNFTablesRules(ctx); err != nil {
@@ -310,11 +332,140 @@ func (c *Controller) evaluatePacket(ctx context.Context, p *network.Packet) bool
 	return allowed
 }
 
+// firewallEnforcer ensures that existing connections comply with current network policies.
+func (c *Controller) firewallEnforcer(ctx context.Context) error {
+	logger := klog.FromContext(ctx).WithName("firewall-enforcer")
+
+	logger.Info("Enforcing firewall policies on existing connections")
+	start := time.Now()
+	defer func() {
+		logger.Info("Enforcing firewall policies on existing connections", "elapsed", time.Since(start))
+	}()
+
+	flows, err := vishnetlink.ConntrackTableList(vishnetlink.ConntrackTable, vishnetlink.FAMILY_ALL)
+	if err != nil {
+		return err
+	}
+
+	allPodIPs, divertAll, err := c.policyEngine.GetManagedIPs(ctx)
+	if err != nil {
+		return err
+	}
+
+	ipset := sets.Set[string]{}
+	if !divertAll {
+		for _, ip := range allPodIPs {
+			ipset.Insert(ip.String())
+		}
+	}
+
+	connectionsToFlush := []*vishnetlink.ConntrackFlow{}
+	connectionsToDestroy := []network.Packet{}
+
+	for _, flow := range flows {
+		// only UDP, SCTP or TCP connections in ESTABLISHED state are evaluated
+		if flow.Forward.Protocol != unix.IPPROTO_UDP &&
+			flow.Forward.Protocol != unix.IPPROTO_SCTP &&
+			flow.Forward.Protocol != unix.IPPROTO_TCP {
+			continue
+		}
+		if flow.ProtoInfo != nil {
+			if state, ok := flow.ProtoInfo.(*vishnetlink.ProtoInfoTCP); ok && state.State != nl.TCP_CONNTRACK_ESTABLISHED {
+				continue
+			}
+		}
+
+		// If divertAll is true, all pod IPs are managed by network policies.
+		if !divertAll {
+			// Only evaluate flows that are affected by network policies.
+			// Translated packets will be evaluated on the destination node.
+			if !ipset.Has(flow.Forward.SrcIP.String()) && !ipset.Has(flow.Reverse.SrcIP.String()) {
+				klog.V(4).Info("Skipping conntrack entry not involving managed IPs", "flow", flow)
+				continue
+			}
+		}
+
+		// Evaluate both directions of the flow.
+		p := conntrack.PacketFromFlow(flow)
+		if p == nil {
+			continue
+		}
+		reverse := network.SwapPacket(p)
+		klog.V(4).Info("Evaluating packet", "packet", p.String())
+
+		for _, packet := range []*network.Packet{p, reverse} {
+			// Evaluate the packet against current network policies.
+			allowed, err := c.policyEngine.EvaluatePacket(ctx, packet)
+			if err != nil {
+				klog.Infof("error evaluating conntrack entry %v: %v", flow, err)
+				continue
+			}
+			// If the flow is not allowed, take action.
+			if allowed {
+				continue
+			}
+			klog.V(4).Info("Connection no longer allowed by network policies", "packet", packet.String())
+
+			// For not TCP flows we flush the conntrack entries, this is a safe operation.
+			if packet.Proto != v1.ProtocolTCP {
+				connectionsToFlush = append(connectionsToFlush, flow)
+			} else {
+				// For TCP we destroy the sockets, it is invasive but is also the most effective way
+				// and implemented in cilium https://github.com/cilium/cilium/blob/main/pkg/datapath/sockets/sockets.go
+				// The alternative is to send a RST packet, but it is more complex to implement since it requires/
+				// to get the seq/ack numbers from the conntrack entry, and also it is not guaranteed that the application
+				// will receive it.
+				connectionsToDestroy = append(connectionsToDestroy, *packet)
+			}
+		}
+	}
+
+	var errorList []error
+	// UDP
+	if len(connectionsToFlush) > 0 {
+		logger.Info("Flushing UDP/SCTP conntrack entries", "entries", len(connectionsToFlush))
+
+		filter := conntrack.NewConntrackFilter(connectionsToFlush)
+		n, err := vishnetlink.ConntrackDeleteFilters(vishnetlink.ConntrackTable, unix.AF_INET, filter)
+		if err != nil {
+			errorList = append(errorList, err)
+		}
+		logger.V(4).Info("Deleted IPv4 conntrack entries", "entries", n)
+
+		n, err = vishnetlink.ConntrackDeleteFilters(vishnetlink.ConntrackTable, unix.AF_INET6, filter)
+		if err != nil {
+			errorList = append(errorList, err)
+		}
+		logger.V(4).Info("Deleted IPv6 conntrack entries", "entries", n)
+	}
+	// TCP
+	if len(connectionsToDestroy) > 0 {
+		logger.Info("Destroying TCP connections", "connections", len(connectionsToDestroy))
+
+		// Create an instance of the terminator.
+		terminator := socket.NewSocketTerminator()
+		// connectionsToDestroy is a slice of network.Packet from your original code.
+		for _, packet := range connectionsToDestroy {
+			// The packet needs to be a pointer for the function call.
+			p := packet
+			if err := terminator.TerminateSocket(&p); err != nil {
+				// Log the error but continue processing others.
+				klog.Errorf("Failed to terminate connection for packet %s: %v", p.String(), err)
+				errorList = append(errorList, err)
+			}
+		}
+	}
+	if len(errorList) > 0 {
+		return fmt.Errorf("error cleaning conntrack entries: %v", errorList)
+	}
+	return errors.Join(errorList...)
+}
+
 // syncNFTablesRules adds the necessary rules to process the first connection packets in userspace
 // and check if network policies must apply.
 // TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
 func (c *Controller) syncNFTablesRules(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
+	logger := klog.FromContext(ctx).WithName("nftables-sync")
 
 	logger.Info("Syncing nftables rules")
 	start := time.Now()
@@ -580,7 +731,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	}
 
 	if err := nft.Flush(); err != nil {
-		klog.FromContext(ctx).Info("syncing nftables rules", "error", err)
+		logger.Info("syncing nftables rules", "error", err)
 		return err
 	}
 	return nil
