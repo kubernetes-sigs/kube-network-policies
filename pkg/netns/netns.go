@@ -7,6 +7,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"k8s.io/klog/v2"
 )
 
 // By convention a named network namespace is an object at /var/run/netns/NAME that can be opened
@@ -14,6 +15,7 @@ import (
 const bindMountPath = "/var/run/netns"
 
 // GetNetByNsId searches for a named network namespace by its ID and returns its name.
+// It is responsibility of the caller to close the returned NsHandle.
 func GetNetByNsId(targetID int) (netns.NsHandle, error) {
 	entries, err := os.ReadDir(bindMountPath)
 	if err != nil {
@@ -33,13 +35,15 @@ func GetNetByNsId(targetID int) (netns.NsHandle, error) {
 
 		nsHandle, err := netns.GetFromPath(path)
 		if err != nil {
-			return -1, fmt.Errorf("failed to get netns handle for path %s: %w", path, err)
+			klog.V(4).Infof("Failed to get namespace from path %s: %v", path, err)
+			continue
 		}
 
 		id, err := netlink.GetNetNsIdByFd(int(nsHandle))
 		if err != nil {
+			klog.V(4).Infof("Failed to get NetNsId for namespace %s: %v", path, err)
 			_ = nsHandle.Close()
-			return -1, fmt.Errorf("failed to get netns ID for fd %d: %w", int(nsHandle), err)
+			continue
 		}
 		if id == targetID {
 			return nsHandle, nil
