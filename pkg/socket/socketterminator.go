@@ -14,8 +14,6 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-const bindMountPath = "/run/netns"
-
 // SocketTerminator provides functionality to find and destroy TCP sockets,
 // automatically discovering the correct network namespace.
 type SocketTerminator struct{}
