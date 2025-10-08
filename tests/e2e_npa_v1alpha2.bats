@@ -8,28 +8,26 @@ setup_file() {
   # Build the image for the specific binary and architecture
   (
     cd "$BATS_TEST_DIRNAME"/..
-    TAG="$TAG" make image-build-npa-v1alpha1
+    TAG="$TAG" make image-build-npa-v1alpha2
   )
 
-  # Apply CRDs required for this binary
-  kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
-  kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+  # Apply CRDs required ClusterNetworkPolicy, use experimental for FQDN support
+  kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_clusternetworkpolicies.yaml
 
   # Load the Docker image into the kind cluster
-  kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha1 --name "$CLUSTER_NAME"
+  kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha2 --name "$CLUSTER_NAME"
 
   # Install kube-network-policies
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha1#" < "$BATS_TEST_DIRNAME"/../install-anp.yaml)
+  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha2#" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 }
 
 teardown_file() {
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha1#" < "$BATS_TEST_DIRNAME"/../install-anp.yaml)
+  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha2#" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
   printf '%s' "${_install}" | kubectl delete -f -
 
-  kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
-  kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+  kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_clusternetworkpolicies.yaml
 }
 
 setup() {
@@ -49,11 +47,12 @@ teardown() {
   # https://network-policy-api.sigs.k8s.io/npeps/npep-133-fqdn-egress-selector/#maintaining-an-allowlist-of-domains
 
   kubectl apply -f - <<EOF
-apiVersion: policy.networking.k8s.io/v1alpha1
-kind: AdminNetworkPolicy
+apiVersion: policy.networking.k8s.io/v1alpha2
+kind: ClusterNetworkPolicy
 metadata:
   name: allow-internal-egress
 spec:
+  tier: Admin
   priority: 45
   subject:
     namespaces:
@@ -61,18 +60,19 @@ spec:
         kubernetes.io/metadata.name: "dev"
   egress:
   - name: "allow-cluster"
-    action: "Allow"
+    action: "Accept"
     to:
     - networks:
       - "10.0.0.0/8"
       - "172.16.0.0/12"
       - "192.168.0.0/16"
 ---
-apiVersion: policy.networking.k8s.io/v1alpha1
-kind: AdminNetworkPolicy
+apiVersion: policy.networking.k8s.io/v1alpha2
+kind: ClusterNetworkPolicy
 metadata:
   name: allow-domains-egress
 spec:
+  tier: Admin
   priority: 55
   subject:
     namespaces:
@@ -80,7 +80,7 @@ spec:
         kubernetes.io/metadata.name: "dev"
   egress:
   - name: "allow-to-my-service"
-    action: "Allow"
+    action: "Accept"
     to:
     - domainNames:
       - "blog.kubernetes.io"
@@ -119,6 +119,6 @@ EOF
   test "$output" = "ok"
 
   # cleanup
-  kubectl delete adminnetworkpolicy allow-internal-egress
-  kubectl delete adminnetworkpolicy allow-domains-egress
+  kubectl delete clusternetworkpolicy allow-internal-egress
+  kubectl delete clusternetworkpolicy allow-domains-egress
 }
