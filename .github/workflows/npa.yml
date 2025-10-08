@@ -33,19 +33,141 @@ jobs:
     - name: Check out code
       uses: actions/checkout@v5
 
-    - name: Build
+    - name: Build-alpha1
       run: |
         REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-network-policies" TAG="test" make image-build-npa-v1alpha1
         mkdir _output
-        docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1 > _output/kube-network-policies-image.tar
+        docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1 > _output/kube-network-policies-image-v1alpha1.tar
 
     - uses: actions/upload-artifact@v4
       with:
-        name: test-image
-        path: _output/kube-network-policies-image.tar
+        name: test-image-v1alpha1
+        path: _output/kube-network-policies-image-v1alpha1.tar
+
+    - name: Build-alpha2
+      run: |
+        REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-network-policies" TAG="test" make image-build-npa-v1alpha2
+        docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha2 > _output/kube-network-policies-image-v1alpha2.tar
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: test-image-v1alpha2
+        path: _output/kube-network-policies-image-v1alpha2.tar
 
   e2e_npa_v1alpha1:
     name: e2e_npa_v1alpha1
+    runs-on: ubuntu-22.04
+    timeout-minutes: 100
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        ipFamily: ["ipv4"]
+    env:
+      JOB_NAME: "kube-network-policies-${{ matrix.ipFamily }}"
+      IP_FAMILY: ${{ matrix.ipFamily }}
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v5
+
+    - name: Enable ipv4 and ipv6 forwarding
+      run: |
+        sudo sysctl -w net.ipv6.conf.all.forwarding=1
+        sudo sysctl -w net.ipv4.ip_forward=1
+
+    - name: Set up environment (download dependencies)
+      run: |
+        TMP_DIR=$(mktemp -d)
+        # kubectl
+        curl -L https://dl.k8s.io/${{ env.K8S_VERSION }}/bin/linux/amd64/kubectl -o ${TMP_DIR}/kubectl
+        # kind
+        curl -Lo ${TMP_DIR}/kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+        # Install
+        sudo cp ${TMP_DIR}/kubectl /usr/local/bin/kubectl
+        sudo cp ${TMP_DIR}/kind /usr/local/bin/kind
+        sudo chmod +x /usr/local/bin/kubectl
+        sudo chmod +x /usr/local/bin/kind
+
+
+    - name: Create multi node cluster
+      run: |
+        # output_dir
+        mkdir -p _artifacts
+        # create cluster
+        cat <<EOF | /usr/local/bin/kind create cluster \
+          --name ${{ env.KIND_CLUSTER_NAME}}           \
+          --image kindest/node:${{ env.K8S_VERSION }}  \
+          -v7 --wait 1m --retain --config=-
+        kind: Cluster
+        apiVersion: kind.x-k8s.io/v1alpha4
+        networking:
+          ipFamily: ${IP_FAMILY}
+        nodes:
+        - role: control-plane
+        - role: worker
+        - role: worker
+        EOF
+        # dump the kubeconfig for later
+        /usr/local/bin/kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME}} > _artifacts/kubeconfig.conf
+
+    - uses: actions/download-artifact@v5
+      with:
+        name: test-image-v1alpha1
+
+    - name: Install kube-network-policies
+      run: |
+        # stop kindnet of applying network policies
+        kubectl -n kube-system set image ds kindnet kindnet-cni=docker.io/kindest/kindnetd:v20230809-80a64d96
+        # use the CRDs from network-policy-api commit with AdminNetworkPolicy support
+        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/standard/policy.networking.k8s.io_adminnetworkpolicies.yaml
+        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/standard/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+        # preload kube-network-policies image
+        docker load --input kube-network-policies-image.tar
+        /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1 --name ${{ env.KIND_CLUSTER_NAME}}
+        sed -i s#registry.k8s.io/networking/kube-network-policies.*#registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1# install-anp.yaml
+        /usr/local/bin/kubectl apply -f ./install-anp.yaml
+
+    - name: Get Cluster status
+      run: |
+        # wait network is ready
+        sleep 5
+        /usr/local/bin/kubectl get nodes -o wide
+        /usr/local/bin/kubectl get pods -A
+        /usr/local/bin/kubectl wait --timeout=1m --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-dns
+        /usr/local/bin/kubectl wait --timeout=1m --for=condition=ready pods --namespace=kube-system -l app=kube-network-policies
+
+    - name: Run tests
+      run: |
+        # https://network-policy-api.sigs.k8s.io/npeps/npep-137-conformance-profiles/#integration
+        # this has to be pinned to the latest version with AdminNetworkPolicy support
+        git clone --branch v0.1.7 --depth=1 https://github.com/kubernetes-sigs/network-policy-api.git
+        cd network-policy-api/
+        go mod download
+        go test  -v ./conformance -run TestConformanceProfiles -args --conformance-profiles=AdminNetworkPolicy,BaselineAdminNetworkPolicy --organization=kubernetes --project=kube-network-policies --url=https://github.com/kubernetes-sigs/kube-network-policies --version=0.1.1 --contact=antonio.ojea.garcia@gmail.com --additional-info=https://github.com/kubernetes-sigs/kube-network-policies
+        cd -
+
+    - name: Upload Junit Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: kind-junit-${{ env.JOB_NAME }}-${{ github.run_id }}
+        path: './_artifacts/*.xml'
+
+    - name: Export logs
+      if: always()
+      run: |
+        /usr/local/bin/kind export logs --name ${KIND_CLUSTER_NAME} ./_artifacts/logs
+
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: kind-logs-${{ env.JOB_NAME }}-${{ github.run_id }}
+        path: ./_artifacts/logs
+
+  e2e_npa_v1alpha2:
+    name: e2e_npa_v1alpha2
     runs-on: ubuntu-22.04
     timeout-minutes: 100
     needs:
@@ -104,20 +226,18 @@ jobs:
 
     - uses: actions/download-artifact@v5
       with:
-        name: test-image
+        name: test-image-v1alpha2
 
     - name: Install kube-network-policies
       run: |
         # stop kindnet of applying network policies
         kubectl -n kube-system set image ds kindnet kindnet-cni=docker.io/kindest/kindnetd:v20230809-80a64d96
-        # use the CRDs from network-policy-api commit with AdminNetworkPolicy support
-        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/standard/policy.networking.k8s.io_adminnetworkpolicies.yaml
-        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/standard/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/standard/policy.networking.k8s.io_clusternetworkpolicies.yaml
         # preload kube-network-policies image
         docker load --input kube-network-policies-image.tar
-        /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1 --name ${{ env.KIND_CLUSTER_NAME}}
-        sed -i s#registry.k8s.io/networking/kube-network-policies.*#registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1# install-anp.yaml
-        /usr/local/bin/kubectl apply -f ./install-anp.yaml
+        /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha2 --name ${{ env.KIND_CLUSTER_NAME}}
+        sed -i s#registry.k8s.io/networking/kube-network-policies.*#registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha2# install-cnp.yaml
+        /usr/local/bin/kubectl apply -f ./install-cnp.yaml
 
     - name: Get Cluster status
       run: |
@@ -131,11 +251,10 @@ jobs:
     - name: Run tests
       run: |
         # https://network-policy-api.sigs.k8s.io/npeps/npep-137-conformance-profiles/#integration
-        # this has to be pinned to the latest version with AdminNetworkPolicy support
-        git clone --branch v0.1.7 --depth=1 https://github.com/kubernetes-sigs/network-policy-api.git
+        git clone https://github.com/kubernetes-sigs/network-policy-api.git
         cd network-policy-api/
         go mod download
-        go test  -v ./conformance -run TestConformanceProfiles -args --conformance-profiles=AdminNetworkPolicy,BaselineAdminNetworkPolicy --organization=kubernetes --project=kube-network-policies --url=https://github.com/kubernetes-sigs/kube-network-policies --version=0.1.1 --contact=antonio.ojea.garcia@gmail.com --additional-info=https://github.com/kubernetes-sigs/kube-network-policies
+        go test  -v ./conformance -run TestConformanceProfiles -args --conformance-profiles=ClusterNetworkPolicy --organization=kubernetes --project=kube-network-policies --url=https://github.com/kubernetes-sigs/kube-network-policies --version=0.1.1 --contact=antonio.ojea.garcia@gmail.com --additional-info=https://github.com/kubernetes-sigs/kube-network-policies
         cd -
 
     - name: Upload Junit Reports
