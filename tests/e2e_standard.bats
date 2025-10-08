@@ -14,7 +14,7 @@ setup_file() {
   # Load the Docker image into the kind cluster
   kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG" --name "$CLUSTER_NAME"
 
-  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=4/" -e "s/--firewall-enforcer-period=0/--firewall-enforcer-period=15/" < "$BATS_TEST_DIRNAME"/../install.yaml)
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 }
@@ -285,5 +285,5 @@ spec:
 EOF
 
   # Wait for the client pod to complete, which indicates the connection was dropped
-  kubectl -n dev wait --for=condition=Ready=False pod/client --timeout=65s
+  kubectl -n dev wait --for=condition=Ready=False pod/client --timeout=30s
 }

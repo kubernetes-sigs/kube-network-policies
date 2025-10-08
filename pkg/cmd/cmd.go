@@ -18,13 +18,14 @@ import (
 
 // Options contains the common command-line options.
 type Options struct {
-	Kubeconfig          string
-	FailOpen            bool
-	QueueID             int
-	MetricsBindAddress  string
-	HostnameOverride    string
-	NetfilterBug1766Fix bool
-	DisableNRI          bool
+	Kubeconfig             string
+	FailOpen               bool
+	QueueID                int
+	MetricsBindAddress     string
+	HostnameOverride       string
+	NetfilterBug1766Fix    bool
+	DisableNRI             bool
+	FirewallEnforcerPeriod int
 }
 
 // NewOptions creates a new Options object with default values.
@@ -41,7 +42,7 @@ func (o *Options) AddFlags(fs *flag.FlagSet) {
 	fs.StringVar(&o.HostnameOverride, "hostname-override", "", "If non-empty, will be used as the name of the Node that kube-network-policies is running on. If unset, the node name is assumed to be the same as the node's hostname.")
 	fs.BoolVar(&o.NetfilterBug1766Fix, "netfilter-bug-1766-fix", true, "If set, process DNS packets on the PREROUTING hooks to avoid the race condition on the conntrack subsystem, not needed for kernels 6.12+ (see https://bugzilla.netfilter.org/show_bug.cgi?id=1766)")
 	fs.BoolVar(&o.DisableNRI, "disable-nri", false, "If set, disable NRI, that is used to get the Pod IP information directly from the runtime to avoid the race explained in https://issues.k8s.io/85966")
-
+	fs.IntVar(&o.FirewallEnforcerPeriod, "firewall-enforcer-period", 0, "If set, the period for the firewall enforcer to run. It ensures that existing connections comply with current network policies. If 0, the firewall enforcer is disabled.")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: kube-network-policies [options]\n\n")
 		fs.PrintDefaults()

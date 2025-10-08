@@ -74,6 +74,7 @@ spec:
         - --hostname-override=$(MY_NODE_NAME)
         - --v=2
         - --nfqueue-id=98
+        - --firewall-enforcer-period=0
         volumeMounts:
         - name: nri-plugin
           mountPath: /var/run/nri

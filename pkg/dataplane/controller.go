@@ -49,13 +49,15 @@ const (
 	syncKey        = "dummy-key" // use the same key to sync to aggregate the events
 	podV4IPsSet    = "podips-v4"
 	podV6IPsSet    = "podips-v6"
+	maxInterval    = 1 * time.Hour
 )
 
 type Config struct {
-	FailOpen            bool // allow traffic if the controller is not available
-	QueueID             int
-	NetfilterBug1766Fix bool
-	NFTableName         string // if other projects use this controllers they need to be able to use their own table name
+	FailOpen               bool // allow traffic if the controller is not available
+	QueueID                int
+	NetfilterBug1766Fix    bool
+	NFTableName            string // if other projects use this controllers they need to be able to use their own table name
+	FirewallEnforcerPeriod int    // how often to check existing connections against current network policies
 }
 
 func (c *Config) Defaults() error {
@@ -103,25 +105,25 @@ func newController(
 		func() error { return c.syncNFTablesRules(context.Background()) },
 		1*time.Second, // minInterval
 		1*time.Second, // retryInterval
-		1*time.Hour,   // maxInterval
+		maxInterval,   // maxInterval
 	)
 
-	// The conntrack cleaner will run periodically to remove entries
-	// that might have been left behind after network policies changed.
-	// The deletion of the entries will cause the connections to be dropped
-	// and re-evaluated by the new network policies.
-	c.conntrackReconciler = runner.NewBoundedFrequencyRunner(
-		controllerName+"-conntrack",
-		func() error { return c.firewallEnforcer(context.Background()) },
-		60*time.Second, // minInterval is conservative to avoid too much load on conntrack
-		10*time.Second, // retryInterval
-		1*time.Hour,    // maxInterval
-	)
-
+	// The firewall enforcer will run periodically to ensure existing connections comply with current network policies.
+	if config.FirewallEnforcerPeriod > 0 {
+		c.firewallEnforcer = runner.NewBoundedFrequencyRunner(
+			controllerName+"-firewall-enforcer",
+			func() error { return c.enforceNetworkPolicies(context.Background()) },
+			time.Duration(config.FirewallEnforcerPeriod)*time.Second, // minInterval
+			10*time.Second, // retryInterval
+			maxInterval,    // maxInterval
+		)
+	}
 	// The sync callback now triggers the runner.
 	syncCallback := func() {
 		c.syncRunner.Run()
-		c.conntrackReconciler.Run()
+		if c.config.FirewallEnforcerPeriod > 0 {
+			c.firewallEnforcer.Run()
+		}
 	}
 	c.policyEngine.SetDataplaneSyncCallbacks(syncCallback)
 
@@ -130,10 +132,10 @@ func newController(
 
 // Controller manages selector-based networkpolicy endpoints.
 type Controller struct {
-	config              Config
-	policyEngine        *networkpolicy.PolicyEngine
-	syncRunner          *runner.BoundedFrequencyRunner
-	conntrackReconciler *runner.BoundedFrequencyRunner
+	config           Config
+	policyEngine     *networkpolicy.PolicyEngine
+	syncRunner       *runner.BoundedFrequencyRunner
+	firewallEnforcer *runner.BoundedFrequencyRunner
 
 	nfq     *nfqueue.Nfqueue
 	flushed bool
@@ -182,7 +184,9 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	// Start the BoundedFrequencyRunner's loops.
 	go c.syncRunner.Loop(ctx.Done())
-	go c.conntrackReconciler.Loop(ctx.Done())
+	if c.config.FirewallEnforcerPeriod > 0 {
+		go c.firewallEnforcer.Loop(ctx.Done())
+	}
 
 	// Perform an initial sync to ensure rules are in place at startup.
 	if err := c.syncNFTablesRules(ctx); err != nil {
@@ -332,8 +336,8 @@ func (c *Controller) evaluatePacket(ctx context.Context, p *network.Packet) bool
 	return allowed
 }
 
-// firewallEnforcer ensures that existing connections comply with current network policies.
-func (c *Controller) firewallEnforcer(ctx context.Context) error {
+// enforceNetworkPolicies ensures that existing connections comply with current network policies.
+func (c *Controller) enforceNetworkPolicies(ctx context.Context) error {
 	logger := klog.FromContext(ctx).WithName("firewall-enforcer")
 
 	logger.Info("Enforcing firewall policies on existing connections")
