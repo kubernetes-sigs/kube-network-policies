@@ -7,7 +7,6 @@ package network
 
 import (
 	"net"
-	"reflect"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
@@ -309,60 +308,4 @@ var packetsTCPIPv4 = [][]byte{
 		0x80, 0x10, 0x03, 0xec, 0x84, 0x41, 0x00, 0x00, 0x01, 0x01, 0x08, 0x0a, 0x12, 0x20, 0x68, 0xbc,
 		0x66, 0xb2, 0x32, 0xe1,
 	},
-}
-
-func TestSwapPacket(t *testing.T) {
-	tests := []struct {
-		name   string
-		packet *Packet
-		want   *Packet
-	}{
-		{
-			name: "tcp ipv4",
-			packet: &Packet{
-				SrcIP:   net.ParseIP("1.1.1.1"),
-				DstIP:   net.ParseIP("2.2.2.2"),
-				SrcPort: 10,
-				DstPort: 20,
-				Proto:   v1.ProtocolTCP,
-			},
-			want: &Packet{
-				SrcIP:   net.ParseIP("2.2.2.2"),
-				DstIP:   net.ParseIP("1.1.1.1"),
-				SrcPort: 20,
-				DstPort: 10,
-				Proto:   v1.ProtocolTCP,
-			},
-		},
-		{
-			name: "udp ipv6",
-			packet: &Packet{
-				SrcIP:   net.ParseIP("2001:db8::1"),
-				DstIP:   net.ParseIP("2001:db8::2"),
-				SrcPort: 100,
-				DstPort: 200,
-				Proto:   v1.ProtocolUDP,
-			},
-			want: &Packet{
-				SrcIP:   net.ParseIP("2001:db8::2"),
-				DstIP:   net.ParseIP("2001:db8::1"),
-				SrcPort: 200,
-				DstPort: 100,
-				Proto:   v1.ProtocolUDP,
-			},
-		},
-		{
-			name:   "nil packet",
-			packet: nil,
-			want:   nil,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := SwapPacket(tt.packet)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("SwapPacket() = %v, want %v", got, tt.want)
-			}
-		})
-	}
 }

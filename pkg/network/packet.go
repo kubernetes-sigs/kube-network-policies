@@ -164,20 +164,3 @@ func ParsePacket(b []byte) (Packet, error) {
 	t.Payload = b[payloadOffset:]
 	return t, nil
 }
-
-// SwapPacket returns a new Packet with source and destination swapped
-func SwapPacket(packet *Packet) *Packet {
-	if packet == nil {
-		return nil
-	}
-	newPacket := Packet{
-		Family: packet.Family,
-		Proto:  packet.Proto,
-		// The IP and Ports are swapped
-		DstIP:   packet.SrcIP,
-		SrcIP:   packet.DstIP,
-		DstPort: packet.SrcPort,
-		SrcPort: packet.DstPort,
-	}
-	return &newPacket
-}
