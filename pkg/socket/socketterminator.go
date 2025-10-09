@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 )
 
 const bindMountPath = "/run/netns"
@@ -93,29 +94,33 @@ func (st *SocketTerminator) findAndExecuteInNS(ip net.IP, callback func(nh *netl
 		return st.executeInNS(iface.NetNsID, callback)
 	}
 
-	// If no suitable veth/namespace was found, return an error.
-	return fmt.Errorf("no veth interface found in routes for IP %s: %w", ip.String(), unix.ESRCH)
+	// If no suitable veth/namespace was found, execute in the host namespace as a fallback.
+	klog.V(4).Infof("No veth interface found in routes, falling back to host namespace.")
+	return st.executeInNS(-1, callback) // Use -1 or another sentinel to indicate host ns
 }
 
 // executeInNS gets a handle for a specific nsID and runs the callback.
 // It ensures all netlink and namespace handles are closed.
 func (st *SocketTerminator) executeInNS(nsID int, callback func(nh *netlink.Handle) error) error {
-	if nsID < 0 {
+	var nsHandle netns.NsHandle
+	var err error
+
+	if nsID == -1 {
 		// Use the host namespace
-		return fmt.Errorf("can not be executed in host namespace")
+		nsHandle = netns.None()
+	} else {
+		nsHandle, err = pkgnetns.GetNetByNsId(nsID)
+		if err != nil {
+			return fmt.Errorf("failed to get handle for nsID %d netns %s : %w", nsID, nsHandle.String(), err)
+		}
+		defer nsHandle.Close()
 	}
-	nsHandle, err := pkgnetns.GetNetByNsId(nsID)
-	if err != nil {
-		return fmt.Errorf("failed to get handle for nsID %d netns %s : %w", nsID, nsHandle.String(), err)
-	}
-	defer nsHandle.Close()
 
 	nh, err := netlink.NewHandleAt(nsHandle, unix.NETLINK_SOCK_DIAG)
 	if err != nil {
 		return fmt.Errorf("failed to create netlink handle for nsID %d: %w", nsID, err)
 	}
 	defer nh.Close()
-
 	klog.V(4).Infof("Executing callback in namespace ID %d", nsID)
 	return callback(nh)
 }
