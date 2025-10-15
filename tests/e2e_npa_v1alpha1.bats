@@ -12,8 +12,8 @@ setup_file() {
   )
 
   # Apply CRDs required for this binary
-  kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
-  kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+  kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
+  kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
 
   # Load the Docker image into the kind cluster
   kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha1 --name "$CLUSTER_NAME"
@@ -29,7 +29,7 @@ teardown_file() {
   printf '%s' "${_install}" | kubectl delete -f -
 
   kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
-  kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+  kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
 }
 
 setup() {
