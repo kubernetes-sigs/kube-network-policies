@@ -64,7 +64,7 @@ func logPacket(ctx context.Context, direction string, p *network.Packet, srcPod,
 		dstPodStr = dstPod.Namespace.Name + "/" + dstPod.Name
 	}
 
-	logger.V(2).Info("Evaluating packet",
+	logger.Info("Evaluating packet",
 		"direction", direction,
 		"srcPod", srcPodStr,
 		"dstPod", dstPodStr,
