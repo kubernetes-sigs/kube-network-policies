@@ -44,8 +44,8 @@ jobs:
         name: test-image
         path: _output/kube-network-policies-image.tar
 
-  e2e_npa:
-    name: e2e_npa
+  e2e_npa_v1alpha1:
+    name: e2e_npa_v1alpha1
     runs-on: ubuntu-22.04
     timeout-minutes: 100
     needs:
@@ -110,8 +110,9 @@ jobs:
       run: |
         # stop kindnet of applying network policies
         kubectl -n kube-system set image ds kindnet kindnet-cni=docker.io/kindest/kindnetd:v20230809-80a64d96
-        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
-        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+        # use the CRDs from network-policy-api commit with AdminNetworkPolicy support
+        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/standard/policy.networking.k8s.io_adminnetworkpolicies.yaml
+        /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/8c1c5fa535ef0e72b05287190520b22fd2ed1003/config/crd/standard/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
         # preload kube-network-policies image
         docker load --input kube-network-policies-image.tar
         /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1 --name ${{ env.KIND_CLUSTER_NAME}}
@@ -130,7 +131,8 @@ jobs:
     - name: Run tests
       run: |
         # https://network-policy-api.sigs.k8s.io/npeps/npep-137-conformance-profiles/#integration
-        git clone https://github.com/kubernetes-sigs/network-policy-api.git
+        # this has to be pinned to the latest version with AdminNetworkPolicy support
+        git clone --branch v0.1.7 --depth=1 https://github.com/kubernetes-sigs/network-policy-api.git
         cd network-policy-api/
         go mod download
         go test  -v ./conformance -run TestConformanceProfiles -args --conformance-profiles=AdminNetworkPolicy,BaselineAdminNetworkPolicy --organization=kubernetes --project=kube-network-policies --url=https://github.com/kubernetes-sigs/kube-network-policies --version=0.1.1 --contact=antonio.ojea.garcia@gmail.com --additional-info=https://github.com/kubernetes-sigs/kube-network-policies
