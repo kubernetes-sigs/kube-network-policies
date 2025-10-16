@@ -10,7 +10,7 @@ export GO111MODULE CGO_ENABLED
 IMAGE_NAME?=kube-network-policies
 REGISTRY?=gcr.io/k8s-staging-networking
 TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
-PLATFORMS?=linux/amd64,linux/arm64
+PLATFORMS?=linux/amd64,linux/arm64,linux/s390x
 
 .PHONY: all build build-standard build-npa-v1alpha1 build-npa-v1alpha2 build-iptracker build-kube-ip-tracker-standard
 
@@ -18,23 +18,23 @@ build: build-standard build-npa-v1alpha1 build-npa-v1alpha2 build-iptracker buil
 
 build-standard:
 	@echo "Building standard binary..."
-	go build -o ./bin/kube-network-policies-standard ./cmd/kube-network-policies/standard
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-network-policies-standard ./cmd/kube-network-policies/standard
 
 build-npa-v1alpha1:
 	@echo "Building npa-v1alpha1 binary..."
-	go build -o ./bin/kube-network-policies-npa-v1alpha1 ./cmd/kube-network-policies/npa-v1alpha1
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-network-policies-npa-v1alpha1 ./cmd/kube-network-policies/npa-v1alpha1
 
 build-npa-v1alpha2:
 	@echo "Building npa-v1alpha2 binary..."
-	go build -o ./bin/kube-network-policies-npa-v1alpha2 ./cmd/kube-network-policies/npa-v1alpha2
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-network-policies-npa-v1alpha2 ./cmd/kube-network-policies/npa-v1alpha2
 
 build-iptracker:
 	@echo "Building iptracker binary..."
-	go build -o ./bin/kube-network-policies-iptracker ./cmd/kube-network-policies/iptracker
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-network-policies-iptracker ./cmd/kube-network-policies/iptracker
 
 build-kube-ip-tracker-standard:
 	@echo "Building kube-ip-tracker binary..."
-	go build -o ./bin/kube-ip-tracker-standard ./cmd/kube-ip-tracker/standard
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-ip-tracker-standard ./cmd/kube-ip-tracker/standard
 
 clean:
 	rm -rf "$(OUT_DIR)/"
@@ -118,6 +118,7 @@ image-push-iptracker: build-iptracker
 image-push-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 	docker buildx build . -f Dockerfile.iptracker \
 		--build-arg TARGET_BUILD=standard \
+		--platform="${PLATFORMS}" \
 		--tag="${REGISTRY}/kube-ip-tracker:$(TAG)" \
 		--push
 
