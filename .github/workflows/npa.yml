@@ -163,7 +163,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: kind-logs-${{ env.JOB_NAME }}-${{ github.run_id }}
+        name: kind-logs-v1alpha1-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: ./_artifacts/logs
 
   e2e_npa_v1alpha2:
@@ -273,5 +273,5 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: kind-logs-${{ env.JOB_NAME }}-${{ github.run_id }}
+        name: kind-logs-v1alpha2-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: ./_artifacts/logs
