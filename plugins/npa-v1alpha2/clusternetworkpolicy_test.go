@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
@@ -154,6 +153,14 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 		}}
 	})
 
+	adminDenyAllEgressEmptyTo := makeClusterNetworkPolicy("admin-deny-all-egress-empty-to", npav1alpha2.AdminTier, 100, func(p *npav1alpha2.ClusterNetworkPolicy) {
+		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{}}
+		p.Spec.Egress = []npav1alpha2.ClusterNetworkPolicyEgressRule{{
+			Action: npav1alpha2.ClusterNetworkPolicyRuleActionDeny,
+			To:     []npav1alpha2.ClusterNetworkPolicyEgressPeer{},
+		}}
+	})
+
 	adminAllowEgressToNSBar := makeClusterNetworkPolicy("admin-allow-egress-to-ns-bar", npav1alpha2.AdminTier, 50, func(p *npav1alpha2.ClusterNetworkPolicy) {
 		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "ns-foo"}}}
 		p.Spec.Egress = []npav1alpha2.ClusterNetworkPolicyEgressRule{{
@@ -168,6 +175,14 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 		p.Spec.Ingress = []npav1alpha2.ClusterNetworkPolicyIngressRule{{
 			Action: npav1alpha2.ClusterNetworkPolicyRuleActionDeny,
 			From:   []npav1alpha2.ClusterNetworkPolicyIngressPeer{{Namespaces: &metav1.LabelSelector{}}},
+		}}
+	})
+
+	baselineDenyAllIngressEmptyFrom := makeClusterNetworkPolicy("baseline-deny-all-ingress-empty-from", npav1alpha2.BaselineTier, 100, func(p *npav1alpha2.ClusterNetworkPolicy) {
+		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{}}
+		p.Spec.Ingress = []npav1alpha2.ClusterNetworkPolicyIngressRule{{
+			Action: npav1alpha2.ClusterNetworkPolicyRuleActionDeny,
+			From:   []npav1alpha2.ClusterNetworkPolicyIngressPeer{},
 		}}
 	})
 
@@ -187,16 +202,23 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 		wantBase  api.Verdict
 	}{
 		{
-			name:      "Admin: Deny Egress overrides lower priority Allow",
+			name:      "Admin: Higher priority Allow Egress rule is effective",
 			policies:  []*npav1alpha2.ClusterNetworkPolicy{adminDenyAllEgress, adminAllowEgressToNSBar},
 			packet:    network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
 			wantAdmin: api.VerdictAccept, // Because adminAllowEgressToNSBar has higher priority (50 < 100)
 			wantBase:  api.VerdictNext,
 		},
 		{
-			name:      "Admin: No matching policy should pass",
+			name:      "Admin: Deny-all Egress policy is effective",
 			policies:  []*npav1alpha2.ClusterNetworkPolicy{adminDenyAllEgress}, // This policy applies to all pods
 			packet:    network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.3.33")},
+			wantAdmin: api.VerdictDeny,
+			wantBase:  api.VerdictNext,
+		},
+		{
+			name:      "Admin: Deny Egress with empty To rule",
+			policies:  []*npav1alpha2.ClusterNetworkPolicy{adminDenyAllEgressEmptyTo},
+			packet:    network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
 			wantAdmin: api.VerdictDeny,
 			wantBase:  api.VerdictNext,
 		},
@@ -213,6 +235,13 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 			packet:    network.Packet{SrcIP: net.ParseIP("192.168.3.33"), DstIP: net.ParseIP("192.168.2.22")},
 			wantAdmin: api.VerdictNext,
 			wantBase:  api.VerdictDeny, // Denied by baselineDenyAllIngress
+		},
+		{
+			name:      "Baseline: Deny Ingress with empty From rule",
+			policies:  []*npav1alpha2.ClusterNetworkPolicy{baselineDenyAllIngressEmptyFrom},
+			packet:    network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
+			wantAdmin: api.VerdictNext,
+			wantBase:  api.VerdictDeny,
 		},
 		{
 			name:      "No policies applied",
@@ -279,67 +308,350 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 
 // verdictToBool simplifies comparison for tests where the exact verdict doesn't matter, only allow/deny.
 func verdictToBool(v api.Verdict) bool {
-	return v == api.VerdictAccept || v == api.VerdictNext
+	switch v {
+	case api.VerdictAccept:
+		return true
+	case api.VerdictDeny:
+		return false
+	case api.VerdictNext:
+		// For tests, we can treat 'Next' as an implicit allow, as the chain stops here.
+		return true
+	default:
+		return false
+	}
 }
 
 // --- Port Evaluation Test ---
-func Test_evaluateClusterNetworkPolicyPort(t *testing.T) {
+func Test_evaluateClusterNetworkPolicyProtocols(t *testing.T) {
+	pod := makePod("test-pod", "test-ns", "1.2.3.4")
+	pi := func(x int32) *int32 { return &x }
+	ps := func(x string) *string { return &x }
+
 	tests := []struct {
-		name        string
-		policyPorts []npav1alpha2.ClusterNetworkPolicyPort
-		pod         *v1.Pod
-		port        int
-		protocol    v1.Protocol
-		want        bool
+		name     string
+		policy   []npav1alpha2.ClusterNetworkPolicyProtocol
+		port     int
+		protocol v1.Protocol
+		want     bool
 	}{
 		{
-			name: "empty ports match all",
-			pod:  makePod("test", "nstest", "192.168.1.1"),
-			want: true,
+			name:     "empty",
+			policy:   []npav1alpha2.ClusterNetworkPolicyProtocol{},
+			port:     80,
+			protocol: v1.ProtocolTCP,
+			want:     false,
 		},
 		{
-			name: "match port number",
-			policyPorts: []npav1alpha2.ClusterNetworkPolicyPort{{
-				PortNumber: &npav1alpha2.Port{Protocol: v1.ProtocolTCP, Port: 80},
-			}},
+			name: "one policy, match",
+			policy: []npav1alpha2.ClusterNetworkPolicyProtocol{
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Number: pi(80),
+					},
+				},
+			},
 			port:     80,
 			protocol: v1.ProtocolTCP,
 			want:     true,
 		},
 		{
+			name: "one policy, no match",
+			policy: []npav1alpha2.ClusterNetworkPolicyProtocol{
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Number: pi(8080),
+					},
+				},
+			},
+			port:     80,
+			protocol: v1.ProtocolTCP,
+			want:     false,
+		},
+		{
+			name: "multiple policies, match",
+			policy: []npav1alpha2.ClusterNetworkPolicyProtocol{
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Number: pi(8080),
+					},
+				},
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Number: pi(80),
+					},
+				},
+			},
+			port:     80,
+			protocol: v1.ProtocolTCP,
+			want:     true,
+		},
+		{
+			name: "multiple policies, no match",
+			policy: []npav1alpha2.ClusterNetworkPolicyProtocol{
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Number: pi(8080),
+					},
+				},
+				{
+					Protocol: v1.ProtocolUDP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Number: pi(80),
+					},
+				},
+			},
+			port:     80,
+			protocol: v1.ProtocolTCP,
+			want:     false,
+		},
+		{
 			name: "match named port",
-			policyPorts: []npav1alpha2.ClusterNetworkPolicyPort{{
-				NamedPort: ptr.To[string]("http"),
-			}},
-			pod:      makePod("test", "nstest", "192.168.1.1"),
+			policy: []npav1alpha2.ClusterNetworkPolicyProtocol{
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Name: ps("http"),
+					},
+				},
+			},
 			port:     80,
 			protocol: v1.ProtocolTCP,
 			want:     true,
 		},
 		{
 			name: "match port range",
-			policyPorts: []npav1alpha2.ClusterNetworkPolicyPort{{
-				PortRange: &npav1alpha2.PortRange{Protocol: v1.ProtocolTCP, Start: 80, End: 90},
-			}},
+			policy: []npav1alpha2.ClusterNetworkPolicyProtocol{
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+					},
+				},
+			},
 			port:     85,
 			protocol: v1.ProtocolTCP,
 			want:     true,
 		},
 		{
-			name: "no match port number",
-			policyPorts: []npav1alpha2.ClusterNetworkPolicyPort{{
-				PortNumber: &npav1alpha2.Port{Protocol: v1.ProtocolTCP, Port: 80},
-			}},
-			port:     443,
+			name: "mixed types, match",
+			policy: []npav1alpha2.ClusterNetworkPolicyProtocol{
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Number: pi(9090),
+					},
+				},
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Name: ps("http"),
+					},
+				},
+				{
+					Protocol: v1.ProtocolTCP,
+					Port: &npav1alpha2.ClusterNetworkPolicyPort{
+						Range: &npav1alpha2.PortRange{Start: 100, End: 200},
+					},
+				},
+			},
+			port:     80,
 			protocol: v1.ProtocolTCP,
+			want:     true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			podInfo := api.NewPodInfo(pod, makeNamespace("foo").Labels, makeNode("testnode").Labels, "id")
+			if got := evaluateClusterNetworkPolicyProtocols(tc.policy, podInfo, tc.port, tc.protocol); got != tc.want {
+				t.Errorf("evaluateClusterNetworkPolicyPort() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func Test_evaluateProtocolPort(t *testing.T) {
+	const (
+		tcp v1.Protocol = v1.ProtocolTCP
+		udp v1.Protocol = v1.ProtocolUDP
+	)
+
+	pod := makePod("test", "nstest", "192.168.1.1")
+	podInfo := api.NewPodInfo(pod, makeNamespace("foo").Labels, makeNode("testnode").Labels, "id")
+
+	pi := func(x int32) *int32 { return &x }
+	ps := func(x string) *string { return &x }
+
+	tests := []struct {
+		name     string
+		policy   npav1alpha2.ClusterNetworkPolicyProtocol
+		pod      *api.PodInfo
+		port     int32
+		protocol v1.Protocol
+		want     bool
+	}{
+		{
+			name: "match port number",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Number: pi(80),
+				},
+			},
+			pod:      podInfo,
+			port:     80,
+			protocol: tcp,
+			want:     true,
+		},
+		{
+			name: "no match wrong port number",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Number: pi(80),
+				},
+			},
+			pod:      podInfo,
+			port:     8080,
+			protocol: tcp,
+			want:     false,
+		},
+		{
+			name: "no match wrong protocol",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Number: pi(80),
+				},
+			},
+			pod:      podInfo,
+			port:     80,
+			protocol: udp,
+			want:     false,
+		},
+		{
+			name: "match named port",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Name: ps("http"),
+				},
+			},
+			pod:      podInfo,
+			port:     80,
+			protocol: tcp,
+			want:     true,
+		},
+		{
+			name: "no match wrong named port",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Name: ps("no-match"),
+				},
+			},
+			pod:      podInfo,
+			port:     80,
+			protocol: tcp,
+			want:     false,
+		},
+		{
+			name: "match port range",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+				},
+			},
+			pod:      podInfo,
+			port:     85,
+			protocol: tcp,
+			want:     true,
+		},
+		{
+			name: "match port range start",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+				},
+			},
+			pod:      podInfo,
+			port:     80,
+			protocol: tcp,
+			want:     true,
+		},
+		{
+			name: "match port range end",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+				},
+			},
+			pod:      podInfo,
+			port:     90,
+			protocol: tcp,
+			want:     true,
+		},
+		{
+			name: "no match port range below",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+				},
+			},
+			pod:      podInfo,
+			port:     79,
+			protocol: tcp,
+			want:     false,
+		},
+		{
+			name: "no match port range above",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+				},
+			},
+			pod:      podInfo,
+			port:     91,
+			protocol: tcp,
+			want:     false,
+		},
+		{
+			name: "no match port range wrong protocol",
+			policy: npav1alpha2.ClusterNetworkPolicyProtocol{
+				Protocol: tcp,
+				Port: &npav1alpha2.ClusterNetworkPolicyPort{
+					Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+				},
+			},
+			pod:      podInfo,
+			port:     85,
+			protocol: udp,
+			want:     false,
+		},
+		{
+			name:     "empty policy",
+			policy:   npav1alpha2.ClusterNetworkPolicyProtocol{},
+			pod:      podInfo,
+			port:     1234,
+			protocol: tcp,
 			want:     false,
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			podInfo := api.NewPodInfo(tt.pod, makeNamespace("foo").Labels, makeNode("testnode").Labels, "id")
-			if got := evaluateClusterNetworkPolicyPort(tt.policyPorts, podInfo, tt.port, tt.protocol); got != tt.want {
-				t.Errorf("evaluateClusterNetworkPolicyPort() = %v, want %v", got, tt.want)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := evaluateProtocolPort(tc.policy, tc.pod, tc.port, tc.protocol)
+			if got != tc.want {
+				t.Errorf("evaluateProtocolPort() = %v, want %v", got, tc.want)
 			}
 		})
 	}
