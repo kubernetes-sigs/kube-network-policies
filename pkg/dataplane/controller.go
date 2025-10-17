@@ -10,9 +10,13 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
+	vishnetlink "github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
+	v1 "k8s.io/api/core/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 
@@ -49,6 +53,7 @@ type Config struct {
 	QueueID             int
 	NetfilterBug1766Fix bool
 	NFTableName         string // if other projects use this controllers they need to be able to use their own table name
+	StrictMode          bool   // enforce network policies also on established connections
 }
 
 func (c *Config) Defaults() error {
@@ -142,7 +147,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	registerMetrics(ctx)
 	// collect metrics periodically
 	go wait.UntilWithContext(ctx, func(ctx context.Context) {
-		logger := klog.FromContext(ctx)
+		logger := klog.FromContext(ctx).WithName("metrics-collector")
 		queues, err := readNfnetlinkQueueStats()
 		if err != nil {
 			logger.Error(err, "reading nfqueue stats")
@@ -159,7 +164,7 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	}, 30*time.Second)
 
-	// Start the BoundedFrequencyRunner's loop.
+	// Start the BoundedFrequencyRunner's loops.
 	go c.syncRunner.Loop(ctx.Done())
 
 	// Perform an initial sync to ensure rules are in place at startup.
@@ -310,11 +315,94 @@ func (c *Controller) evaluatePacket(ctx context.Context, p *network.Packet) bool
 	return allowed
 }
 
+// getConntrackEntriesForFirewallEnforcement retrieves conntrack entries for firewall enforcement.
+func (c *Controller) getConnectionsForFirewallEnforcement(ctx context.Context) ([]*vishnetlink.ConntrackFlow, []network.Packet) {
+	logger := klog.FromContext(ctx).WithName("firewall-enforcer")
+	connectionsToFlush := []*vishnetlink.ConntrackFlow{}
+	connectionsToEnqueue := []network.Packet{}
+
+	logger.Info("Enforcing firewall policies on existing connections")
+	start := time.Now()
+	defer func() {
+		logger.Info("Enforcing firewall policies on existing connections", "elapsed", time.Since(start))
+	}()
+
+	flows, err := vishnetlink.ConntrackTableList(vishnetlink.ConntrackTable, vishnetlink.FAMILY_ALL)
+	if err != nil {
+		logger.Error(err, "listing conntrack entries")
+		return connectionsToFlush, connectionsToEnqueue
+	}
+
+	allPodIPs, divertAll, err := c.policyEngine.GetManagedIPs(ctx)
+	if err != nil {
+		logger.Error(err, "getting managed IPs for firewall enforcement")
+		return connectionsToFlush, connectionsToEnqueue
+	}
+
+	ipset := sets.Set[string]{}
+	if !divertAll {
+		for _, ip := range allPodIPs {
+			ipset.Insert(ip.String())
+		}
+	}
+
+	for _, flow := range flows {
+		// only UDP, SCTP or TCP connections in ESTABLISHED state are evaluated
+		if flow.Forward.Protocol != unix.IPPROTO_UDP &&
+			flow.Forward.Protocol != unix.IPPROTO_SCTP &&
+			flow.Forward.Protocol != unix.IPPROTO_TCP {
+			continue
+		}
+		if flow.ProtoInfo != nil {
+			if state, ok := flow.ProtoInfo.(*vishnetlink.ProtoInfoTCP); ok && state.State != nl.TCP_CONNTRACK_ESTABLISHED {
+				continue
+			}
+		}
+
+		// If divertAll is true, all pod IPs are managed by network policies.
+		if !divertAll {
+			// Only evaluate flows that are affected by network policies.
+			// Translated packets will be evaluated on the destination node.
+			if !ipset.Has(flow.Forward.SrcIP.String()) && !ipset.Has(flow.Reverse.SrcIP.String()) {
+				klog.V(4).Info("Skipping conntrack entry not involving managed IPs", "flow", flow)
+				continue
+			}
+		}
+
+		// The policy engine evaluates packets, so we need to convert the conntrack flow to a packet.
+		// The packet is evaluated against the current network policies both for source and destination.
+		packet := PacketFromFlow(flow)
+		if packet == nil {
+			continue
+		}
+		klog.V(4).Info("Evaluating packet", "packet", packet.String())
+
+		// Evaluate the packet against current network policies.
+		allowed, err := c.policyEngine.EvaluatePacket(ctx, packet)
+		if err != nil {
+			klog.Infof("error evaluating conntrack entry %v: %v", flow, err)
+			continue
+		}
+		// If the flow is not allowed, take action.
+		if allowed {
+			continue
+		}
+		klog.V(4).Info("Connection no longer allowed by network policies", "packet", packet.String())
+		if packet.Proto != v1.ProtocolTCP {
+			connectionsToFlush = append(connectionsToFlush, flow)
+		} else {
+			connectionsToEnqueue = append(connectionsToEnqueue, *packet)
+		}
+	}
+
+	return connectionsToFlush, connectionsToEnqueue
+}
+
 // syncNFTablesRules adds the necessary rules to process the first connection packets in userspace
 // and check if network policies must apply.
 // TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
 func (c *Controller) syncNFTablesRules(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
+	logger := klog.FromContext(ctx).WithName("nftables-sync")
 
 	logger.Info("Syncing nftables rules")
 	start := time.Now()
@@ -498,6 +586,110 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		},
 	})
 
+	queue := &expr.Queue{Num: uint16(c.config.QueueID)}
+	if c.config.FailOpen {
+		queue.Flag = expr.QueueFlagBypass
+	}
+
+	// strict mode: drop also established connections that are not allowed anymore
+	// We get all conntrack entries and evaluate them against current network policies.
+	// For UDP and SCTP connections we flush the conntrack entries so they will be re-evaluated.
+	// For TCP connections we populate a set with the 4-tuple and reenque them, so there is
+	// no problem if the policies change, the 4-tuple will be re-evaluated with the current state.
+	if c.config.StrictMode {
+		flush, enqueue := c.getConnectionsForFirewallEnforcement(ctx)
+		if len(flush) > 0 {
+			logger.Info("Flushing conntrack entries not allowed by network policies", "entries", len(flush))
+			filter := NewConntrackFilter(flush)
+			n, err := vishnetlink.ConntrackDeleteFilters(vishnetlink.ConntrackTable, unix.AF_INET, filter)
+			if err != nil {
+				logger.Error(err, "deleting IPv4 conntrack entries")
+			}
+			logger.V(4).Info("Deleted IPv4 conntrack entries", "entries", n)
+
+			n, err = vishnetlink.ConntrackDeleteFilters(vishnetlink.ConntrackTable, unix.AF_INET6, filter)
+			if err != nil {
+				logger.Error(err, "deleting IPv6 conntrack entries")
+			}
+			logger.V(4).Info("Deleted IPv6 conntrack entries", "entries", n)
+		}
+		if len(enqueue) > 0 {
+			logger.Info("Reenqueuing TCP connections not allowed by network policies", "connections", len(enqueue))
+			// add set with all TCP flows impacted by network policies
+			v4TCPSet := &nftables.Set{
+				Table:   table,
+				Name:    "flows-podips-v4",
+				KeyType: nftables.MustConcatSetType(nftables.TypeIPAddr, nftables.TypeInetService, nftables.TypeIPAddr, nftables.TypeInetService),
+			}
+			v6TCPSet := &nftables.Set{
+				Table:   table,
+				Name:    "flows-podips-v6",
+				KeyType: nftables.MustConcatSetType(nftables.TypeIP6Addr, nftables.TypeInetService, nftables.TypeIP6Addr, nftables.TypeInetService),
+			}
+
+			var elementsV4, elementsV6 []nftables.SetElement
+			for _, packet := range enqueue {
+				switch packet.Family {
+				case v1.IPv4Protocol:
+					srcPort := binaryutil.BigEndian.PutUint16(uint16(packet.SrcPort))
+					dstPort := binaryutil.BigEndian.PutUint16(uint16(packet.DstPort))
+					elementsV4 = append(elementsV4, nftables.SetElement{
+						Key: append(append(append(packet.SrcIP, srcPort...), packet.DstIP...), dstPort...),
+					})
+				case v1.IPv6Protocol:
+					srcPort := binaryutil.BigEndian.PutUint16(uint16(packet.SrcPort))
+					dstPort := binaryutil.BigEndian.PutUint16(uint16(packet.DstPort))
+					elementsV6 = append(elementsV6, nftables.SetElement{
+						Key: append(append(append(packet.SrcIP, srcPort...), packet.DstIP...), dstPort...),
+					})
+				default:
+					continue
+				}
+			}
+
+			if err := nft.AddSet(v4TCPSet, elementsV4); err != nil {
+				return fmt.Errorf("failed to add Set %s : %v", v4TCPSet.Name, err)
+			}
+			if err := nft.AddSet(v6TCPSet, elementsV6); err != nil {
+				return fmt.Errorf("failed to add Set %s : %v", v6TCPSet.Name, err)
+			}
+
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: []expr.Any{
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_TCP}},
+					&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+					&expr.Payload{DestRegister: 9, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 2},
+					&expr.Payload{DestRegister: 10, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+					&expr.Payload{DestRegister: 11, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+					&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: v4TCPSet.Name},
+					queue,
+				},
+			})
+
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: []expr.Any{
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_TCP}},
+					&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+					&expr.Payload{DestRegister: 2, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 2},
+					&expr.Payload{DestRegister: 13, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
+					&expr.Payload{DestRegister: 17, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+					&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: v6TCPSet.Name},
+					queue,
+				},
+			})
+		}
+	}
+
 	// ct state established,related accept
 	nft.AddRule(&nftables.Rule{
 		Table: table,
@@ -509,11 +701,6 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
-
-	queue := &expr.Queue{Num: uint16(c.config.QueueID)}
-	if c.config.FailOpen {
-		queue.Flag = expr.QueueFlagBypass
-	}
 
 	// only if no admin network policies are used
 	if !divertAll {
@@ -580,7 +767,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	}
 
 	if err := nft.Flush(); err != nil {
-		klog.FromContext(ctx).Info("syncing nftables rules", "error", err)
+		logger.Info("syncing nftables rules", "error", err)
 		return err
 	}
 	return nil

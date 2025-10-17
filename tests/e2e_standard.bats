@@ -14,14 +14,13 @@ setup_file() {
   # Load the Docker image into the kind cluster
   kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG" --name "$CLUSTER_NAME"
 
-  # Install kube-network-policies
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" < "$BATS_TEST_DIRNAME"/../install.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install.yaml)
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 }
 
 teardown_file() {
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" < "$BATS_TEST_DIRNAME"/../install.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install.yaml)
   printf '%s' "${_install}" | kubectl delete -f -
 }
 
@@ -203,4 +202,88 @@ EOF
   kubectl -n dev delete pod client-pod
   kubectl -n prod delete pod target-pod
   kubectl -n prod delete networkpolicy allow-same-namespace
+}
+
+
+@test "network policy drops established connections" {
+  # Create webserver pod in the 'prod' namespace
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: webserver
+  namespace: prod
+  labels:
+    app: web
+spec:
+  containers:
+  - name: agnhost
+    image: registry.k8s.io/e2e-test-images/agnhost:2.39
+    command: ["/bin/sh", "-c", "while true; do hostname | nc -l -p 8080; done"]
+EOF
+
+  kubectl -n prod wait --for=condition=ready pod/webserver --timeout=30s
+  WEBSERVER_IP=$(kubectl get pod webserver -n prod -o jsonpath='{.status.podIP}')
+
+  # Allow connection from 'dev' namespace to 'prod' namespace
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-client
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          purpose: testing
+EOF
+  sleep 2
+
+  # Create client pod in the 'dev' namespace
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+  namespace: dev
+spec:
+  containers:
+  - name: agnhost
+    image: registry.k8s.io/e2e-test-images/agnhost:2.39
+    command: ["/bin/sh", "-c", "while true; do echo hello; sleep 1; done | nc $WEBSERVER_IP 8080"]
+  restartPolicy: Never
+EOF
+
+  # Wait for the client to start running
+  kubectl -n dev wait --for=condition=ready pod/client --timeout=30s
+  sleep 2
+  kubectl -n dev wait --for=condition=ready pod/client --timeout=30s
+  # Delete the allow-client policy
+  kubectl -n prod delete networkpolicy allow-client
+  sleep 2
+  # The client should be working because no network policy is applied
+  kubectl -n dev wait --for=condition=ready pod/client --timeout=30s
+
+  # Deny all ingress traffic to the webserver
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+  - Ingress
+EOF
+
+  # Wait for the client pod to complete, which indicates the connection was dropped
+  kubectl -n dev wait --for=condition=Ready=False pod/client --timeout=65s
 }
