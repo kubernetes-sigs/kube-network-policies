@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/armon/go-radix"
-	nfqueue "github.com/florianl/go-nfqueue"
+	nfqueue "github.com/florianl/go-nfqueue/v2"
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"

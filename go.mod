@@ -5,12 +5,12 @@ go 1.24.3
 require (
 	github.com/armon/go-radix v1.0.0
 	github.com/containerd/nri v0.10.0
-	github.com/florianl/go-nfqueue v1.3.2
+	github.com/florianl/go-nfqueue/v2 v2.0.1
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
 	github.com/mdlayher/netlink v1.8.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/vishvananda/netlink v1.3.1
+	github.com/vishvananda/netlink v1.3.2-0.20251022194116-03b8f90390d9
 	github.com/vishvananda/netns v0.0.5
 	go.etcd.io/bbolt v1.4.3
 	go.etcd.io/etcd/api/v3 v3.6.5
