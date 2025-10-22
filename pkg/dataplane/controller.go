@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,9 +11,12 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
+	vishnetlink "github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 
@@ -49,6 +53,8 @@ type Config struct {
 	QueueID             int
 	NetfilterBug1766Fix bool
 	NFTableName         string // if other projects use this controllers they need to be able to use their own table name
+	StrictMode          bool   // enforce network policies also on established connections
+	CTLabelAccept       int    // conntrack label to set on accepted connections (between 1-127)
 }
 
 func (c *Config) Defaults() error {
@@ -59,7 +65,24 @@ func (c *Config) Defaults() error {
 	if c.NFTableName == "" {
 		c.NFTableName = "kube-network-policies"
 	}
+	if c.CTLabelAccept == 0 {
+		c.CTLabelAccept = 100
+	}
+
 	return nil
+}
+
+func (c *Config) Validate() error {
+	var errorsList []error
+	if c.QueueID < 0 {
+		errorsList = append(errorsList, fmt.Errorf("invalid queue id"))
+	}
+
+	if c.CTLabelAccept < 0 || c.CTLabelAccept > 127 {
+		errorsList = append(errorsList, fmt.Errorf("invalid ct label accept value, must be between 1-127"))
+	}
+
+	return errors.Join(errorsList...)
 }
 
 // NewController returns a new *Controller.
@@ -68,6 +91,11 @@ func NewController(
 	config Config,
 ) (*Controller, error) {
 	err := config.Defaults()
+	if err != nil {
+		return nil, err
+	}
+
+	err = config.Validate()
 	if err != nil {
 		return nil, err
 	}
@@ -99,9 +127,25 @@ func newController(
 		1*time.Hour,   // maxInterval
 	)
 
+	if c.config.StrictMode {
+		// The runner will explore existing connections listed on the conntrack table
+		// and timeout the conntrack entries of the no longer valid connections to reenqueue
+		// the packets and enforce network policies.
+		c.connRunner = runner.NewBoundedFrequencyRunner(
+			controllerName+"-firewall-enforcer",
+			func() error { return c.firewallEnforcer(context.Background()) },
+			30*time.Second, // minInterval (less frequent than nftables sync to avoid overload listing conntrack entries)
+			15*time.Second, // retryInterval
+			1*time.Hour,    // maxInterval
+		)
+	}
+
 	// The sync callback now triggers the runner.
 	syncCallback := func() {
 		c.syncRunner.Run()
+		if c.config.StrictMode {
+			c.connRunner.Run()
+		}
 	}
 	c.policyEngine.SetDataplaneSyncCallbacks(syncCallback)
 
@@ -113,6 +157,7 @@ type Controller struct {
 	config       Config
 	policyEngine *networkpolicy.PolicyEngine
 	syncRunner   *runner.BoundedFrequencyRunner
+	connRunner   *runner.BoundedFrequencyRunner
 
 	nfq     *nfqueue.Nfqueue
 	flushed bool
@@ -142,7 +187,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	registerMetrics(ctx)
 	// collect metrics periodically
 	go wait.UntilWithContext(ctx, func(ctx context.Context) {
-		logger := klog.FromContext(ctx)
+		logger := klog.FromContext(ctx).WithName("metrics-collector")
 		queues, err := readNfnetlinkQueueStats()
 		if err != nil {
 			logger.Error(err, "reading nfqueue stats")
@@ -159,8 +204,11 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	}, 30*time.Second)
 
-	// Start the BoundedFrequencyRunner's loop.
+	// Start the BoundedFrequencyRunner's loops.
 	go c.syncRunner.Loop(ctx.Done())
+	if c.config.StrictMode {
+		go c.connRunner.Loop(ctx.Done())
+	}
 
 	// Perform an initial sync to ensure rules are in place at startup.
 	if err := c.syncNFTablesRules(ctx); err != nil {
@@ -228,12 +276,21 @@ func (c *Controller) Run(ctx context.Context) error {
 			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime), "verdict", verdictStr)
 		}()
 
+		var verdictError error
 		if c.evaluatePacket(ctx, &packet) {
 			verdict = nfqueue.NfAccept
+			// TODO: it is unclear if setting the label here will completely remove the existing labels
+			// or just set the specific bit. If it removes all the existing labels we need to read them first.
+			// Based on the bugs found in the conntrack and netfilter code around ct labels, it is likely that
+			// it removes all existing labels, but also that is not widely used, so for now we set it directly.
+			verdictError = c.nfq.SetVerdictWithLabel(*a.PacketID, verdict, generateLabelMask(c.config.CTLabelAccept))
 		} else {
 			verdict = nfqueue.NfDrop
+			verdictError = c.nfq.SetVerdict(*a.PacketID, verdict)
 		}
-		c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
+		if verdictError != nil {
+			logger.Error(verdictError, "failed to set verdict with label", "id", *a.PacketID)
+		}
 		return 0
 	}
 
@@ -310,11 +367,96 @@ func (c *Controller) evaluatePacket(ctx context.Context, p *network.Packet) bool
 	return allowed
 }
 
+// firewallEnforcer retrieves conntrack entries and enforces current network policies on them
+// by flushing the conntrack entries that are not allowed anymore so they are
+// processed again in the queue.
+func (c *Controller) firewallEnforcer(ctx context.Context) error {
+	var errorList []error
+	logger := klog.FromContext(ctx).WithName("firewall-enforcer")
+	logger.Info("Enforcing firewall policies on existing connections")
+
+	start := time.Now()
+
+	flows, err := vishnetlink.ConntrackTableList(vishnetlink.ConntrackTable, vishnetlink.FAMILY_ALL)
+	if err != nil {
+		logger.Error(err, "listing conntrack entries")
+		return err
+	}
+
+	defer func() {
+		logger.Info("Completed enforcing firewall policies on existing connections", "nflows", len(flows), "elapsed", time.Since(start))
+	}()
+
+	allPodIPs, divertAll, err := c.policyEngine.GetManagedIPs(ctx)
+	if err != nil {
+		logger.Error(err, "getting managed IPs for firewall enforcement")
+		return err
+	}
+
+	ipset := sets.Set[string]{}
+	if !divertAll {
+		for _, ip := range allPodIPs {
+			ipset.Insert(ip.String())
+		}
+	}
+
+	for _, flow := range flows {
+		// only UDP, SCTP or TCP connections in ESTABLISHED state are evaluated
+		if flow.Forward.Protocol != unix.IPPROTO_UDP &&
+			flow.Forward.Protocol != unix.IPPROTO_SCTP &&
+			flow.Forward.Protocol != unix.IPPROTO_TCP {
+			continue
+		}
+		if flow.ProtoInfo != nil {
+			if state, ok := flow.ProtoInfo.(*vishnetlink.ProtoInfoTCP); ok && state.State != nl.TCP_CONNTRACK_ESTABLISHED {
+				continue
+			}
+		}
+
+		// If divertAll is true, all pod IPs are managed by network policies.
+		// Otherwise, checks the source IP of the forward flow and the translated IP of the reverse flow,
+		// as these are the IPs that belong to the pods in case of DNAT for Services.
+		if !divertAll {
+			if !ipset.Has(flow.Forward.SrcIP.String()) && !ipset.Has(flow.Reverse.SrcIP.String()) {
+				logger.V(4).Info("Skipping conntrack entry not involving managed IPs", "flow", flow)
+				continue
+			}
+		}
+
+		// The policy engine evaluates packets, so we need to convert the conntrack flow to a packet.
+		// The packet is evaluated against the current network policies both for source and destination.
+		packet := PacketFromFlow(flow)
+		if packet == nil {
+			continue
+		}
+		logger.V(4).Info("Evaluating packet", "packet", packet.String())
+
+		// Evaluate the packet against current network policies.
+		allowed, err := c.policyEngine.EvaluatePacket(ctx, packet)
+		if err != nil {
+			logger.Info("error evaluating conntrack entry", "flow", flow, "err", err)
+			continue
+		}
+
+		if !allowed {
+			logger.V(4).Info("Connection no longer allowed by network policies", "packet", packet.String())
+			// clear label so it can be re-evaluated in the queue
+			flow.Labels = clearLabelBit(flow.Labels, c.config.CTLabelAccept)
+			err = vishnetlink.ConntrackUpdate(vishnetlink.ConntrackTable, vishnetlink.InetFamily(flow.FamilyType), flow)
+			if err != nil {
+				errorList = append(errorList, err)
+			}
+		}
+	}
+
+	return errors.Join(errorList...)
+}
+
 // syncNFTablesRules adds the necessary rules to process the first connection packets in userspace
 // and check if network policies must apply.
 // TODO: We can divert only the traffic affected by network policies using a set in nftables or an IPset.
 func (c *Controller) syncNFTablesRules(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
+	logger := klog.FromContext(ctx).WithName("nftables-sync")
 
 	logger.Info("Syncing nftables rules")
 	start := time.Now()
@@ -494,18 +636,25 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		Exprs: []expr.Any{
 			&expr.Meta{Key: expr.MetaKeySKUID, SourceRegister: false, Register: 0x1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Counter{},
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
 
-	// ct state established,related accept
+	// The queue sets the conntrack mark for the packets it processes,
+	// so we can clear the mark here later to re-process connections if needed.
+	// ct label X state established,related accept
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
 		Exprs: []expr.Any{
-			&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeySTATE},
+			&expr.Ct{Register: 0x1, Key: expr.CtKeyLABELS},
+			&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 16, Mask: generateLabelMask(c.config.CTLabelAccept), Xor: make([]byte, 16)},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: make([]byte, 16)},
+			&expr.Ct{Register: 0x1, Key: expr.CtKeySTATE},
 			&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
 			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Counter{},
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
@@ -575,12 +724,25 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		})
 	}
 
+	// There has to be a "fake" entry to set labels in order to enable the ct label extension mechanism,
+	// This entry will only match if the queue is bypassed and the packet is accepted in that case.
+	// The entry is needed because otherwise netlink operations to set the conntrack labels will fail with ENOSPC
+	// see https://patchwork.ozlabs.org/project/netfilter-devel/patch/20251020200805.298670-1-aojea@google.com/
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Immediate{Register: 0x1, Data: generateLabelMask(c.config.CTLabelAccept)},
+			&expr.Ct{Register: 0x1, SourceRegister: true, Key: expr.CtKeyLABELS},
+		},
+	})
+
 	if c.config.NetfilterBug1766Fix {
 		c.addDNSRacersWorkaroundRules(nft, table, divertAll)
 	}
 
 	if err := nft.Flush(); err != nil {
-		klog.FromContext(ctx).Info("syncing nftables rules", "error", err)
+		logger.Info("syncing nftables rules", "error", err)
 		return err
 	}
 	return nil
