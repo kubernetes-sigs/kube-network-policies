@@ -83,6 +83,7 @@ func run() int {
 		FailOpen:            opts.FailOpen,
 		QueueID:             opts.QueueID,
 		NetfilterBug1766Fix: opts.NetfilterBug1766Fix,
+		StrictMode:          opts.StrictMode,
 	}
 
 	var config *rest.Config
