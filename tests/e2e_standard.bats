@@ -14,14 +14,13 @@ setup_file() {
   # Load the Docker image into the kind cluster
   kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG" --name "$CLUSTER_NAME"
 
-  # Install kube-network-policies
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" < "$BATS_TEST_DIRNAME"/../install.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install.yaml)
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 }
 
 teardown_file() {
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" < "$BATS_TEST_DIRNAME"/../install.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install.yaml)
   printf '%s' "${_install}" | kubectl delete -f -
 }
 
@@ -36,6 +35,42 @@ setup() {
 teardown() {
   kubectl delete namespace prod
   kubectl delete namespace dev
+}
+
+
+# Checks if the last line of a file matches an expected string
+check_last_line() {
+  local file="$1"
+  local expected_string="$2"
+  local last_line=$(tail -n 1 "$file" 2>/dev/null || true)
+
+  if [ "$last_line" = "$expected_string" ]; then
+    return 0 # Match found
+  else
+    echo "Expected: '$expected_string', but got: '$last_line'"
+    return 1 # No match
+  fi
+}
+
+# Polls a check function 10 times per second for up to 5 seconds
+busywait() {
+  local check_function="$1"
+  shift # Remove function name from arguments
+  # "$@" now contains all remaining arguments (e.g., file and string)
+
+  # Calculate retries (10 per second)
+  local retries="10" # 5 seconds timeout
+  local interval="0.5"
+
+  for i in $(seq 1 "$retries"); do
+    # Call the function (e.g., "check_last_line" "$outputfile" "$string")
+    if "$check_function" "$@"; then
+      return 0 # Success
+    fi
+    sleep "$interval"
+  done
+
+  return 1 # Timeout
 }
 
 # https://github.com/kubernetes-sigs/kube-network-policies/issues/150
@@ -203,4 +238,94 @@ EOF
   kubectl -n dev delete pod client-pod
   kubectl -n prod delete pod target-pod
   kubectl -n prod delete networkpolicy allow-same-namespace
+}
+
+
+@test "network policy drops established connections" {
+  # Create webserver pod in the 'prod' namespace
+  kubectl -n prod run webserver --image=alpine/socat --labels=app=web -- TCP-LISTEN:8080,fork SYSTEM:"while true; do cat; done"
+
+  kubectl -n prod wait --for=condition=ready pod/webserver --timeout=30s
+  WEBSERVER_IP=$(kubectl get pod webserver -n prod -o jsonpath='{.status.podIP}')
+
+  # Allow connection from 'dev' namespace to 'prod' namespace
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-client
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          purpose: testing
+EOF
+  sleep 2
+
+  # Create client pod in the 'dev' namespace that connects to the webserver
+  TMPFILEIN=$(mktemp)
+  TMPFILEOUT=$(mktemp)
+  tail -f "$TMPFILEIN" | kubectl -n dev run -i client --image alpine/socat -- -ddd STDIO "TCP:$WEBSERVER_IP:8080" >> "$TMPFILEOUT" 2>/dev/null &
+  CLIENT_PID=$!
+
+  # Wait for the client to start running, since kubectl run is asynchronous
+  sleep 2
+  kubectl -n dev wait --for=condition=ready pod/client --timeout=30s
+
+  echo "Hello World" >> "$TMPFILEIN"
+  busywait check_last_line "$TMPFILEOUT" "Hello World"
+  echo "Initial connection established."
+
+  # Delete the allow-client policy
+  kubectl -n prod delete networkpolicy allow-client
+  sleep 2
+  # The client should be working because no network policy is applied
+  kubectl -n dev wait --for=condition=ready pod/client --timeout=30s
+  echo "Keepalive without policies" >> "$TMPFILEIN"
+  busywait check_last_line "$TMPFILEOUT" "Keepalive without policies"
+  echo "Connection still active after deleting allow-client policy."
+
+  # Deny all ingress traffic to the webserver
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+  - Ingress
+EOF
+
+  # enforcer runs every 30 seconds, wait a bit longer
+  sleep 31
+
+  echo "Keepalive default-deny-ingress policy" >> "$TMPFILEIN"
+  if busywait check_last_line "$TMPFILEOUT" "Keepalive default-deny-ingress policy"; then
+    echo "Connection still active after applying default-deny-ingress policy."
+    kill "$CLIENT_PID" > /dev/null 2>&1 || true
+    kubectl delete pod webserver -n prod --ignore-not-found
+    kubectl delete pod client -n dev --ignore-not-found
+    kubectl delete networkpolicy default-deny-ingress -n prod --ignore-not-found
+    echo "Input file: $TMPFILEIN , Output file: $TMPFILEOUT"
+    return 1
+  fi
+  echo "Connection forbidden after applying default-deny-ingress policy."
+  # Check that new messages are not received
+  busywait check_last_line "$TMPFILEOUT" "Keepalive without policies"
+
+  kill "$CLIENT_PID" > /dev/null 2>&1 || true
+  # Cleanup: delete resources created by this test
+  kubectl delete pod webserver -n prod --ignore-not-found
+  kubectl delete pod client -n dev --ignore-not-found
+  kubectl delete networkpolicy default-deny-ingress -n prod --ignore-not-found
+  rm -f "$TMPFILEIN" "$TMPFILEOUT"
 }

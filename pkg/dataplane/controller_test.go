@@ -95,6 +95,7 @@ func TestConfig_Defaults(t *testing.T) {
 				QueueID:             100,
 				NetfilterBug1766Fix: false,
 				NFTableName:         "kube-network-policies",
+				CTLabelAccept:       100,
 			},
 		}, {
 			name: "queue id",
@@ -106,6 +107,7 @@ func TestConfig_Defaults(t *testing.T) {
 				QueueID:             99,
 				NetfilterBug1766Fix: false,
 				NFTableName:         "kube-network-policies",
+				CTLabelAccept:       100,
 			},
 		}, {
 			name: "table name",
@@ -118,6 +120,21 @@ func TestConfig_Defaults(t *testing.T) {
 				QueueID:             99,
 				NetfilterBug1766Fix: false,
 				NFTableName:         "kindnet-network-policies",
+				CTLabelAccept:       100,
+			},
+		}, {
+			name: "ct label",
+			config: Config{
+				QueueID:       99,
+				NFTableName:   "kindnet-network-policies",
+				CTLabelAccept: 101,
+			},
+			expected: Config{
+				FailOpen:            false,
+				QueueID:             99,
+				NetfilterBug1766Fix: false,
+				NFTableName:         "kindnet-network-policies",
+				CTLabelAccept:       101,
 			},
 		},
 	}
@@ -246,10 +263,12 @@ table inet kube-network-policies {
 		type ipv4_addr
 		elements = { 10.0.0.1 }
 	}
+
 	set podips-v6 {
 		type ipv6_addr
 		elements = { fd00::1 }
 	}
+
 	chain postrouting {
 		type filter hook postrouting priority srcnat - 5; policy accept;
 		udp dport 53 accept
@@ -258,13 +277,15 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
-		meta skuid 0 accept
-		ct state established,related accept
+		meta skuid 0 counter packets 0 bytes 0 accept
+		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		ip saddr @podips-v4 queue flags bypass to 102
 		ip daddr @podips-v4 queue flags bypass to 102
 		ip6 saddr @podips-v6 queue flags bypass to 102
 		ip6 daddr @podips-v6 queue flags bypass to 102
+		ct label set 28
 	}
+
 	chain prerouting {
 		type filter hook prerouting priority dstnat + 5; policy accept;
 		meta l4proto != udp accept
@@ -302,9 +323,10 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
-		meta skuid 0 accept
-		ct state established,related accept
+		meta skuid 0 counter packets 0 bytes 0 accept
+		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		queue to 102
+		ct label set 28
 	}
 	chain prerouting {
 		type filter hook prerouting priority dstnat + 5; policy accept;
@@ -342,9 +364,10 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
-		meta skuid 0 accept
-		ct state established,related accept
+		meta skuid 0 counter packets 0 bytes 0 accept
+		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		queue to 102
+		ct label set 28
 	}
 }
 `,
