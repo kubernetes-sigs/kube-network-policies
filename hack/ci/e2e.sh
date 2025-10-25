@@ -199,15 +199,12 @@ run_tests() {
   # PID, bash will not run traps while waiting on a process, but it will while
   # running a builtin like `wait`, saving the PID also allows us to forward the
   # interrupt
-  # use aws provider to enable cloud-provider tests, aws is just a nullprovider
-  # without any custom logic
   ./hack/ginkgo-e2e.sh \
     '--provider=skeleton' "--num-nodes=${NUM_NODES}" \
     "--ginkgo.focus=${FOCUS}" "--ginkgo.skip=${SKIP}" "--ginkgo.label-filter=${LABEL_FILTER}" \
     "--report-dir=${ARTIFACTS}" '--disable-log-dump=true' &
   GINKGO_PID=$!
   wait "$GINKGO_PID"
-  cd -
 }
 
 install_kube_network_policy() {
