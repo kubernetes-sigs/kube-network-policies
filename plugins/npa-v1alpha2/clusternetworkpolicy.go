@@ -144,24 +144,37 @@ func (c *ClusterNetworkPolicy) evaluateClusterEgress(
 ) npav1alpha2.ClusterNetworkPolicyRuleAction {
 	for _, policy := range policies {
 		for _, rule := range policy.Spec.Egress {
-			if rule.Ports != nil {
-				if !evaluateClusterNetworkPolicyPort(*rule.Ports, dstPod, dstPort, protocol) {
+			// A rule matches if both its ports and peers match.
+			// 1. Check ports
+			if rule.Protocols != nil {
+				if !evaluateClusterNetworkPolicyProtocols(*rule.Protocols, dstPod, dstPort, protocol) {
 					continue
 				}
 			}
+			// 2. Check peers
+			// An empty 'To' slice matches all destinations.
+			if len(rule.To) == 0 {
+				return rule.Action
+			}
+
+			// If 'To' is not empty, at least one peer must match.
+			peerMatches := false
 			for _, to := range rule.To {
 				if to.Namespaces != nil && dstPod != nil && networkpolicy.MatchesSelector(to.Namespaces, dstPod.Namespace.Labels) {
-					return rule.Action
+					peerMatches = true
+					break
 				}
 
 				if to.Pods != nil && dstPod != nil &&
 					networkpolicy.MatchesSelector(&to.Pods.NamespaceSelector, dstPod.Namespace.Labels) &&
 					networkpolicy.MatchesSelector(&to.Pods.PodSelector, dstPod.Labels) {
-					return rule.Action
+					peerMatches = true
+					break
 				}
 
 				if to.Nodes != nil && dstPod != nil && networkpolicy.MatchesSelector(to.Nodes, dstPod.Node.Labels) {
-					return rule.Action
+					peerMatches = true
+					break
 				}
 
 				for _, network := range to.Networks {
@@ -170,14 +183,27 @@ func (c *ClusterNetworkPolicy) evaluateClusterEgress(
 						continue
 					}
 					if cidr.Contains(dstIP) {
-						return rule.Action
+						peerMatches = true
+						break
 					}
 				}
+				if peerMatches {
+					break
+				}
+
 				for _, domain := range to.DomainNames {
 					if c.domainResolver != nil && c.domainResolver.ContainsIP(string(domain), dstIP) {
-						return rule.Action
+						peerMatches = true
+						break
 					}
 				}
+				if peerMatches {
+					break
+				}
+			}
+
+			if peerMatches {
+				return rule.Action
 			}
 		}
 	}
@@ -197,63 +223,97 @@ func (c *ClusterNetworkPolicy) evaluateClusterIngress(
 	}
 	for _, policy := range policies {
 		for _, rule := range policy.Spec.Ingress {
-			if rule.Ports != nil {
-				if !evaluateClusterNetworkPolicyPort(*rule.Ports, dstPod, dstPort, protocol) {
+			// A rule matches if both its ports and peers match.
+			// 1. Check ports and protocols
+			if rule.Protocols != nil {
+				if !evaluateClusterNetworkPolicyProtocols(*rule.Protocols, dstPod, dstPort, protocol) {
 					continue
 				}
 			}
+
+			// 2. Check peers
+			// An empty 'From' slice matches all sources.
+			if len(rule.From) == 0 {
+				return rule.Action
+			}
+
+			// If 'From' is not empty, at least one peer must match.
+			peerMatches := false
 			for _, from := range rule.From {
 				if from.Namespaces != nil && networkpolicy.MatchesSelector(from.Namespaces, srcPod.Namespace.Labels) {
-					return rule.Action
+					peerMatches = true
+					break
 				}
 
 				if from.Pods != nil &&
 					networkpolicy.MatchesSelector(&from.Pods.NamespaceSelector, srcPod.Namespace.Labels) &&
 					networkpolicy.MatchesSelector(&from.Pods.PodSelector, srcPod.Labels) {
-					return rule.Action
+					peerMatches = true
+					break
 				}
+			}
+
+			if peerMatches {
+				return rule.Action
 			}
 		}
 	}
 	return npav1alpha2.ClusterNetworkPolicyRuleActionPass
 }
 
-// evaluateClusterNetworkPolicyPort checks if a specific port and protocol match any port selectors.
-func evaluateClusterNetworkPolicyPort(
-	policyPorts []npav1alpha2.ClusterNetworkPolicyPort,
+// evaluateClusterNetworkPolicyProtocols checks if a specific port and protocol
+// match any port selectors.
+func evaluateClusterNetworkPolicyProtocols(
+	protocols []npav1alpha2.ClusterNetworkPolicyProtocol,
 	pod *api.PodInfo,
 	port int,
 	protocol v1.Protocol,
 ) bool {
-	if len(policyPorts) == 0 {
-		return true
+	if len(protocols) == 0 {
+		return false
 	}
 
-	for _, policyPort := range policyPorts {
-		if policyPort.PortNumber != nil &&
-			policyPort.PortNumber.Port == int32(port) &&
-			policyPort.PortNumber.Protocol == protocol {
-			return true
-		}
-
-		if policyPort.NamedPort != nil {
-			if pod == nil {
-				continue
-			}
-			for _, containerPort := range pod.ContainerPorts {
-				if containerPort.Name == *policyPort.NamedPort && v1.Protocol(containerPort.Protocol) == protocol && containerPort.Port == int32(port) {
-					return true
-				}
-			}
-		}
-
-		if policyPort.PortRange != nil &&
-			policyPort.PortRange.Protocol == protocol &&
-			policyPort.PortRange.Start <= int32(port) &&
-			policyPort.PortRange.End >= int32(port) {
+	for _, policy := range protocols {
+		if evaluateProtocolPort(policy, pod, int32(port), protocol) {
 			return true
 		}
 	}
+
+	return false
+}
+
+func evaluateProtocolPort(
+	policy npav1alpha2.ClusterNetworkPolicyProtocol,
+	pod *api.PodInfo,
+	port int32,
+	protocol v1.Protocol,
+) bool {
+	if policy.Protocol != protocol {
+		return false
+	}
+
+	switch {
+	case policy.Port.Number != nil:
+		return *policy.Port.Number == port
+
+	case policy.Port.Name != nil:
+		if pod == nil {
+			return false
+		}
+		for _, containerPort := range pod.ContainerPorts {
+			nameOk := containerPort.Name == *policy.Port.Name
+			portOk := containerPort.Port == port
+			if nameOk && portOk {
+				return true
+			}
+		}
+
+	case policy.Port.Range != nil:
+		if policy.Port.Range.Start <= port && port <= policy.Port.Range.End {
+			return true
+		}
+	}
+
 	return false
 }
 
