@@ -31,7 +31,7 @@ jobs:
       id: go
 
     - name: Check out code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
 
     - name: Build-alpha1
       run: |
@@ -69,7 +69,7 @@ jobs:
       IP_FAMILY: ${{ matrix.ipFamily }}
     steps:
     - name: Check out code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
 
     - name: Enable ipv4 and ipv6 forwarding
       run: |
@@ -182,7 +182,7 @@ jobs:
       IP_FAMILY: ${{ matrix.ipFamily }}
     steps:
     - name: Check out code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
 
     - name: Enable ipv4 and ipv6 forwarding
       run: |
