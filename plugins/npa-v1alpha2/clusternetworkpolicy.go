@@ -10,7 +10,9 @@ import (
 	"slices"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
@@ -27,17 +29,19 @@ type ClusterNetworkPolicy struct {
 	cnpLister      cnplisters.ClusterNetworkPolicyLister
 	cnpSynced      cache.InformerSynced
 	domainResolver api.DomainResolver
+	nodeLister     corelisters.NodeLister
 }
 
 var _ api.PolicyEvaluator = &ClusterNetworkPolicy{}
 
 // NewClusterNetworkPolicy creates a new CNP implementation.
-func NewClusterNetworkPolicy(tier npav1alpha2.Tier, cnpInformer cnpinformers.ClusterNetworkPolicyInformer, domainResolver api.DomainResolver) *ClusterNetworkPolicy {
+func NewClusterNetworkPolicy(tier npav1alpha2.Tier, cnpInformer cnpinformers.ClusterNetworkPolicyInformer, domainResolver api.DomainResolver, nodeLister corelisters.NodeLister) *ClusterNetworkPolicy {
 	return &ClusterNetworkPolicy{
 		tier:           tier,
 		cnpLister:      cnpInformer.Lister(),
 		cnpSynced:      cnpInformer.Informer().HasSynced,
 		domainResolver: domainResolver,
+		nodeLister:     nodeLister,
 	}
 }
 
@@ -81,6 +85,7 @@ func (c *ClusterNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Pa
 
 	policies, err := c.getPoliciesForPod(srcPod)
 	if err != nil || len(policies) == 0 {
+		logger.V(2).Info("Skipping Egress CNP evaluation", "npolicies", len(policies), "err", err)
 		return api.VerdictNext, err
 	}
 
@@ -160,8 +165,26 @@ func (c *ClusterNetworkPolicy) evaluateClusterEgress(
 					return rule.Action
 				}
 
-				if to.Nodes != nil && dstPod != nil && networkpolicy.MatchesSelector(to.Nodes, dstPod.Node.Labels) {
-					return rule.Action
+				if to.Nodes != nil {
+					s, err := metav1.LabelSelectorAsSelector(to.Nodes)
+					if err != nil {
+						continue
+					}
+					nodes, err := c.nodeLister.List(s)
+					if err != nil {
+						continue
+					}
+					for _, node := range nodes {
+						for _, addr := range node.Status.Addresses {
+							if addr.Type == v1.NodeInternalIP || addr.Type == v1.NodeExternalIP {
+								ip := net.ParseIP(addr.Address)
+								if ip != nil && ip.Equal(dstIP) {
+									// we found target node
+									return rule.Action
+								}
+							}
+						}
+					}
 				}
 
 				for _, network := range to.Networks {
