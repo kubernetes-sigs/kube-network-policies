@@ -20,11 +20,11 @@ require (
 	golang.org/x/sys v0.37.0
 	golang.org/x/time v0.14.0
 	google.golang.org/protobuf v1.36.10
-	k8s.io/api v0.34.2
-	k8s.io/apimachinery v0.34.2
-	k8s.io/client-go v0.34.2
-	k8s.io/component-base v0.34.2
-	k8s.io/component-helpers v0.34.2
+	k8s.io/api v0.34.3
+	k8s.io/apimachinery v0.34.3
+	k8s.io/client-go v0.34.3
+	k8s.io/component-base v0.34.3
+	k8s.io/component-helpers v0.34.3
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	// Temporarily reference latest network-policy-api in anticipation of Beta.
