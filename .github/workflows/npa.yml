@@ -111,7 +111,7 @@ jobs:
         # dump the kubeconfig for later
         /usr/local/bin/kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME}} > _artifacts/kubeconfig.conf
 
-    - uses: actions/download-artifact@v6
+    - uses: actions/download-artifact@v7
       with:
         name: test-image-v1alpha1
 
@@ -224,7 +224,7 @@ jobs:
         # dump the kubeconfig for later
         /usr/local/bin/kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME}} > _artifacts/kubeconfig.conf
 
-    - uses: actions/download-artifact@v6
+    - uses: actions/download-artifact@v7
       with:
         name: test-image-v1alpha2
 
