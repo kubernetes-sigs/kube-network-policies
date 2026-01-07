@@ -274,7 +274,7 @@ Learn how to engage with the Kubernetes community on the [community page](http:/
 You can reach the maintainers of this project at:
 
 - [Slack](https://kubernetes.slack.com/messages/sig-network)
-- [Mailing List](https://groups.google.com/g/kubernetes-sig-network)
+- [Mailing List](https://groups.google.com/a/kubernetes.io/g/sig-network)
 
 ### Code of conduct
 
