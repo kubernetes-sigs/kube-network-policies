@@ -25,13 +25,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
       with:
         go-version: ${{ env.GO_VERSION }}
       id: go
 
     - name: Check out code
-      uses: actions/checkout@v5
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
     - name: Build-alpha1
       run: |
@@ -39,7 +39,7 @@ jobs:
         mkdir _output
         docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1 > _output/kube-network-policies-image-v1alpha1.tar
 
-    - uses: actions/upload-artifact@v5
+    - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
       with:
         name: test-image-v1alpha1
         path: _output/kube-network-policies-image-v1alpha1.tar
@@ -49,7 +49,7 @@ jobs:
         REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-network-policies" TAG="test" make image-build-npa-v1alpha2
         docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha2 > _output/kube-network-policies-image-v1alpha2.tar
 
-    - uses: actions/upload-artifact@v5
+    - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
       with:
         name: test-image-v1alpha2
         path: _output/kube-network-policies-image-v1alpha2.tar
@@ -69,7 +69,7 @@ jobs:
       IP_FAMILY: ${{ matrix.ipFamily }}
     steps:
     - name: Check out code
-      uses: actions/checkout@v5
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
     - name: Enable ipv4 and ipv6 forwarding
       run: |
@@ -111,7 +111,7 @@ jobs:
         # dump the kubeconfig for later
         /usr/local/bin/kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME}} > _artifacts/kubeconfig.conf
 
-    - uses: actions/download-artifact@v6
+    - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
       with:
         name: test-image-v1alpha1
 
@@ -149,7 +149,7 @@ jobs:
 
     - name: Upload Junit Reports
       if: always()
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
       with:
         name: kind-junit-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: './_artifacts/*.xml'
@@ -161,7 +161,7 @@ jobs:
 
     - name: Upload logs
       if: always()
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
       with:
         name: kind-logs-v1alpha1-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: ./_artifacts/logs
@@ -182,7 +182,7 @@ jobs:
       IP_FAMILY: ${{ matrix.ipFamily }}
     steps:
     - name: Check out code
-      uses: actions/checkout@v5
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
     - name: Enable ipv4 and ipv6 forwarding
       run: |
@@ -224,7 +224,7 @@ jobs:
         # dump the kubeconfig for later
         /usr/local/bin/kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME}} > _artifacts/kubeconfig.conf
 
-    - uses: actions/download-artifact@v6
+    - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
       with:
         name: test-image-v1alpha2
 
@@ -259,7 +259,7 @@ jobs:
 
     - name: Upload Junit Reports
       if: always()
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
       with:
         name: kind-junit-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: './_artifacts/*.xml'
@@ -271,7 +271,7 @@ jobs:
 
     - name: Upload logs
       if: always()
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
       with:
         name: kind-logs-v1alpha2-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: ./_artifacts/logs
