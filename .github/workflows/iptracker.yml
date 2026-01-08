@@ -30,7 +30,7 @@ jobs:
       id: go
 
     - name: Check out code
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v5
 
     - name: Build
       run: |
@@ -70,7 +70,7 @@ jobs:
       KUBEPROXY_MODE: ${{ matrix.proxyMode }}
     steps:
     - name: Check out code
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v5
 
     - name: Enable ipv4 and ipv6 forwarding
       run: |
