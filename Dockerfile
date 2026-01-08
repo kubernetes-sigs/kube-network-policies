@@ -1,7 +1,7 @@
 # Use an ARG to select which build target to compile and use
 ARG TARGET_BUILD=standard
 
-FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
 WORKDIR /src
 
 # Get target architecture for cross-compilation
