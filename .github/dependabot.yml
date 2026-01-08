@@ -16,8 +16,22 @@ updates:
       etcd-deps:
         patterns:
           - "*go.etcd.io*"
+    labels:
+      - "area/dependency"
+      - "ok-to-test"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    labels:
+      - "area/dependency"
+      - "ok-to-test"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "area/dependency"
+      - "ok-to-test"
