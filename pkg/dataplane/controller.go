@@ -10,8 +10,8 @@ import (
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
-	"github.com/mdlayher/netlink"
-	vishnetlink "github.com/vishvananda/netlink"
+	nfqnetlink "github.com/mdlayher/netlink"
+	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
@@ -296,7 +296,7 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	// Register your function to listen on nflog group 100
 	err = nf.RegisterWithErrorFunc(ctx, fn, func(err error) int {
-		if opError, ok := err.(*netlink.OpError); ok {
+		if opError, ok := err.(*nfqnetlink.OpError); ok {
 			if opError.Timeout() || opError.Temporary() {
 				return 0
 			}
@@ -377,7 +377,7 @@ func (c *Controller) firewallEnforcer(ctx context.Context) error {
 
 	start := time.Now()
 
-	flows, err := vishnetlink.ConntrackTableList(vishnetlink.ConntrackTable, vishnetlink.FAMILY_ALL)
+	flows, err := netlink.ConntrackTableList(netlink.ConntrackTable, netlink.FAMILY_ALL)
 	if err != nil {
 		logger.Error(err, "listing conntrack entries")
 		return err
@@ -408,7 +408,7 @@ func (c *Controller) firewallEnforcer(ctx context.Context) error {
 			continue
 		}
 		if flow.ProtoInfo != nil {
-			if state, ok := flow.ProtoInfo.(*vishnetlink.ProtoInfoTCP); ok && state.State != nl.TCP_CONNTRACK_ESTABLISHED {
+			if state, ok := flow.ProtoInfo.(*netlink.ProtoInfoTCP); ok && state.State != nl.TCP_CONNTRACK_ESTABLISHED {
 				continue
 			}
 		}
@@ -442,7 +442,7 @@ func (c *Controller) firewallEnforcer(ctx context.Context) error {
 			logger.V(4).Info("Connection no longer allowed by network policies", "packet", packet.String())
 			// clear label so it can be re-evaluated in the queue
 			flow.Labels = clearLabelBit(flow.Labels, c.config.CTLabelAccept)
-			err = vishnetlink.ConntrackUpdate(vishnetlink.ConntrackTable, vishnetlink.InetFamily(flow.FamilyType), flow)
+			err = netlink.ConntrackUpdate(netlink.ConntrackTable, netlink.InetFamily(flow.FamilyType), flow)
 			if err != nil {
 				errorList = append(errorList, err)
 			}
