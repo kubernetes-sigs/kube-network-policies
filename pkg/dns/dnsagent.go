@@ -15,7 +15,7 @@ import (
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
-	"github.com/mdlayher/netlink"
+	nfqnetlink "github.com/mdlayher/netlink"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -101,7 +101,7 @@ func (n *DomainCache) Run(ctx context.Context) error {
 
 	// Register your function to listen on nflog group 100
 	err = nf.RegisterWithErrorFunc(ctx, fn, func(err error) int {
-		if opError, ok := err.(*netlink.OpError); ok {
+		if opError, ok := err.(*nfqnetlink.OpError); ok {
 			if opError.Timeout() || opError.Temporary() {
 				return 0
 			}
