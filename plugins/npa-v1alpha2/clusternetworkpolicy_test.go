@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
@@ -283,14 +282,14 @@ func verdictToBool(v api.Verdict) bool {
 }
 
 // --- Port Evaluation Test ---
-func Test_evaluateClusterNetworkPolicyPort(t *testing.T) {
+func Test_evaluateProtocols(t *testing.T) {
 	tests := []struct {
-		name        string
-		policyPorts []npav1alpha2.ClusterNetworkPolicyPort
-		pod         *v1.Pod
-		port        int
-		protocol    v1.Protocol
-		want        bool
+		name            string
+		policyProtocols []npav1alpha2.ClusterNetworkPolicyProtocol
+		pod             *v1.Pod
+		port            int
+		protocol        v1.Protocol
+		want            bool
 	}{
 		{
 			name: "empty ports match all",
@@ -299,8 +298,12 @@ func Test_evaluateClusterNetworkPolicyPort(t *testing.T) {
 		},
 		{
 			name: "match port number",
-			policyPorts: []npav1alpha2.ClusterNetworkPolicyPort{{
-				PortNumber: &npav1alpha2.Port{Protocol: v1.ProtocolTCP, Port: 80},
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				TCP: &npav1alpha2.ClusterNetworkPolicyProtocolTCP{
+					DestinationPort: &npav1alpha2.Port{
+						Number: 80,
+					},
+				},
 			}},
 			port:     80,
 			protocol: v1.ProtocolTCP,
@@ -308,8 +311,8 @@ func Test_evaluateClusterNetworkPolicyPort(t *testing.T) {
 		},
 		{
 			name: "match named port",
-			policyPorts: []npav1alpha2.ClusterNetworkPolicyPort{{
-				NamedPort: ptr.To[string]("http"),
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				DestinationNamedPort: "http",
 			}},
 			pod:      makePod("test", "nstest", "192.168.1.1"),
 			port:     80,
@@ -318,28 +321,279 @@ func Test_evaluateClusterNetworkPolicyPort(t *testing.T) {
 		},
 		{
 			name: "match port range",
-			policyPorts: []npav1alpha2.ClusterNetworkPolicyPort{{
-				PortRange: &npav1alpha2.PortRange{Protocol: v1.ProtocolTCP, Start: 80, End: 90},
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				TCP: &npav1alpha2.ClusterNetworkPolicyProtocolTCP{
+					DestinationPort: &npav1alpha2.Port{
+						Range: &npav1alpha2.PortRange{
+							Start: 80,
+							End:   90,
+						},
+					},
+				},
 			}},
 			port:     85,
 			protocol: v1.ProtocolTCP,
 			want:     true,
 		},
 		{
+			name: "match port range start",
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				TCP: &npav1alpha2.ClusterNetworkPolicyProtocolTCP{
+					DestinationPort: &npav1alpha2.Port{
+						Range: &npav1alpha2.PortRange{
+							Start: 80,
+							End:   90,
+						},
+					},
+				},
+			}},
+			port:     80,
+			protocol: v1.ProtocolTCP,
+			want:     true,
+		},
+		{
+			name: "match port range end",
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				TCP: &npav1alpha2.ClusterNetworkPolicyProtocolTCP{
+					DestinationPort: &npav1alpha2.Port{
+						Range: &npav1alpha2.PortRange{
+							Start: 80,
+							End:   90,
+						},
+					},
+				},
+			}},
+			port:     90,
+			protocol: v1.ProtocolTCP,
+			want:     true,
+		},
+		{
+			name: "no match port below range",
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				TCP: &npav1alpha2.ClusterNetworkPolicyProtocolTCP{
+					DestinationPort: &npav1alpha2.Port{
+						Range: &npav1alpha2.PortRange{
+							Start: 80,
+							End:   90,
+						},
+					},
+				},
+			}},
+			port:     79,
+			protocol: v1.ProtocolTCP,
+			want:     false,
+		},
+		{
+			name: "no match port above range",
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				TCP: &npav1alpha2.ClusterNetworkPolicyProtocolTCP{
+					DestinationPort: &npav1alpha2.Port{
+						Range: &npav1alpha2.PortRange{
+							Start: 80,
+							End:   90,
+						},
+					},
+				},
+			}},
+			port:     91,
+			protocol: v1.ProtocolTCP,
+			want:     false,
+		},
+		{
 			name: "no match port number",
-			policyPorts: []npav1alpha2.ClusterNetworkPolicyPort{{
-				PortNumber: &npav1alpha2.Port{Protocol: v1.ProtocolTCP, Port: 80},
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				TCP: &npav1alpha2.ClusterNetworkPolicyProtocolTCP{
+					DestinationPort: &npav1alpha2.Port{
+						Number: 80,
+					},
+				},
 			}},
 			port:     443,
 			protocol: v1.ProtocolTCP,
 			want:     false,
 		},
+		{
+			name: "no match different protocol",
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				TCP: &npav1alpha2.ClusterNetworkPolicyProtocolTCP{
+					DestinationPort: &npav1alpha2.Port{
+						Number: 80,
+					},
+				},
+			}},
+			port:     80,
+			protocol: v1.ProtocolUDP,
+			want:     false,
+		},
+		{
+			name: "match udp protocol",
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				UDP: &npav1alpha2.ClusterNetworkPolicyProtocolUDP{
+					DestinationPort: &npav1alpha2.Port{
+						Number: 53,
+					},
+				},
+			}},
+			port:     53,
+			protocol: v1.ProtocolUDP,
+			want:     true,
+		},
+		{
+			name: "match sctp protocol",
+			policyProtocols: []npav1alpha2.ClusterNetworkPolicyProtocol{{
+				SCTP: &npav1alpha2.ClusterNetworkPolicyProtocolSCTP{
+					DestinationPort: &npav1alpha2.Port{
+						Number: 9090,
+					},
+				},
+			}},
+			port:     9090,
+			protocol: v1.ProtocolSCTP,
+			want:     true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			podInfo := api.NewPodInfo(tt.pod, makeNamespace("foo").Labels, makeNode("testnode").Labels, "id")
-			if got := evaluateClusterNetworkPolicyPort(tt.policyPorts, podInfo, tt.port, tt.protocol); got != tt.want {
-				t.Errorf("evaluateClusterNetworkPolicyPort() = %v, want %v", got, tt.want)
+			if got := evaluateProtocols(tt.policyProtocols, podInfo, tt.port, tt.protocol); got != tt.want {
+				t.Errorf("evaluateProtocols() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_matchProtocolDestinationNamedPort(t *testing.T) {
+	pod := makePod("test", "nstest", "192.168.1.1")
+	podInfo := api.NewPodInfo(pod, makeNamespace("nstest").Labels, makeNode("testnode").Labels, "id")
+
+	tests := []struct {
+		name      string
+		namedPort string
+		podInfo   *api.PodInfo
+		protocol  v1.Protocol
+		port      int
+		want      bool
+	}{
+		{
+			name:      "match exact named port",
+			namedPort: "http",
+			podInfo:   podInfo,
+			protocol:  v1.ProtocolTCP,
+			port:      80,
+			want:      true,
+		},
+		{
+			name:      "no match wrong protocol",
+			namedPort: "http",
+			podInfo:   podInfo,
+			protocol:  v1.ProtocolUDP,
+			port:      80,
+			want:      false,
+		},
+		{
+			name:      "no match wrong port",
+			namedPort: "http",
+			podInfo:   podInfo,
+			protocol:  v1.ProtocolTCP,
+			port:      8080,
+			want:      false,
+		},
+		{
+			name:      "no match wrong name",
+			namedPort: "https",
+			podInfo:   podInfo,
+			protocol:  v1.ProtocolTCP,
+			port:      80,
+			want:      false,
+		},
+		{
+			name:      "nil pod info",
+			namedPort: "http",
+			podInfo:   nil,
+			protocol:  v1.ProtocolTCP,
+			port:      80,
+			want:      false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchProtocolDestinationNamedPort(tt.namedPort, tt.podInfo, tt.protocol, tt.port); got != tt.want {
+				t.Errorf("matchProtocolDestinationNamedPort() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_matchPort(t *testing.T) {
+	tests := []struct {
+		name       string
+		policyPort *npav1alpha2.Port
+		port       int
+		want       bool
+	}{
+		{
+			name:       "nil policy port",
+			policyPort: nil,
+			port:       80,
+			want:       true,
+		},
+		{
+			name:       "match exact port",
+			policyPort: &npav1alpha2.Port{Number: 80},
+			port:       80,
+			want:       true,
+		},
+		{
+			name:       "no match exact port",
+			policyPort: &npav1alpha2.Port{Number: 80},
+			port:       443,
+			want:       false,
+		},
+		{
+			name: "match port in range",
+			policyPort: &npav1alpha2.Port{
+				Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+			},
+			port: 85,
+			want: true,
+		},
+		{
+			name: "match range start",
+			policyPort: &npav1alpha2.Port{
+				Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+			},
+			port: 80,
+			want: true,
+		},
+		{
+			name: "match range end",
+			policyPort: &npav1alpha2.Port{
+				Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+			},
+			port: 90,
+			want: true,
+		},
+		{
+			name: "no match below range",
+			policyPort: &npav1alpha2.Port{
+				Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+			},
+			port: 79,
+			want: false,
+		},
+		{
+			name: "no match above range",
+			policyPort: &npav1alpha2.Port{
+				Range: &npav1alpha2.PortRange{Start: 80, End: 90},
+			},
+			port: 91,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchPort(tt.policyPort, tt.port); got != tt.want {
+				t.Errorf("matchPort() = %v, want %v", got, tt.want)
 			}
 		})
 	}
