@@ -4,7 +4,7 @@ This is an example of how to do some microbenchmarking.
 
 1. Collect the existing metrics from the agents
    
-Example [deployment with prometheus](./monitoring.yaml)
+Install and configure Prometheus in your cluster to scrape metrics from the kube-network-policies agents. The agents expose metrics on port 9080 at the `/metrics` endpoint.
 
 2. Deploy some Pods running an http server behind a Service
 
