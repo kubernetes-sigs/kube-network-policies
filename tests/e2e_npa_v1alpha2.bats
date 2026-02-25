@@ -85,13 +85,13 @@ spec:
     - domainNames:
       - "blog.kubernetes.io"
       - "*.k8s.io"
-    ports:
-    - portNumber:
-        protocol: TCP
-        port: 80
-    - portNumber:
-        protocol: TCP
-        port: 443
+    protocols:
+    - tcp:
+        destinationPort:
+          number: 80
+    - tcp:
+        destinationPort:
+          number: 443
   - name: "default-deny"
     action: "Deny"
     to:

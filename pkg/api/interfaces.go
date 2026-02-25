@@ -44,8 +44,18 @@ type PolicyEvaluator interface {
 	// Ready returns true if the evaluator is initialized and ready to work.
 	Ready() bool
 
-	// EvaluateIngress/EvaluateEgress perform the runtime packet evaluation.
+	// EvaluateIngress performs runtime packet evaluation on the path into the
+	// Pod.
+	//
+	// srcPod can be nil if the source of the network traffic is not a
+	// Kubernetes pod (e.g. external traffic).
 	EvaluateIngress(ctx context.Context, p *network.Packet, srcPod, dstPod *PodInfo) (Verdict, error)
+
+	// EvaluateEgress  performs runtime packet evaluation on the path coming out
+	// from the Pod.
+	//
+	// dstPod can be nil if the destination of the network traffic is not a
+	// Kubernetes pod (e.g., external traffic).
 	EvaluateEgress(ctx context.Context, p *network.Packet, srcPod, dstPod *PodInfo) (Verdict, error)
 
 	// SetDataplaneSyncCallback allows the dataplane to provide a callback function.
