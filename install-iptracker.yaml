@@ -154,7 +154,7 @@ spec:
       serviceAccountName: kube-network-policies
       containers:
       - name: kube-network-policies
-        image: registry.k8s.io/networking/kube-network-policies:v0.9.2-iptracker
+        image: registry.k8s.io/networking/kube-network-policies:v1.0.0-iptracker
         args:
         - /bin/netpol
         - --hostname-override=$(MY_NODE_NAME)
