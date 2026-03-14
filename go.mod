@@ -17,7 +17,7 @@ require (
 	go.etcd.io/etcd/client/v3 v3.6.8
 	go.etcd.io/etcd/server/v3 v3.6.8
 	golang.org/x/net v0.51.0
-	golang.org/x/sys v0.41.0
+	golang.org/x/sys v0.42.0
 	golang.org/x/time v0.14.0
 	google.golang.org/protobuf v1.36.10
 	k8s.io/api v0.34.2
