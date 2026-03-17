@@ -233,6 +233,10 @@ See [TESTING](docs/testing/README.md)
 
 There are two github workflows that runs e2e tests aginst the Kubernetes/Kubernetes Network Policy tests and the Network Policy API Working Group conformance tests.
 
+## Advanced
+
+* [Using JSON logging for troubleshooting network policies](docs/json-logging.md)
+
 ## Project Scope
 
 This project was created to fill the gap on testing coverage in the area of Network Policies.
