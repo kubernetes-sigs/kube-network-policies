@@ -15,7 +15,8 @@ env:
   KIND_VERSION: "v0.29.0"
   KIND_CLUSTER_NAME: kind
 
-permissions: write-all
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -24,11 +25,14 @@ jobs:
     steps:
     - name: Check out code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v5
+      with:
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
       with:
         go-version-file: .go-version
+        cache: false
 
     - name: Build
       run: |
@@ -61,6 +65,8 @@ jobs:
     steps:
     - name: Check out code
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v5
+      with:
+        persist-credentials: false
 
     - name: Enable ipv4 and ipv6 forwarding
       run: |
