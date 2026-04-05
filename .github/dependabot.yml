@@ -16,6 +16,9 @@ updates:
       etcd-deps:
         patterns:
           - "*go.etcd.io*"
+      golang-x:
+        patterns:
+          - "*golang.org/x/*"
     labels:
       - "area/dependency"
       - "ok-to-test"
