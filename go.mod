@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/armon/go-radix v1.0.0
 	github.com/containerd/nri v0.11.0
-	github.com/florianl/go-nfqueue/v2 v2.0.2
+	github.com/florianl/go-nfqueue/v2 v2.0.3
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
 	github.com/mdlayher/netlink v1.9.0
