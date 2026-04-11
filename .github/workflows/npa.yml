@@ -41,7 +41,7 @@ jobs:
         mkdir _output
         docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha1 > _output/kube-network-policies-image-v1alpha1.tar
 
-    - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v5
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
       with:
         name: test-image-v1alpha1
         path: _output/kube-network-policies-image-v1alpha1.tar
@@ -51,7 +51,7 @@ jobs:
         REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-network-policies" TAG="test" make image-build-npa-v1alpha2
         docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha2 > _output/kube-network-policies-image-v1alpha2.tar
 
-    - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v5
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
       with:
         name: test-image-v1alpha2
         path: _output/kube-network-policies-image-v1alpha2.tar
@@ -153,7 +153,7 @@ jobs:
 
     - name: Upload Junit Reports
       if: always()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v5
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
       with:
         name: kind-junit-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: './_artifacts/*.xml'
@@ -165,7 +165,7 @@ jobs:
 
     - name: Upload logs
       if: always()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v5
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
       with:
         name: kind-logs-v1alpha1-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: ./_artifacts/logs
@@ -265,7 +265,7 @@ jobs:
 
     - name: Upload Junit Reports
       if: always()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v5
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
       with:
         name: kind-junit-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: './_artifacts/*.xml'
@@ -277,7 +277,7 @@ jobs:
 
     - name: Upload logs
       if: always()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v5
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
       with:
         name: kind-logs-v1alpha2-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: ./_artifacts/logs
