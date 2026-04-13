@@ -2,6 +2,8 @@ package dataplane
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/vishvananda/netns"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
@@ -145,7 +148,7 @@ func TestConfig_Defaults(t *testing.T) {
 				t.Errorf("Config.Defaults() error = %v", err)
 			}
 
-			if diff := cmp.Diff(tt.expected, c); diff != "" {
+			if diff := cmp.Diff(tt.expected, c, cmpopts.EquateComparable(Config{})); diff != "" {
 				t.Errorf("Config.Defaults() mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -157,7 +160,10 @@ func TestConfig_Defaults(t *testing.T) {
 // permissions to create network namespaces and iptables rules without running as root on the host.
 // This must be only top-level statement in the test function. Do not nest this.
 // It will slightly defect the test log output as the test is entered twice
-func execInUserns(t *testing.T, f func(t *testing.T)) {
+//
+// extraCloneflags can be used to request additional namespace types, e.g.
+// syscall.CLONE_NEWNET to also create a network namespace in the same clone.
+func execInUserns(t *testing.T, f func(t *testing.T), extraCloneflags ...uintptr) {
 	const subprocessEnvKey = `GO_SUBPROCESS_KEY`
 	if testIDString, ok := os.LookupEnv(subprocessEnvKey); ok && testIDString == "1" {
 		t.Run(`subprocess`, f)
@@ -178,9 +184,13 @@ func execInUserns(t *testing.T, f func(t *testing.T)) {
 	cmd.Env = append(cmd.Env, "PATH=/usr/local/sbin:/usr/sbin::/sbin:"+os.Getenv("PATH"))
 	cmd.Stdin = os.Stdin
 
+	cloneflags := uintptr(syscall.CLONE_NEWUSER)
+	for _, f := range extraCloneflags {
+		cloneflags |= f
+	}
 	// Map ourselves to root inside the userns.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:  syscall.CLONE_NEWUSER,
+		Cloneflags:  cloneflags,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
 	}
@@ -425,4 +435,88 @@ func compareMultilineStringsIgnoreIndentation(str1, str2 string) bool {
 	str2 = re.ReplaceAllString(str2, "")
 
 	return str1 == str2
+}
+
+// TestController_Run exercises the full dataplane path: nftables rule sync,
+// nfqueue packet interception, verdict processing, and packet delivery.
+// It verifies that Controller.Run correctly receives and processes packets
+// through the nfqueue netlink socket.
+func TestController_Run(t *testing.T) {
+	if !unpriviledUserns() {
+		t.Skip("Test requires unprivileged user namespaces")
+	}
+	execInUserns(t, testController_Run, syscall.CLONE_NEWNET)
+}
+
+func testController_Run(t *testing.T) {
+	// lo starts DOWN in a new netns (created via CLONE_NEWNET).
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		t.Fatalf("failed to bring lo up: %v: %s", err, out)
+	}
+
+	evaluators := []api.PolicyEvaluator{
+		&mockPolicyEvaluator{
+			name:      "accept-all",
+			divertAll: true,
+			isReady:   true,
+		},
+	}
+
+	config := Config{
+		QueueID:         200,
+		FailOpen:        false,
+		NFTableName:     "test-controller-run",
+		skipSkuidBypass: true,
+	}
+
+	controller := newTestController(config, evaluators)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- controller.Run(ctx)
+	}()
+
+	// Give the controller time to set up nftables rules and open nfqueue.
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify the controller is still running
+	select {
+	case err := <-errCh:
+		t.Fatalf("controller.Run exited prematurely: %v", err)
+	default:
+	}
+
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer listener.Close()
+	listener.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Send a UDP packet. With skipSkuidBypass the "meta skuid 0 accept" rule
+	// is absent, so all traffic enters nfqueue.
+	conn, err := net.Dial("udp", listener.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+	fmt.Fprint(conn, "controller-run-test")
+	conn.Close()
+
+	// If nfqueue processing is broken, the packet stays queued and times out.
+	buf := make([]byte, 256)
+	n, _, err := listener.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("failed to receive UDP packet (nfqueue processing broken): %v", err)
+	}
+	if got := string(buf[:n]); got != "controller-run-test" {
+		t.Errorf("received %q, want %q", got, "controller-run-test")
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Logf("controller.Run returned: %v", err)
+	}
 }
