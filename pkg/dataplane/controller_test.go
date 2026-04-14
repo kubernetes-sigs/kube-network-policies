@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -34,18 +35,22 @@ var (
 
 // mockPolicyEvaluator is a mock implementation of the PolicyEvaluator interface for testing.
 type mockPolicyEvaluator struct {
-	name      string
-	ips       []netip.Addr
-	divertAll bool
-	isReady   bool
-	sync      api.SyncFunc
+	name           string
+	ips            []netip.Addr
+	divertAll      bool
+	isReady        bool
+	sync           api.SyncFunc
+	evaluateEgress func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error)
 }
 
 func (m *mockPolicyEvaluator) Name() string { return m.name }
 func (m *mockPolicyEvaluator) EvaluateIngress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
 	return api.VerdictNext, nil
 }
-func (m *mockPolicyEvaluator) EvaluateEgress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+func (m *mockPolicyEvaluator) EvaluateEgress(ctx context.Context, p *network.Packet, src, dst *api.PodInfo) (api.Verdict, error) {
+	if m.evaluateEgress != nil {
+		return m.evaluateEgress(ctx, p, src, dst)
+	}
 	return api.VerdictNext, nil
 }
 func (m *mockPolicyEvaluator) SetDataplaneSyncCallback(syncFn api.SyncFunc) {
@@ -437,6 +442,70 @@ func compareMultilineStringsIgnoreIndentation(str1, str2 string) bool {
 	return str1 == str2
 }
 
+// waitForController blocks until the controller is actively intercepting
+// packets. It repeatedly tries to connect to a port. Before nftables rules are
+// in place, the kernel immediately replies with RST. Once nfqueue intercepts
+// the SYN and the evaluator denies it, the packet is dropped and Dial times out
+// instead. That signals readiness.
+func waitForController(t *testing.T, probeAddr string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		_, err := net.DialTimeout("tcp", probeAddr, 100*time.Millisecond)
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return // SYN was dropped. Controller is ready.
+		}
+	}
+	t.Fatal("controller is not ready")
+}
+
+// tcpServer starts a TCP server on loopback that sends each received message
+// on the returned channel. The listener is closed when the test ends.
+func tcpServer(t *testing.T, address string) (received <-chan string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	ch := make(chan string, 256)
+	go func() {
+		<-t.Context().Done()
+		ln.Close()
+	}()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				buf := make([]byte, 256)
+				n, err := c.Read(buf)
+				if err != nil {
+					return
+				}
+				ch <- string(buf[:n])
+			}()
+		}
+	}()
+	return ch
+}
+
+// tcpSend connects to addr over TCP, writes msg, and closes the connection.
+func tcpSend(t *testing.T, addr, msg string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("failed to dial %s: %v", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		t.Fatalf("failed to write %q: %v", msg, err)
+	}
+}
+
 // TestController_Run exercises the full dataplane path: nftables rule sync,
 // nfqueue packet interception, verdict processing, and packet delivery.
 // It verifies that Controller.Run correctly receives and processes packets
@@ -454,69 +523,55 @@ func testController_Run(t *testing.T) {
 		t.Fatalf("failed to bring lo up: %v: %s", err, out)
 	}
 
+	// probePort is denied by the evaluator so we can detect when the controller
+	// is active: Dial to this port times out once SYNs are being dropped.
+	const probePort = 54321
+
 	evaluators := []api.PolicyEvaluator{
 		&mockPolicyEvaluator{
-			name:      "accept-all",
+			name:      "test-policy-evaluator",
 			divertAll: true,
 			isReady:   true,
+			evaluateEgress: func(_ context.Context, p *network.Packet, _, _ *api.PodInfo) (api.Verdict, error) {
+				if p.DstPort == probePort {
+					return api.VerdictDeny, nil
+				}
+				return api.VerdictAccept, nil
+			},
 		},
 	}
 
 	config := Config{
-		QueueID:         200,
-		FailOpen:        false,
-		NFTableName:     "test-controller-run",
+		QueueID:     200,
+		FailOpen:    false,
+		NFTableName: "test-controller-run",
+		// With skipSkuidBypass the "meta skuid 0 accept" rule is absent,
+		// so all new traffic enters the nfqueue.
 		skipSkuidBypass: true,
 	}
 
 	controller := newTestController(config, evaluators)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- controller.Run(ctx)
+		errCh <- controller.Run(t.Context())
 	}()
 
-	// Give the controller time to set up nftables rules and open nfqueue.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for nftables/nfqueue to be active by probing a denied port.
+	waitForController(t, fmt.Sprintf("127.0.0.1:%d", probePort))
 
-	// Verify the controller is still running
+	testAddr := fmt.Sprintf("127.0.0.1:%d", 12345)
+	received := tcpServer(t, testAddr)
+
+	const want = "test-message"
+	tcpSend(t, testAddr, want)
+
 	select {
-	case err := <-errCh:
-		t.Fatalf("controller.Run exited prematurely: %v", err)
-	default:
-	}
-
-	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
-	defer listener.Close()
-	listener.SetDeadline(time.Now().Add(5 * time.Second))
-
-	// Send a UDP packet. With skipSkuidBypass the "meta skuid 0 accept" rule
-	// is absent, so all traffic enters nfqueue.
-	conn, err := net.Dial("udp", listener.LocalAddr().String())
-	if err != nil {
-		t.Fatalf("failed to dial: %v", err)
-	}
-	fmt.Fprint(conn, "controller-run-test")
-	conn.Close()
-
-	// If nfqueue processing is broken, the packet stays queued and times out.
-	buf := make([]byte, 256)
-	n, _, err := listener.ReadFromUDP(buf)
-	if err != nil {
-		t.Fatalf("failed to receive UDP packet (nfqueue processing broken): %v", err)
-	}
-	if got := string(buf[:n]); got != "controller-run-test" {
-		t.Errorf("received %q, want %q", got, "controller-run-test")
-	}
-
-	cancel()
-	if err := <-errCh; err != nil {
-		t.Logf("controller.Run returned: %v", err)
+	case got := <-received:
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("received message mismatch (-want +got):\n%s", diff)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for message from TCP server")
 	}
 }
