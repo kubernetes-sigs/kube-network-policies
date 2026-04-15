@@ -2,6 +2,9 @@ package dataplane
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/vishvananda/netns"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
@@ -31,18 +35,22 @@ var (
 
 // mockPolicyEvaluator is a mock implementation of the PolicyEvaluator interface for testing.
 type mockPolicyEvaluator struct {
-	name      string
-	ips       []netip.Addr
-	divertAll bool
-	isReady   bool
-	sync      api.SyncFunc
+	name           string
+	ips            []netip.Addr
+	divertAll      bool
+	isReady        bool
+	sync           api.SyncFunc
+	evaluateEgress func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error)
 }
 
 func (m *mockPolicyEvaluator) Name() string { return m.name }
 func (m *mockPolicyEvaluator) EvaluateIngress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
 	return api.VerdictNext, nil
 }
-func (m *mockPolicyEvaluator) EvaluateEgress(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+func (m *mockPolicyEvaluator) EvaluateEgress(ctx context.Context, p *network.Packet, src, dst *api.PodInfo) (api.Verdict, error) {
+	if m.evaluateEgress != nil {
+		return m.evaluateEgress(ctx, p, src, dst)
+	}
 	return api.VerdictNext, nil
 }
 func (m *mockPolicyEvaluator) SetDataplaneSyncCallback(syncFn api.SyncFunc) {
@@ -145,7 +153,7 @@ func TestConfig_Defaults(t *testing.T) {
 				t.Errorf("Config.Defaults() error = %v", err)
 			}
 
-			if diff := cmp.Diff(tt.expected, c); diff != "" {
+			if diff := cmp.Diff(tt.expected, c, cmpopts.EquateComparable(Config{})); diff != "" {
 				t.Errorf("Config.Defaults() mismatch (-want +got):\n%s", diff)
 			}
 		})
@@ -157,7 +165,10 @@ func TestConfig_Defaults(t *testing.T) {
 // permissions to create network namespaces and iptables rules without running as root on the host.
 // This must be only top-level statement in the test function. Do not nest this.
 // It will slightly defect the test log output as the test is entered twice
-func execInUserns(t *testing.T, f func(t *testing.T)) {
+//
+// extraCloneflags can be used to request additional namespace types, e.g.
+// syscall.CLONE_NEWNET to also create a network namespace in the same clone.
+func execInUserns(t *testing.T, f func(t *testing.T), extraCloneflags ...uintptr) {
 	const subprocessEnvKey = `GO_SUBPROCESS_KEY`
 	if testIDString, ok := os.LookupEnv(subprocessEnvKey); ok && testIDString == "1" {
 		t.Run(`subprocess`, f)
@@ -178,9 +189,13 @@ func execInUserns(t *testing.T, f func(t *testing.T)) {
 	cmd.Env = append(cmd.Env, "PATH=/usr/local/sbin:/usr/sbin::/sbin:"+os.Getenv("PATH"))
 	cmd.Stdin = os.Stdin
 
+	cloneflags := uintptr(syscall.CLONE_NEWUSER)
+	for _, f := range extraCloneflags {
+		cloneflags |= f
+	}
 	// Map ourselves to root inside the userns.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:  syscall.CLONE_NEWUSER,
+		Cloneflags:  cloneflags,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
 		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
 	}
@@ -425,4 +440,138 @@ func compareMultilineStringsIgnoreIndentation(str1, str2 string) bool {
 	str2 = re.ReplaceAllString(str2, "")
 
 	return str1 == str2
+}
+
+// waitForController blocks until the controller is actively intercepting
+// packets. It repeatedly tries to connect to a port. Before nftables rules are
+// in place, the kernel immediately replies with RST. Once nfqueue intercepts
+// the SYN and the evaluator denies it, the packet is dropped and Dial times out
+// instead. That signals readiness.
+func waitForController(t *testing.T, probeAddr string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		_, err := net.DialTimeout("tcp", probeAddr, 100*time.Millisecond)
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return // SYN was dropped. Controller is ready.
+		}
+	}
+	t.Fatal("controller is not ready")
+}
+
+// tcpServer starts a TCP server on loopback that sends each received message
+// on the returned channel. The listener is closed when the test ends.
+func tcpServer(t *testing.T, address string) (received <-chan string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	ch := make(chan string, 256)
+	go func() {
+		<-t.Context().Done()
+		ln.Close()
+	}()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				buf := make([]byte, 256)
+				n, err := c.Read(buf)
+				if err != nil {
+					return
+				}
+				ch <- string(buf[:n])
+			}()
+		}
+	}()
+	return ch
+}
+
+// tcpSend connects to addr over TCP, writes msg, and closes the connection.
+func tcpSend(t *testing.T, addr, msg string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("failed to dial %s: %v", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		t.Fatalf("failed to write %q: %v", msg, err)
+	}
+}
+
+// TestController_Run exercises the full dataplane path: nftables rule sync,
+// nfqueue packet interception, verdict processing, and packet delivery.
+// It verifies that Controller.Run correctly receives and processes packets
+// through the nfqueue netlink socket.
+func TestController_Run(t *testing.T) {
+	if !unpriviledUserns() {
+		t.Skip("Test requires unprivileged user namespaces")
+	}
+	execInUserns(t, testController_Run, syscall.CLONE_NEWNET)
+}
+
+func testController_Run(t *testing.T) {
+	// lo starts DOWN in a new netns (created via CLONE_NEWNET).
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		t.Fatalf("failed to bring lo up: %v: %s", err, out)
+	}
+
+	// probePort is denied by the evaluator so we can detect when the controller
+	// is active: Dial to this port times out once SYNs are being dropped.
+	const probePort = 54321
+
+	evaluators := []api.PolicyEvaluator{
+		&mockPolicyEvaluator{
+			name:      "test-policy-evaluator",
+			divertAll: true,
+			isReady:   true,
+			evaluateEgress: func(_ context.Context, p *network.Packet, _, _ *api.PodInfo) (api.Verdict, error) {
+				if p.DstPort == probePort {
+					return api.VerdictDeny, nil
+				}
+				return api.VerdictAccept, nil
+			},
+		},
+	}
+
+	config := Config{
+		QueueID:     200,
+		FailOpen:    false,
+		NFTableName: "test-controller-run",
+		// With skipSkuidBypass the "meta skuid 0 accept" rule is absent,
+		// so all new traffic enters the nfqueue.
+		skipSkuidBypass: true,
+	}
+
+	controller := newTestController(config, evaluators)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- controller.Run(t.Context())
+	}()
+
+	// Wait for nftables/nfqueue to be active by probing a denied port.
+	waitForController(t, fmt.Sprintf("127.0.0.1:%d", probePort))
+
+	testAddr := fmt.Sprintf("127.0.0.1:%d", 12345)
+	received := tcpServer(t, testAddr)
+
+	const want = "test-message"
+	tcpSend(t, testAddr, want)
+
+	select {
+	case got := <-received:
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("received message mismatch (-want +got):\n%s", diff)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for message from TCP server")
+	}
 }

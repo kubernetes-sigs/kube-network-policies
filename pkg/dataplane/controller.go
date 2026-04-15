@@ -55,6 +55,7 @@ type Config struct {
 	NFTableName         string // if other projects use this controllers they need to be able to use their own table name
 	StrictMode          bool   // enforce network policies also on established connections
 	CTLabelAccept       int    // conntrack label to set on accepted connections (between 1-127)
+	skipSkuidBypass     bool   // skip the "meta skuid 0 accept" rule, used for testing to force all traffic through nfqueue
 }
 
 func (c *Config) Defaults() error {
@@ -630,16 +631,18 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 	// or system daemons that depend on the internal node traffic to not be blocked.
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/65
 	// meta skuid 0 accept
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeySKUID, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
-			&expr.Counter{},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
+	if !c.config.skipSkuidBypass {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeySKUID, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+				&expr.Counter{},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			},
+		})
+	}
 
 	// The queue sets the conntrack mark for the packets it processes,
 	// so we can clear the mark here later to re-process connections if needed.
