@@ -9,6 +9,8 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
 
@@ -142,6 +144,11 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 	nsBaz := makeNamespace("ns-baz")
 	nsBaz.Labels["team"] = "baz"
 
+	testNode := makeNode("test-node")
+	testNode.Status.Addresses = []v1.NodeAddress{
+		{Type: v1.NodeInternalIP, Address: "172.19.0.2"},
+	}
+
 	// --- Reusable CNP Definitions ---
 
 	// Admin Tier Policies
@@ -161,6 +168,14 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 		}}
 	})
 
+	adminAllowEgressToNode := makeClusterNetworkPolicy("admin-allow-egress-to-node1", npav1alpha2.AdminTier, 50, func(p *npav1alpha2.ClusterNetworkPolicy) {
+		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "ns-foo"}}}
+		p.Spec.Egress = []npav1alpha2.ClusterNetworkPolicyEgressRule{{
+			Action: npav1alpha2.ClusterNetworkPolicyRuleActionAccept,
+			To:     []npav1alpha2.ClusterNetworkPolicyEgressPeer{{Nodes: &metav1.LabelSelector{MatchLabels: map[string]string{"a": "b"}}}},
+		}}
+	})
+
 	// Baseline Tier Policies
 	baselineDenyAllIngress := makeClusterNetworkPolicy("baseline-deny-all-ingress", npav1alpha2.BaselineTier, 100, func(p *npav1alpha2.ClusterNetworkPolicy) {
 		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{}}
@@ -175,6 +190,14 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 		p.Spec.Ingress = []npav1alpha2.ClusterNetworkPolicyIngressRule{{
 			Action: npav1alpha2.ClusterNetworkPolicyRuleActionAccept,
 			From:   []npav1alpha2.ClusterNetworkPolicyIngressPeer{{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "foo"}}}},
+		}}
+	})
+
+	baselineAllowEgressToNode := makeClusterNetworkPolicy("baseline-allow-egress-to-node1", npav1alpha2.BaselineTier, 50, func(p *npav1alpha2.ClusterNetworkPolicy) {
+		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "ns-foo"}}}
+		p.Spec.Egress = []npav1alpha2.ClusterNetworkPolicyEgressRule{{
+			Action: npav1alpha2.ClusterNetworkPolicyRuleActionAccept,
+			To:     []npav1alpha2.ClusterNetworkPolicyEgressPeer{{Nodes: &metav1.LabelSelector{MatchLabels: map[string]string{"a": "b"}}}},
 		}}
 	})
 
@@ -214,6 +237,13 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 			wantBase:  api.VerdictDeny, // Denied by baselineDenyAllIngress
 		},
 		{
+			name:      "Allow Egress to the node",
+			policies:  []*npav1alpha2.ClusterNetworkPolicy{adminAllowEgressToNode, baselineAllowEgressToNode},
+			packet:    network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP(testNode.Status.Addresses[0].Address)},
+			wantAdmin: api.VerdictAccept,
+			wantBase:  api.VerdictAccept,
+		},
+		{
 			name:      "No policies applied",
 			policies:  []*npav1alpha2.ClusterNetworkPolicy{},
 			packet:    network.Packet{SrcIP: net.ParseIP("192.168.1.11"), DstIP: net.ParseIP("192.168.2.22")},
@@ -224,6 +254,12 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// create test node
+			kubeClient := fake.NewSimpleClientset()
+			informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
+			nodeInformer := informerFactory.Core().V1().Nodes()
+			nodeInformer.Informer().GetStore().Add(testNode)
+
 			npaClient := npaclientfake.NewSimpleClientset()
 			npaInformerFactory := npainformers.NewSharedInformerFactory(npaClient, 0)
 			cnpInformer := npaInformerFactory.Policy().V1alpha2().ClusterNetworkPolicies()
@@ -252,7 +288,7 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 			podInfoProvider := &FuncProvider{GetFunc: getPodInfo}
 
 			// Test Admin Tier
-			adminEvaluator := NewClusterNetworkPolicy(npav1alpha2.AdminTier, cnpInformer, nil)
+			adminEvaluator := NewClusterNetworkPolicy(npav1alpha2.AdminTier, cnpInformer, nil, nodeInformer.Lister())
 			adminEngine := networkpolicy.NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{adminEvaluator})
 			adminVerdict, err := adminEngine.EvaluatePacket(context.TODO(), &tt.packet)
 			if err != nil {
@@ -263,7 +299,7 @@ func Test_ClusterNetworkPolicy_Evaluation(t *testing.T) {
 			}
 
 			// Test Baseline Tier
-			baselineEvaluator := NewClusterNetworkPolicy(npav1alpha2.BaselineTier, cnpInformer, nil)
+			baselineEvaluator := NewClusterNetworkPolicy(npav1alpha2.BaselineTier, cnpInformer, nil, nodeInformer.Lister())
 			baselineEngine := networkpolicy.NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{baselineEvaluator})
 			baselineVerdict, err := baselineEngine.EvaluatePacket(context.TODO(), &tt.packet)
 			if err != nil {

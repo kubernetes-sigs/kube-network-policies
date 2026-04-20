@@ -188,6 +188,7 @@ func run() int {
 		npav1alpha2.AdminTier,
 		cnpInformer,
 		domainResolver,
+		nodeInformer.Lister(),
 	))
 
 	// Standard Network Policy goes after AdminNetworkPolicy and before BaselineAdminNetworkPolicy
@@ -202,6 +203,7 @@ func run() int {
 		npav1alpha2.BaselineTier,
 		cnpInformer,
 		domainResolver,
+		nodeInformer.Lister(),
 	))
 
 	informersFactory.Start(ctx.Done())
