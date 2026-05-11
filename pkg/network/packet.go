@@ -84,7 +84,7 @@ func ParsePacket(b []byte) (Packet, error) {
 		t.Family = v1.IPv6Protocol
 		if len(b) < 48 {
 			// 40 is the minimum length of an IPv6 header, and 8 is
-			// the minimum lenght of an extension or L4 header
+			// the minimum length of an extension or L4 header
 			return t, ErrorTooShort
 		}
 		t.SrcIP = make(net.IP, net.IPv6len)
@@ -95,7 +95,7 @@ func ParsePacket(b []byte) (Packet, error) {
 		nxtHeader = int(b[6])
 		l4offset = 40
 		for nxtHeader == syscall.IPPROTO_DSTOPTS || nxtHeader == syscall.IPPROTO_HOPOPTS || nxtHeader == syscall.IPPROTO_ROUTING {
-			// These headers have a lenght in 8-octet units, not
+			// These headers have a length in 8-octet units, not
 			// including the first 8 octets
 			nxtHeader = int(b[l4offset])
 			l4offset += (8 + int(b[l4offset+1])*8)
