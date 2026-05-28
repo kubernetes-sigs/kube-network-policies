@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/ipcache"
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
+	"sigs.k8s.io/kube-network-policies/pkg/podinfo/nri"
 	pluginsiptracker "sigs.k8s.io/kube-network-policies/plugins/iptracker"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -183,7 +184,7 @@ func run() int {
 	// the Pod and IP information is provided at the time the Pod Sandbox is created and before
 	// the containers start running, so policies can be enforced without race conditions.
 	if !opts.DisableNRI {
-		nriIPResolver, err := podinfo.NewNRIResolver(ctx, nodeName, informersFactory.Core().V1().Namespaces())
+		nriIPResolver, err := nri.NewNRIResolver(ctx, nodeName, informersFactory.Core().V1().Namespaces())
 		if err != nil {
 			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
 		}
