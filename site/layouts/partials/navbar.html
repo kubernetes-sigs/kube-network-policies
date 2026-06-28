@@ -1,0 +1,84 @@
+<nav class="navbar navbar-expand-md navbar-light td-navbar">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/">
+      <img src="https://raw.githubusercontent.com/kubernetes/kubernetes/master/logo/logo.svg" style="width: 32px; height: 32px; margin-right: 10px;" alt="Kubernetes Logo">
+      kube-network-policies
+    </a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#main-navbar" aria-controls="main-navbar" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="main-navbar">
+      <ul class="navbar-nav me-auto">
+        {{ range .Site.Menus.main }}
+        <li class="nav-item">
+          <a class="nav-link" href="{{ .URL }}">{{ .Name }}</a>
+        </li>
+        {{ end }}
+      </ul>
+      <div class="d-flex align-items-center gap-3">
+        <!-- GitHub -->
+        <a href="https://github.com/kubernetes-sigs/kube-network-policies" class="badge-item text-decoration-none text-dark bg-light px-3 py-2 rounded-pill d-flex align-items-center gap-2 text-nowrap">
+            <svg class="badge-icon" fill="currentColor" width="20" height="20" viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+            <span>Contribute</span>
+        </a>
+        <!-- Slack -->
+        <a href="https://kubernetes.slack.com/messages/sig-network" class="badge-item text-decoration-none text-dark bg-light px-3 py-2 rounded-pill d-flex align-items-center gap-2 text-nowrap">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/d/d5/Slack_icon_2019.svg" width="20" height="20" alt="Slack Logo">
+            <span>sig-network</span>
+        </a>
+        <!-- Theme Toggle -->
+        <div class="dropdown">
+          <button class="btn btn-link nav-link dropdown-toggle d-flex align-items-center" type="button" id="theme-dropdown"
+            data-bs-toggle="dropdown" aria-expanded="false" style="color: #1f2937;">
+            <i class="fas fa-sun"></i>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="theme-dropdown">
+            <li><button class="dropdown-item" type="button" onclick="setTheme('light')"><i class="fas fa-sun me-2"></i>
+                Light</button></li>
+            <li><button class="dropdown-item" type="button" onclick="setTheme('dark')"><i class="fas fa-moon me-2"></i>
+                Dark</button></li>
+            <li><button class="dropdown-item" type="button" onclick="setTheme('auto')"><i
+                  class="fas fa-circle-half-stroke me-2"></i> Auto</button></li>
+          </ul>
+        </div>
+        <script>
+          function setTheme(theme) {
+            if (theme === 'auto') {
+              theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            document.documentElement.setAttribute('data-bs-theme', theme);
+            localStorage.setItem('theme', theme);
+            
+            // Switch syntax highlighting stylesheets
+            const lightStyle = document.getElementById('syntax-light');
+            const darkStyle = document.getElementById('syntax-dark');
+            if (lightStyle && darkStyle) {
+              if (theme === 'dark') {
+                lightStyle.disabled = true;
+                darkStyle.disabled = false;
+              } else {
+                lightStyle.disabled = false;
+                darkStyle.disabled = true;
+              }
+            }
+          }
+
+          // Initialize theme on load
+          document.addEventListener('DOMContentLoaded', () => {
+            const savedTheme = localStorage.getItem('theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+            setTheme(theme);
+          });
+        </script>
+
+        <!-- Search -->
+        <div class="td-search">
+          <form action="/search/" method="GET" class="d-flex align-items-center">
+            <input type="text" name="q" class="form-control td-search__input" placeholder="Search...">
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</nav>

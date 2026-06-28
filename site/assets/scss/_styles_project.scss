@@ -1,0 +1,149 @@
+// Docsy project overrides
+
+body .td-navbar {
+    background-color: #ffffff !important;
+    border-bottom: 1px solid #e5e7eb !important;
+}
+
+.navbar-brand, .nav-link, .navbar-dark .nav-link, .navbar-dark .navbar-brand {
+    color: #1f2937 !important;
+}
+.nav-link:hover, .navbar-dark .nav-link:hover {
+    color: #2563eb !important;
+}
+
+/* Keep dark mode header dark */
+[data-bs-theme="dark"] .td-navbar {
+    background-color: #1a202c !important;
+    border-bottom: 1px solid #2d3748 !important;
+}
+[data-bs-theme="dark"] .navbar-brand, 
+[data-bs-theme="dark"] .nav-link {
+    color: #ffffff !important;
+}
+[data-bs-theme="dark"] .nav-link:hover {
+    color: #60a5fa !important;
+}
+
+/* Make search bar more visible */
+.td-search__input {
+    border: 1px solid #ced4da !important;
+    background-color: #ffffff !important;
+    color: #495057 !important;
+}
+[data-bs-theme="dark"] .td-search__input {
+    border: 1px solid #4b5563 !important;
+    background-color: #374151 !important;
+    color: #ffffff !important;
+}
+
+/* Remove min-width on dropdown in navbar to fix gap */
+.td-navbar .dropdown {
+    min-width: unset !important;
+}
+
+/* Make brand more significant */
+.navbar-brand {
+    font-size: 1.5rem !important;
+    font-weight: 800 !important;
+    color: #000000 !important;
+}
+[data-bs-theme="dark"] .navbar-brand {
+    color: #ffffff !important;
+}
+
+/* Dark mode body background */
+[data-bs-theme="dark"] body {
+    background-color: #1a202c !important;
+    color: #ffffff !important;
+}
+
+/* Make badges more subtle */
+.badge-item {
+    background-color: #f3f4f6 !important;
+    color: #1f2937 !important;
+    border: 1px solid #e5e7eb !important;
+}
+[data-bs-theme="dark"] .badge-item {
+    background-color: #374151 !important;
+    color: #ffffff !important;
+    border: 1px solid #4b5563 !important;
+}
+
+/* Fix lead text visibility in dark mode */
+[data-bs-theme="dark"] .lead {
+    color: rgba(255, 255, 255, 0.8) !important;
+}
+/* Fix hero description visibility in dark mode */
+[data-bs-theme="dark"] .hero-description {
+    color: rgba(255, 255, 255, 0.8) !important;
+}
+
+/* Responsive reflow for smaller screens */
+@media (max-width: 1200px) {
+    .td-navbar .container-fluid {
+        flex-direction: column !important;
+        align-items: center !important;
+        gap: 0 !important;
+    }
+    .td-navbar .navbar-brand {
+        margin-right: 0 !important;
+        margin-bottom: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    .td-navbar .collapse.navbar-collapse {
+        flex-direction: column !important;
+        align-items: center !important;
+        width: 100% !important;
+        gap: 0 !important;
+    }
+    .td-navbar .navbar-nav {
+        justify-content: center !important;
+        width: 100% !important;
+        margin-bottom: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    .td-navbar .nav-link {
+        padding-top: 2px !important;
+        padding-bottom: 2px !important;
+    }
+    .td-navbar .d-flex.align-items-center.gap-3 {
+        justify-content: center !important;
+        width: 100% !important;
+        flex-wrap: wrap !important;
+        gap: 5px !important;
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+    }
+    
+    /* Hide search bar in header on smaller screens */
+    .td-navbar .td-search {
+        display: none !important;
+    }
+    
+    /* Fix for content being hidden by tall header */
+    .td-main {
+        margin-top: 80px !important;
+    }
+}
+
+/* Mobile view fixes */
+@media (max-width: 767px) {
+    .td-main {
+        margin-top: 10px !important;
+    }
+    .td-sidebar {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    .td-sidebar__search {
+        padding-top: 5px !important;
+        padding-bottom: 5px !important;
+    }
+    
+    /* Remove padding above content */
+    .td-main main {
+        padding-top: 0 !important;
+    }
+}

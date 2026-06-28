@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {{ partial "head.html" . }}
+    <style>
+        /* Custom Hero Styles (not handled by Docsy) */
+        .hero-wrapper {
+            display: block;
+            width: 100%;
+        }
+        .hero {
+            max-width: 1200px;
+            margin: 20vh auto 0;
+            padding: 0 40px;
+            width: 100%;
+            box-sizing: border-box;
+            position: relative;
+            transition: margin 0.3s ease;
+        }
+        
+        @media (max-width: 767px) {
+            .hero {
+                margin: 40px auto 0;
+            }
+            .hero-title {
+                font-size: 4rem !important;
+            }
+            .hero-subtitle {
+                font-size: 2rem !important;
+            }
+            .hero-description {
+                font-size: 1.2rem !important;
+            }
+        }
+        .hero-title {
+            font-size: 6rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+            letter-spacing: -0.05em;
+            transition: font-size 0.3s ease;
+        }
+        .hero-subtitle {
+            font-size: 3.5rem;
+            font-weight: 800;
+            margin-bottom: 20px;
+            letter-spacing: -0.03em;
+            transition: font-size 0.3s ease;
+        }
+        .hero-description {
+            font-size: 1.5rem;
+            color: #4b5563;
+            max-width: 800px;
+            margin-bottom: 40px;
+            line-height: 1.5;
+            transition: font-size 0.3s ease;
+        }
+        .hero-buttons {
+            display: flex;
+            gap: 20px;
+        }
+        .btn-primary {
+            background-color: #2563eb !important;
+            color: #ffffff !important;
+            border: none !important;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+        }
+        .btn-primary:hover {
+            background-color: #1d4ed8 !important;
+        }
+        .btn-secondary {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border: 1px solid #d1d5db !important;
+        }
+        .btn-secondary:hover {
+            background-color: #f9fafb !important;
+            border-color: #9ca3af !important;
+        }
+    </style>
+</head>
+<body>
+    {{ partial "navbar.html" . }}
+    
+    <div class="hero-wrapper">
+        <main class="hero">
+            <h1 class="hero-title">kube-network-policies</h1>
+            <h2 class="hero-subtitle">Userspace Enforcer of Kubernetes Network Policies</h2>
+            <p class="hero-description">A high-performance controller that enforces standard Kubernetes Network Policies, Admin Network Policies (ANP), and Baseline Admin Network Policies (BANP) using NFQUEUE and packet interception in userspace.</p>
+            <div class="hero-buttons">
+                <a href="/docs/" class="btn btn-lg btn-primary me-3 mb-4">Get Started &rarr;</a>
+                <a href="https://github.com/kubernetes-sigs/kube-network-policies" class="btn btn-lg btn-secondary me-3 mb-4">View on GitHub</a>
+            </div>
+        </main>
+    </div>
+    {{ partial "scripts.html" . }}
+</body>
+</html>
