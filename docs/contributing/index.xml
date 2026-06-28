@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Contributing on Kubernetes Network Policies</title><link>https://kube-network-policies.sigs.k8s.io/docs/contributing/</link><description>Recent content in Contributing on Kubernetes Network Policies</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://kube-network-policies.sigs.k8s.io/docs/contributing/index.xml" rel="self" type="application/rss+xml"/><item><title>Contributing Guidelines</title><link>https://kube-network-policies.sigs.k8s.io/docs/contributing/contributing/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://kube-network-policies.sigs.k8s.io/docs/contributing/contributing/</guid><description>&lt;p>Welcome to the &lt;code>kube-network-policies&lt;/code> community! We are excited to have you contribute.&lt;/p>
+&lt;p>The project follows the CNCF Code of Conduct and standard Kubernetes contributor guidelines.&lt;/p>
+&lt;h2 id="getting-started">Getting Started&lt;/h2>
+&lt;p>Before your pull requests can be accepted, you must sign the Contributor License Agreement (CLA):&lt;/p>
+&lt;ul>
+&lt;li>&lt;a href="https://git.k8s.io/community/CLA.md">Contributor License Agreement&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://k8s.dev/guide">Kubernetes Contributor Guide&lt;/a> - Main contributor documentation.&lt;/li>
+&lt;li>&lt;a href="https://k8s.dev/cheatsheet">Contributor Cheat Sheet&lt;/a> - Useful developer resources.&lt;/li>
+&lt;/ul>
+&lt;h2 id="contact--sig-network">Contact &amp;amp; SIG Network&lt;/h2>
+&lt;p>We are a sub-project of SIG Network:&lt;/p></description></item><item><title>Testing &amp; Benchmarking</title><link>https://kube-network-policies.sigs.k8s.io/docs/contributing/testing/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://kube-network-policies.sigs.k8s.io/docs/contributing/testing/</guid><description>&lt;p>This guide describes how to perform microbenchmarking and testing of &lt;code>kube-network-policies&lt;/code>.&lt;/p>
+&lt;h2 id="microbenchmarking-setup">Microbenchmarking Setup&lt;/h2>
+&lt;p>To measure performance and latency under load, you can deploy a test HTTP server and poll it with high concurrency.&lt;/p>
+&lt;h3 id="1-collect-metrics-from-agents">1. Collect metrics from agents&lt;/h3>
+&lt;p>Install and configure Prometheus in your cluster to scrape metrics from the &lt;code>kube-network-policies&lt;/code> agents. The agents expose Prometheus-compatible metrics on port &lt;code>9080&lt;/code> at the &lt;code>/metrics&lt;/code> endpoint.&lt;/p>
+&lt;h3 id="2-deploy-target-pods-and-service">2. Deploy target Pods and Service&lt;/h3>
+&lt;p>Since network policies apply to the first packet of a connection, we want to measure new connection setup latency. To do this, we generate many new short-lived connections (without HTTP keepalives or HTTP/2 multiplexing).&lt;/p></description></item></channel></rss>

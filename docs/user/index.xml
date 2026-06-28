@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>User Guide on Kubernetes Network Policies</title><link>https://kube-network-policies.sigs.k8s.io/docs/user/</link><description>Recent content in User Guide on Kubernetes Network Policies</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://kube-network-policies.sigs.k8s.io/docs/user/index.xml" rel="self" type="application/rss+xml"/><item><title>Troubleshooting with JSON Logging</title><link>https://kube-network-policies.sigs.k8s.io/docs/user/json-logging/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://kube-network-policies.sigs.k8s.io/docs/user/json-logging/</guid><description>&lt;p>The controller supports structured JSON logging via klog&amp;rsquo;s &lt;code>--logging-format=json&lt;/code> flag. When combined with &lt;code>-v=2&lt;/code>, it produces machine-readable log entries for every packet evaluated against network policies, making it straightforward to filter and analyze traffic decisions with tools like &lt;a href="https://jqlang.github.io/jq/">&lt;code>jq&lt;/code>&lt;/a>.&lt;/p>
+&lt;h2 id="enabling-json-logging">Enabling JSON logging&lt;/h2>
+&lt;p>Pass the following flags to the controller binary (or set them in the DaemonSet args):&lt;/p>
+&lt;pre tabindex="0">&lt;code>--logging-format=json -v=2
+&lt;/code>&lt;/pre>&lt;p>At &lt;code>-v=2&lt;/code>, two things happen:&lt;/p>
+&lt;ul>
+&lt;li>The &lt;code>LoggingPolicy&lt;/code> evaluator is activated and emits one log entry per packet with its 5-tuple and the source/destination pod names.&lt;/li>
+&lt;li>The policy engine emits a verdict entry for each packet indicating whether it was accepted or denied.&lt;/li>
+&lt;/ul>
+&lt;p>Without &lt;code>-v=2&lt;/code>, the &lt;code>LoggingPolicy&lt;/code> evaluator is not added to the pipeline and packet-level logs are not produced.&lt;/p></description></item></channel></rss>

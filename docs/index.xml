@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Kubernetes Network Policies</title><link>https://kube-network-policies.sigs.k8s.io/docs/</link><description>Recent content on Kubernetes Network Policies</description><generator>Hugo</generator><language>en-us</language><lastBuildDate>Sun, 28 Jun 2026 13:20:00 +0000</lastBuildDate><atom:link href="https://kube-network-policies.sigs.k8s.io/docs/index.xml" rel="self" type="application/rss+xml"/><item><title>Quick Start</title><link>https://kube-network-policies.sigs.k8s.io/docs/quick-start/</link><pubDate>Sun, 28 Jun 2026 13:20:00 +0000</pubDate><guid>https://kube-network-policies.sigs.k8s.io/docs/quick-start/</guid><description>&lt;p>This guide gets you up and running with &lt;code>kube-network-policies&lt;/code> in a local development cluster using &lt;strong>KIND&lt;/strong> (Kubernetes in Docker).&lt;/p>
+&lt;h2 id="prerequisites">Prerequisites&lt;/h2>
+&lt;ul>
+&lt;li>&lt;a href="https://docs.docker.com/get-docker/">Docker&lt;/a> installed and running.&lt;/li>
+&lt;li>&lt;a href="https://kind.sigs.k8s.io/docs/user/quick-start/#installation">KIND&lt;/a> CLI installed.&lt;/li>
+&lt;li>&lt;a href="https://kubernetes.io/docs/tasks/tools/">kubectl&lt;/a> installed.&lt;/li>
+&lt;/ul>
+&lt;h2 id="step-1-create-a-kind-cluster">Step 1: Create a KIND cluster&lt;/h2>
+&lt;p>Create a simple local Kubernetes cluster with KIND:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sh" data-lang="sh">&lt;span class="line">&lt;span class="cl">kind create cluster --name kube-net-pol
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;h2 id="step-2-install-kube-network-policies">Step 2: Install kube-network-policies&lt;/h2>
+&lt;p>You can install &lt;code>kube-network-policies&lt;/code> either manually using raw manifests or via Helm.&lt;/p>
+&lt;h3 id="option-a-manual-installation">Option A: Manual Installation&lt;/h3>
+&lt;h4 id="1-traditional-network-policies">1. Traditional Network Policies&lt;/h4>
+&lt;p>To support traditional Kubernetes &lt;code>NetworkPolicies&lt;/code>, apply the core manifest:&lt;/p></description></item></channel></rss>
