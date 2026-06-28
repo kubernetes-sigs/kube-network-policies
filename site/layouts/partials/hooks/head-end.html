@@ -1,0 +1,16 @@
+<!-- Chroma Syntax Highlighting -->
+<link rel="stylesheet" href="/css/syntax-light.css" id="syntax-light">
+<link rel="stylesheet" href="/css/syntax-dark.css" id="syntax-dark" disabled>
+
+<!-- Kubernetes Favicon -->
+<link rel="icon" type="image/svg+xml" href="https://raw.githubusercontent.com/kubernetes/kubernetes/master/logo/logo.svg">
+
+<script>
+  // Early initialization to prevent theme flashing
+  (function() {
+    const savedTheme = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+    document.documentElement.setAttribute('data-bs-theme', theme);
+  })();
+</script>
