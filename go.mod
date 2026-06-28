@@ -12,7 +12,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/vishvananda/netlink v1.3.2-0.20251022194116-03b8f90390d9
 	github.com/vishvananda/netns v0.0.5
-	go.etcd.io/bbolt v1.4.3
+	go.etcd.io/bbolt v1.5.0
 	go.etcd.io/etcd/api/v3 v3.6.12
 	go.etcd.io/etcd/client/v3 v3.6.12
 	go.etcd.io/etcd/server/v3 v3.6.12
