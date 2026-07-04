@@ -1,0 +1,82 @@
+{
+  "staging_registry": "gcr.io/k8s-staging-networking",
+  "manifest_path": "registry.k8s.io/images/k8s-staging-networking/images.yaml",
+  "staging_tag_format": "v{date}-{commit_hash}",
+  "promotions": [
+    {
+      "name": "kube-network-policies",
+      "staging_image": "kube-network-policies",
+      "tags": [
+        {
+          "promoted": "{tag}",
+          "staging_suffix": ""
+        },
+        {
+          "promoted": "{tag}-npa-v1alpha2",
+          "staging_suffix": "-npa-v1alpha2"
+        },
+        {
+          "promoted": "{tag}-iptracker",
+          "staging_suffix": "-iptracker"
+        }
+      ]
+    },
+    {
+      "name": "kube-ip-tracker",
+      "staging_image": "kube-ip-tracker",
+      "tags": [
+        {
+          "promoted": "{tag}",
+          "staging_suffix": ""
+        }
+      ]
+    }
+  ],
+  "repository_manifests": [
+    {
+      "file": "install-cnp.yaml",
+      "replacements": [
+        {
+          "pattern": "(image:\\s*registry\\.k8s\\.io/networking/kube-network-policies:).*$",
+          "value": "\\g<1>{tag}-npa-v1alpha2"
+        }
+      ]
+    },
+    {
+      "file": "install-anp.yaml",
+      "replacements": [
+        {
+          "pattern": "(image:\\s*registry\\.k8s\\.io/networking/kube-network-policies:).*$",
+          "value": "\\g<1>{tag}"
+        }
+      ]
+    },
+    {
+      "file": "install-iptracker.yaml",
+      "replacements": [
+        {
+          "pattern": "(image:\\s*registry\\.k8s\\.io/networking/kube-network-policies:).*$",
+          "value": "\\g<1>{tag}-iptracker"
+        }
+      ]
+    },
+    {
+      "file": "install.yaml",
+      "replacements": [
+        {
+          "pattern": "(image:\\s*registry\\.k8s\\.io/networking/kube-network-policies:).*$",
+          "value": "\\g<1>{tag}"
+        }
+      ]
+    },
+    {
+      "file": "charts/kube-network-policies/values.yaml",
+      "replacements": [
+        {
+          "pattern": "(tag:\\s*\").*(\")",
+          "value": "\\g<1>{tag}\\2"
+        }
+      ]
+    }
+  ]
+}

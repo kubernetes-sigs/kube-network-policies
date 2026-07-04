@@ -133,3 +133,7 @@ images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-pus
 
 # The main release target, which pushes all images
 release: images-push
+
+.PHONY: promote-images
+promote-images:
+	python3 hack/image-promoter/promote-images.py $(PROMOTE_ARGS)
