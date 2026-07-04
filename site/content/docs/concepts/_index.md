@@ -6,4 +6,5 @@ weight: 3
 Learn about the architecture and key concepts of `kube-network-policies`.
 
 - [Architecture Overview](architecture/)
-- [Policy Evaluators](policy-evaluators/)
+- [Modularity and Extensibility](modularity/)
+- [Admin Network Policy (ANP)](admin-network-policy/)
