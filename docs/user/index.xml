@@ -7,4 +7,15 @@
 &lt;li>The &lt;code>LoggingPolicy&lt;/code> evaluator is activated and emits one log entry per packet with its 5-tuple and the source/destination pod names.&lt;/li>
 &lt;li>The policy engine emits a verdict entry for each packet indicating whether it was accepted or denied.&lt;/li>
 &lt;/ul>
-&lt;p>Without &lt;code>-v=2&lt;/code>, the &lt;code>LoggingPolicy&lt;/code> evaluator is not added to the pipeline and packet-level logs are not produced.&lt;/p></description></item></channel></rss>
+&lt;p>Without &lt;code>-v=2&lt;/code>, the &lt;code>LoggingPolicy&lt;/code> evaluator is not added to the pipeline and packet-level logs are not produced.&lt;/p></description></item><item><title>Flavors &amp; Architectures</title><link>https://kube-network-policies.sigs.k8s.io/docs/user/flavors-and-architectures/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://kube-network-policies.sigs.k8s.io/docs/user/flavors-and-architectures/</guid><description>&lt;p>&lt;code>kube-network-policies&lt;/code> is distributed in different image flavors to optimize resource consumption and support different use-cases. It also natively supports multi-platform architectures.&lt;/p>
+&lt;h2 id="supported-architectures">Supported Architectures&lt;/h2>
+&lt;p>Images are built and published for the following hardware architectures:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>linux/amd64&lt;/code>&lt;/li>
+&lt;li>&lt;code>linux/arm64&lt;/code>&lt;/li>
+&lt;li>&lt;code>linux/s390x&lt;/code>&lt;/li>
+&lt;/ul>
+&lt;p>Multi-platform images are pushed automatically to the staging registry during releases, allowing Kubernetes to pull the correct architecture for your nodes.&lt;/p>
+&lt;hr>
+&lt;h2 id="image-flavors">Image Flavors&lt;/h2>
+&lt;p>Depending on your cluster size, requirements, and policy choices, you can select one of the following image flavors:&lt;/p></description></item></channel></rss>

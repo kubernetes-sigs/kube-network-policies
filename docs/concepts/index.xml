@@ -12,7 +12,7 @@
  Engine --&amp;gt;|Send Verdict| Controller
  Controller --&amp;gt;|Set NFQ verdict| Kernel
  Kernel --&amp;gt;|Allow/Drop packet| Done[Done]&lt;/pre>
-&lt;p>To avoid the performance penalty of sending all packets to userspace, the controller includes logic to only capture packets for pods that are targeted by at least one network policy.&lt;/p></description></item><item><title>Policy Evaluators</title><link>https://kube-network-policies.sigs.k8s.io/docs/concepts/policy-evaluators/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://kube-network-policies.sigs.k8s.io/docs/concepts/policy-evaluators/</guid><description>&lt;p>The &lt;code>PolicyEvaluator&lt;/code> interface is the core abstraction of the packet filtering pipeline in &lt;code>kube-network-policies&lt;/code>. Each evaluator is responsible for processing a packet and deciding its outcome based on its policy implementation.&lt;/p>
+&lt;p>To avoid the performance penalty of sending all packets to userspace, the controller includes logic to only capture packets for pods that are targeted by at least one network policy.&lt;/p></description></item><item><title>Modularity and Extensibility</title><link>https://kube-network-policies.sigs.k8s.io/docs/concepts/modularity/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://kube-network-policies.sigs.k8s.io/docs/concepts/modularity/</guid><description>&lt;p>The &lt;code>PolicyEvaluator&lt;/code> interface is the core abstraction of the packet filtering pipeline in &lt;code>kube-network-policies&lt;/code>. Each evaluator is responsible for processing a packet and deciding its outcome based on its policy implementation.&lt;/p>
 &lt;h2 id="the-policyevaluator-interface">The PolicyEvaluator Interface&lt;/h2>
 &lt;p>The interface is defined in &lt;code>pkg/api/interfaces.go&lt;/code> (or &lt;code>pkg/networkpolicy/engine.go&lt;/code>) as follows:&lt;/p>
 &lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-go" data-lang="go">&lt;span class="line">&lt;span class="cl">&lt;span class="kd">type&lt;/span> &lt;span class="nx">PolicyEvaluator&lt;/span> &lt;span class="kd">interface&lt;/span> &lt;span class="p">{&lt;/span> 
@@ -27,4 +27,10 @@
 &lt;li>&lt;code>VerdictNext&lt;/code>: The packet does not match this policy (or is passed through), and the engine continues to the next evaluator in the pipeline.&lt;/li>
 &lt;/ul>
 &lt;h2 id="the-pipeline-order">The Pipeline Order&lt;/h2>
-&lt;p>When a packet is evaluated, it is processed sequentially by a pipeline of policy evaluators. The order is crucial, especially for Admin Network Policies:&lt;/p></description></item></channel></rss>
+&lt;p>When a packet is evaluated, it is processed sequentially by a pipeline of policy evaluators. The order is crucial, especially for Admin Network Policies:&lt;/p></description></item><item><title>Admin Network Policy (ANP)</title><link>https://kube-network-policies.sigs.k8s.io/docs/concepts/admin-network-policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://kube-network-policies.sigs.k8s.io/docs/concepts/admin-network-policy/</guid><description>&lt;p>Standard Kubernetes &lt;code>NetworkPolicies&lt;/code> are namespace-scoped, which allows developers and namespace owners to control traffic inside their applications. However, cluster administrators often need cluster-wide rules to:&lt;/p>
+&lt;ul>
+&lt;li>Secure cluster endpoints (e.g., blocking traffic to metadata servers or internal cloud APIs).&lt;/li>
+&lt;li>Enforce developer isolation by default.&lt;/li>
+&lt;li>Set global baseline defaults that developers can override.&lt;/li>
+&lt;/ul>
+&lt;p>To solve this, &lt;code>kube-network-policies&lt;/code> integrates with the official &lt;a href="https://network-policy-api.sigs.k8s.io/">Kubernetes Network Policy API&lt;/a> CRDs to support Admin Network Policy (ANP) and Baseline Admin Network Policy (BANP).&lt;/p></description></item></channel></rss>
