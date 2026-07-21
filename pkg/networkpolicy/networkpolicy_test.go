@@ -9,6 +9,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/component-base/logs"
@@ -94,6 +95,50 @@ func makePort(proto *v1.Protocol, port intstr.IntOrString, endPort int32) networ
 		r.EndPort = ptr.To[int32](endPort)
 	}
 	return r
+}
+
+func TestStandardNetworkPolicyManagedIPsExcludesHostNetworkPods(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	informersFactory := informers.NewSharedInformerFactory(client, 0)
+	podInformer := informersFactory.Core().V1().Pods()
+	networkPolicyInformer := informersFactory.Networking().V1().NetworkPolicies()
+	namespaceInformer := informersFactory.Core().V1().Namespaces()
+
+	policy := makeNetworkPolicyCustom("select-all", "test")
+	localPod := makePod("local", "test", "10.0.0.1")
+	localPod.Status.PodIPs = append(localPod.Status.PodIPs, v1.PodIP{IP: "2001:db8::1"})
+	hostNetworkPod := makePod("host-network", "test", "192.0.2.1")
+	hostNetworkPod.Spec.HostNetwork = true
+	hostNetworkPod.Status.PodIPs = append(hostNetworkPod.Status.PodIPs, v1.PodIP{IP: "2001:db8::2"})
+	remotePod := makePod("remote", "test", "10.0.0.2")
+	remotePod.Spec.NodeName = "other-node"
+
+	if err := networkPolicyInformer.Informer().GetStore().Add(policy); err != nil {
+		t.Fatal(err)
+	}
+	for _, pod := range []*v1.Pod{localPod, hostNetworkPod, remotePod} {
+		if err := podInformer.Informer().GetStore().Add(pod); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	evaluator := NewStandardNetworkPolicy("testnode", namespaceInformer, podInformer, networkPolicyInformer)
+	got, divertAll, err := evaluator.ManagedIPs(context.Background())
+	if err != nil {
+		t.Fatalf("ManagedIPs() returned an unexpected error: %v", err)
+	}
+	if divertAll {
+		t.Fatal("ManagedIPs() returned divertAll=true, want false")
+	}
+
+	gotIPs := sets.New[string]()
+	for _, ip := range got {
+		gotIPs.Insert(ip.String())
+	}
+	wantIPs := sets.New("10.0.0.1", "2001:db8::1")
+	if !gotIPs.Equal(wantIPs) {
+		t.Errorf("ManagedIPs() = %v, want %v", gotIPs, wantIPs)
+	}
 }
 
 func TestSyncPacket(t *testing.T) {
