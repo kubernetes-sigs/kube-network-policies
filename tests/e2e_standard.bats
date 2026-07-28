@@ -329,3 +329,69 @@ EOF
   kubectl delete networkpolicy default-deny-ingress -n prod --ignore-not-found
   rm -f "$TMPFILEIN" "$TMPFILEOUT"
 }
+
+# https://github.com/kubernetes-sigs/kube-network-policies/issues/380
+# https://github.com/kubernetes-sigs/kube-network-policies/issues/379
+@test "hostNetwork pods do not cause node IP leakage into managed IPs" {
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostnet-server
+  namespace: dev
+spec:
+  hostNetwork: true
+  containers:
+  - name: agnhost
+    image: registry.k8s.io/e2e-test-images/agnhost:2.39
+    args:
+    - netexec
+    - --http-port=9999
+EOF
+
+  kubectl -n dev wait --for=condition=ready pod/hostnet-server --timeout=30s
+
+  NODE_NAME=$(kubectl get pod hostnet-server -n dev -o jsonpath='{.spec.nodeName}')
+  NODE_IP=$(kubectl get pod hostnet-server -n dev -o jsonpath='{.status.podIP}')
+
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-client
+  namespace: dev
+spec:
+  nodeName: ${NODE_NAME}
+  containers:
+  - name: busybox
+    image: registry.k8s.io/busybox:1.27
+    command:
+    - sleep
+    - "3600"
+EOF
+
+  kubectl -n dev wait --for=condition=ready pod/test-client --timeout=30s
+
+  kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: dev
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+EOF
+
+  sleep 2
+
+  # Client pod on the same node should be able to connect to hostnet-server on NODE_IP:9999
+  kubectl -n dev exec test-client -- wget -T 5 -q -O - "http://${NODE_IP}:9999/hostname"
+
+  kubectl delete pod hostnet-server -n dev --ignore-not-found
+  kubectl delete pod test-client -n dev --ignore-not-found
+  kubectl delete networkpolicy default-deny-ingress -n dev --ignore-not-found
+}
+
+

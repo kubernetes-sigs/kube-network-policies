@@ -3,6 +3,7 @@ package networkpolicy
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
@@ -942,5 +943,94 @@ func TestEvaluator_evaluatePorts(t *testing.T) {
 				t.Errorf("Controller.evaluatePorts() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStandardNetworkPolicy_ManagedIPs(t *testing.T) {
+	podLocal := makePod("pod-local", "bar", "192.168.2.22")
+	podHost := makePod("pod-host", "bar", "10.0.0.1")
+	podHost.Spec.HostNetwork = true
+	podOtherNode := makePod("pod-othernode", "bar", "192.168.2.33")
+	podOtherNode.Spec.NodeName = "othernode"
+
+	npDefaultDeny := makeNetworkPolicyCustom("default-deny", "bar",
+		func(networkPolicy *networkingv1.NetworkPolicy) {
+			networkPolicy.Spec.PodSelector = metav1.LabelSelector{}
+			networkPolicy.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}
+		})
+
+	client := fake.NewSimpleClientset()
+	informersFactory := informers.NewSharedInformerFactory(client, 0)
+	podInformer := informersFactory.Core().V1().Pods()
+	networkPolicyInformer := informersFactory.Networking().V1().NetworkPolicies()
+	namespaceInformer := informersFactory.Core().V1().Namespaces()
+
+	podStore := podInformer.Informer().GetStore()
+	npStore := networkPolicyInformer.Informer().GetStore()
+
+	if err := podStore.Add(podLocal); err != nil {
+		t.Fatalf("unexpected error adding podLocal: %v", err)
+	}
+	if err := podStore.Add(podHost); err != nil {
+		t.Fatalf("unexpected error adding podHost: %v", err)
+	}
+	if err := podStore.Add(podOtherNode); err != nil {
+		t.Fatalf("unexpected error adding podOtherNode: %v", err)
+	}
+	if err := npStore.Add(npDefaultDeny); err != nil {
+		t.Fatalf("unexpected error adding npDefaultDeny: %v", err)
+	}
+
+	evaluator := NewStandardNetworkPolicy("testnode", namespaceInformer, podInformer, networkPolicyInformer)
+
+	ctx := context.Background()
+	ips, divertAll, err := evaluator.ManagedIPs(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if divertAll {
+		t.Errorf("expected divertAll to be false, got true")
+	}
+
+	expectedIP := netip.MustParseAddr("192.168.2.22")
+	if len(ips) != 1 || ips[0] != expectedIP {
+		t.Errorf("expected managed IPs [%v], got %v", expectedIP, ips)
+	}
+}
+
+func TestStandardNetworkPolicy_GetLocalPodsForNetworkPolicy(t *testing.T) {
+	podLocal := makePod("pod-local", "bar", "192.168.2.22")
+	podHost := makePod("pod-host", "bar", "10.0.0.1")
+	podHost.Spec.HostNetwork = true
+	podOtherNode := makePod("pod-othernode", "bar", "192.168.2.33")
+	podOtherNode.Spec.NodeName = "othernode"
+
+	np := makeNetworkPolicyCustom("default-deny", "bar",
+		func(networkPolicy *networkingv1.NetworkPolicy) {
+			networkPolicy.Spec.PodSelector = metav1.LabelSelector{}
+		})
+
+	client := fake.NewSimpleClientset()
+	informersFactory := informers.NewSharedInformerFactory(client, 0)
+	podInformer := informersFactory.Core().V1().Pods()
+	networkPolicyInformer := informersFactory.Networking().V1().NetworkPolicies()
+	namespaceInformer := informersFactory.Core().V1().Namespaces()
+
+	podStore := podInformer.Informer().GetStore()
+	if err := podStore.Add(podLocal); err != nil {
+		t.Fatalf("unexpected error adding podLocal: %v", err)
+	}
+	if err := podStore.Add(podHost); err != nil {
+		t.Fatalf("unexpected error adding podHost: %v", err)
+	}
+	if err := podStore.Add(podOtherNode); err != nil {
+		t.Fatalf("unexpected error adding podOtherNode: %v", err)
+	}
+
+	evaluator := NewStandardNetworkPolicy("testnode", namespaceInformer, podInformer, networkPolicyInformer)
+
+	pods := evaluator.getLocalPodsForNetworkPolicy(np)
+	if len(pods) != 1 || pods[0].Name != "pod-local" {
+		t.Errorf("expected local pod [pod-local], got %v", pods)
 	}
 }
