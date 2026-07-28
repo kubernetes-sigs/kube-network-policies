@@ -175,7 +175,7 @@ func (s *StandardNetworkPolicy) getLocalPodsForNetworkPolicy(networkPolicy *netw
 	}
 	result := []*v1.Pod{}
 	for _, pod := range pods {
-		if pod.Spec.NodeName == s.nodeName {
+		if pod.Spec.NodeName == s.nodeName && !pod.Spec.HostNetwork {
 			result = append(result, pod)
 		}
 	}
