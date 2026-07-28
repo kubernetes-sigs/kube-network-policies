@@ -160,6 +160,8 @@ func (s *StandardNetworkPolicy) ManagedIPs(ctx context.Context) ([]netip.Addr, b
 }
 
 // getLocalPodsForNetworkPolicy finds all pods on the current node that are selected by a given policy.
+// Pods on the host network are skipped: they share the Node IP address, so they are not subject to
+// NetworkPolicies and their addresses must never reach the dataplane enforcement sets.
 func (s *StandardNetworkPolicy) getLocalPodsForNetworkPolicy(networkPolicy *networkingv1.NetworkPolicy) []*v1.Pod {
 	if networkPolicy == nil {
 		return nil
@@ -175,6 +177,9 @@ func (s *StandardNetworkPolicy) getLocalPodsForNetworkPolicy(networkPolicy *netw
 	}
 	result := []*v1.Pod{}
 	for _, pod := range pods {
+		if pod.Spec.HostNetwork {
+			continue
+		}
 		if pod.Spec.NodeName == s.nodeName {
 			result = append(result, pod)
 		}

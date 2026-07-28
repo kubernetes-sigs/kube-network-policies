@@ -3,12 +3,14 @@ package networkpolicy
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/component-base/logs"
@@ -942,5 +944,54 @@ func TestEvaluator_evaluatePorts(t *testing.T) {
 				t.Errorf("Controller.evaluatePorts() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStandardNetworkPolicy_ManagedIPs(t *testing.T) {
+	// A policy that selects every pod in the namespace.
+	policy := makeNetworkPolicyCustom("select-all", "foo", func(networkPolicy *networkingv1.NetworkPolicy) {
+		networkPolicy.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}
+	})
+
+	podNetworkPod := makePod("pod-network", "foo", "192.168.1.11")
+	hostNetworkPod := makePod("host-network", "foo", "10.0.0.1")
+	hostNetworkPod.Spec.HostNetwork = true
+
+	remotePod := makePod("remote", "foo", "192.168.2.22")
+	remotePod.Spec.NodeName = "othernode"
+
+	client := fake.NewSimpleClientset()
+	informersFactory := informers.NewSharedInformerFactory(client, 0)
+	podInformer := informersFactory.Core().V1().Pods()
+	networkPolicyInformer := informersFactory.Networking().V1().NetworkPolicies()
+	namespaceInformer := informersFactory.Core().V1().Namespaces()
+
+	if err := networkPolicyInformer.Informer().GetStore().Add(policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := namespaceInformer.Informer().GetStore().Add(makeNamespace("foo")); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []*v1.Pod{podNetworkPod, hostNetworkPod, remotePod} {
+		if err := podInformer.Informer().GetStore().Add(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// makePod() places pods on "testnode".
+	evaluator := NewStandardNetworkPolicy("testnode", namespaceInformer, podInformer, networkPolicyInformer)
+
+	ips, divertAll, err := evaluator.ManagedIPs(context.TODO())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if divertAll {
+		t.Error("standard NetworkPolicies must never require diverting all traffic")
+	}
+
+	got := sets.New[netip.Addr](ips...)
+	want := sets.New[netip.Addr](netip.MustParseAddr("192.168.1.11"))
+	if !got.Equal(want) {
+		t.Errorf("ManagedIPs() = %v, want %v (host network pods share the Node IP and must not be enrolled)", got.UnsortedList(), want.UnsortedList())
 	}
 }
