@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/armon/go-radix v1.0.0
-	github.com/containerd/nri v0.12.0
+	github.com/containerd/nri v0.12.1
 	github.com/florianl/go-nfqueue/v2 v2.1.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
