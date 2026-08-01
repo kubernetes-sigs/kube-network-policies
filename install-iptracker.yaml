@@ -71,7 +71,7 @@ spec:
       serviceAccountName: kube-ip-tracker
       containers:
       - name: kube-ip-tracker
-        image: registry.k8s.io/networking/kube-ip-tracker:v1.1.0
+        image: registry.k8s.io/networking/kube-ip-tracker:v1.1.1
         args:
         - /bin/kube-ip-tracker
         - --listen-address=http://0.0.0.0:10999
