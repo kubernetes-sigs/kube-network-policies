@@ -1,0 +1,18 @@
+{
+  "run_id": "${RUN_ID}",
+  "dut": "${DUT}",
+  "nodes": ${NODES},
+  "pods": ${PODS},
+  "identities": ${IDENTITIES},
+  "namespaces": ${NAMESPACES},
+  "rate": ${RATE},
+  "scenario": "${SCENARIO}",
+  "churn_rate": ${CHURN_RATE},
+  "churn_duration": "${CHURN_DURATION}",
+  "fresh_identities": ${FRESH_IDENTITIES},
+  "steady": "${STEADY}",
+  "real_workers": "${REAL_WORKER_LIST}",
+  "kwok_version": "${KWOK_VERSION}",
+  "kind_version": "${KIND_VERSION}",
+  "started": "${STARTED}"
+}
