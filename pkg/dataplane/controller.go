@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	nfqueue "github.com/florianl/go-nfqueue/v2"
@@ -47,6 +48,10 @@ const (
 	podV4IPsSet    = "podips-v4"
 	podV6IPsSet    = "podips-v6"
 )
+
+// chainPolicyAccept is declared on every base chain so a sync over a chain left
+// with another policy resets it, the kernel updates the policy in place.
+var chainPolicyAccept = nftables.ChainPolicyAccept
 
 type Config struct {
 	FailOpen            bool // allow traffic if the controller is not available
@@ -160,8 +165,7 @@ type Controller struct {
 	syncRunner   *runner.BoundedFrequencyRunner
 	connRunner   *runner.BoundedFrequencyRunner
 
-	nfq     *nfqueue.Nfqueue
-	flushed bool
+	nfq *nfqueue.Nfqueue
 }
 
 // Run will not return until stopCh is closed. workers determines how many
@@ -465,38 +469,76 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		logger.Info("Syncing nftables rules", "elapsed", time.Since(start))
 	}()
 
-	nft, err := nftables.New()
-	if err != nil {
-		return fmt.Errorf("can not start nftables:%v", err)
-	}
-	// add + delete + add for flushing all the table
-	table := &nftables.Table{
-		Name:   c.config.NFTableName,
-		Family: nftables.TableFamilyINet,
-	}
-
-	nft.AddTable(table)
-	nft.DelTable(table)
-	nft.AddTable(table)
-
 	allPodIPs, divertAll, err := c.policyEngine.GetManagedIPs(ctx)
 	if err != nil {
 		return err
 	}
 
-	if !divertAll {
-		// add set with IPs impacted by network policies
-		v4Set := &nftables.Set{
-			Table:   table,
-			Name:    podV4IPsSet,
-			KeyType: nftables.TypeIPAddr,
-		}
-		v6Set := &nftables.Set{
-			Table:   table,
-			Name:    podV6IPsSet,
-			KeyType: nftables.TypeIP6Addr,
-		}
+	// Replace the rules in place: the table and its base chains are kept, so
+	// their netfilter hooks stay registered. Deleting a base chain makes the
+	// kernel drop every packet waiting in any nfqueue of the network namespace.
+	// https://wiki.nftables.org/wiki-nftables/index.php/Atomic_rule_replacement
+	err = c.writeNFTablesRules(ctx, allPodIPs, divertAll, false)
+	if err == nil || network.IsTransientNetlinkError(err) {
+		return err
+	}
+	// The kernel rejected the transaction and applied nothing. A base chain or
+	// set left by a previous version with another definition can not be
+	// updated in place, recreating the table is the only way out. If the error
+	// has another cause the second transaction is rejected as well and, again,
+	// nothing is applied.
+	logger.Info("nftables rules can not be updated in place, recreating the table, packets waiting in the nfqueues of the namespace are dropped", "error", err)
+	return c.writeNFTablesRules(ctx, allPodIPs, divertAll, true)
+}
 
+// replaceSet replaces the elements of a set, which flushing its table does not touch.
+func replaceSet(nft *nftables.Conn, set *nftables.Set, elements []nftables.SetElement) error {
+	if err := nft.AddSet(set, nil); err != nil {
+		return fmt.Errorf("failed to add Set %s : %v", set.Name, err)
+	}
+	nft.FlushSet(set)
+	if len(elements) > 0 {
+		if err := nft.SetAddElements(set, elements); err != nil {
+			return fmt.Errorf("failed to add elements to Set %s : %v", set.Name, err)
+		}
+	}
+	return nil
+}
+
+// writeNFTablesRules sends the whole ruleset in one transaction. With recreate
+// the table is deleted and created again in the same transaction, otherwise
+// its rules are flushed and the base chains kept.
+func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.Addr, divertAll bool, recreate bool) error {
+	logger := klog.FromContext(ctx).WithName("nftables-sync")
+
+	nft, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("can not start nftables:%v", err)
+	}
+	table := &nftables.Table{
+		Name:   c.config.NFTableName,
+		Family: nftables.TableFamilyINet,
+	}
+	nft.AddTable(table)
+	if recreate {
+		nft.DelTable(table)
+		nft.AddTable(table)
+	} else {
+		nft.FlushTable(table)
+	}
+
+	// add set with IPs impacted by network policies
+	v4Set := &nftables.Set{
+		Table:   table,
+		Name:    podV4IPsSet,
+		KeyType: nftables.TypeIPAddr,
+	}
+	v6Set := &nftables.Set{
+		Table:   table,
+		Name:    podV6IPsSet,
+		KeyType: nftables.TypeIP6Addr,
+	}
+	if !divertAll {
 		var elementsV4, elementsV6 []nftables.SetElement
 		for _, ip := range allPodIPs {
 			if ip.Is4() {
@@ -510,11 +552,11 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 			}
 		}
 
-		if err := nft.AddSet(v4Set, elementsV4); err != nil {
-			return fmt.Errorf("failed to add Set %s : %v", v4Set.Name, err)
+		if err := replaceSet(nft, v4Set, elementsV4); err != nil {
+			return err
 		}
-		if err := nft.AddSet(v6Set, elementsV6); err != nil {
-			return fmt.Errorf("failed to add Set %s : %v", v6Set.Name, err)
+		if err := replaceSet(nft, v6Set, elementsV6); err != nil {
+			return err
 		}
 	}
 
@@ -528,6 +570,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookPostrouting,
 		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATSource - 5),
+		Policy:   &chainPolicyAccept,
 	})
 
 	// DNS is processed by addDNSRacersWorkaroundRules()
@@ -751,6 +794,7 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		// Run after IPVS LOCAL_IN hooks (which use srcnat-2 and srcnat-1 priorities).
 		// https://elixir.bootlin.com/linux/v5.10/source/net/netfilter/ipvs/ip_vs_core.c#L2249
 		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATSource + 1),
+		Policy:   &chainPolicyAccept,
 	})
 
 	// iifname "lo" accept - bypass all loopback traffic to avoid blocking node-to-itself traffic.
@@ -813,6 +857,20 @@ func (c *Controller) syncNFTablesRules(ctx context.Context) error {
 		c.addDNSRacersWorkaroundRules(nft, table, divertAll)
 	}
 
+	if divertAll {
+		// flush table does not delete the sets, and they are unreferenced once
+		// the rules above are flushed. add + delete so the delete succeeds
+		// whether or not the set exists. The flush has to stay ahead of this
+		// block: it is what drops the sets' reference count, and the kernel
+		// refuses to delete a set that any rule still references.
+		for _, set := range []*nftables.Set{v4Set, v6Set} {
+			if err := nft.AddSet(set, nil); err != nil {
+				return fmt.Errorf("failed to add Set %s : %v", set.Name, err)
+			}
+			nft.DelSet(set)
+		}
+	}
+
 	if err := nft.Flush(); err != nil {
 		logger.Info("syncing nftables rules", "error", err)
 		return err
@@ -835,6 +893,7 @@ func (c *Controller) addDNSRacersWorkaroundRules(nft *nftables.Conn, table *nfta
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookPrerouting,
 		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 5),
+		Policy:   &chainPolicyAccept,
 	})
 
 	// meta l4proto != udp
