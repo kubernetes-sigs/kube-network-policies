@@ -1,0 +1,87 @@
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-ip-tracker
+rules:
+  - apiGroups: [""]
+    resources: [nodes, pods, namespaces]
+    verbs: [get, list, watch]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-ip-tracker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-ip-tracker
+subjects:
+- kind: ServiceAccount
+  name: kube-ip-tracker
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-ip-tracker
+  namespace: kube-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-ip-tracker
+  namespace: kube-system
+spec:
+  clusterIP: None
+  selector:
+    app: kube-ip-tracker
+  ports:
+  - name: grpc
+    port: ${IPTRACKER_PORT}
+    targetPort: ${IPTRACKER_PORT}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-ip-tracker
+  namespace: kube-system
+  labels:
+    app: kube-ip-tracker
+    k8s-app: kube-ip-tracker
+spec:
+  replicas: ${IPTRACKER_REPLICAS}
+  selector:
+    matchLabels:
+      app: kube-ip-tracker
+  template:
+    metadata:
+      labels:
+        app: kube-ip-tracker
+        k8s-app: kube-ip-tracker
+        scale.knp.x-k8s.io/dut: ${DUT}
+    spec:
+      hostNetwork: true
+      serviceAccountName: kube-ip-tracker
+      # Pin the distributor to the control-plane node: it is part of the DUT
+      # but must not share a worker with the agents whose CPU we attribute.
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: kube-ip-tracker
+        image: ${IPTRACKER_IMAGE}
+        args:
+        - /bin/kube-ip-tracker
+        - --listen-address=http://0.0.0.0:${IPTRACKER_PORT}
+        - --v=${KNP_VERBOSITY}
+        ports:
+        - containerPort: ${IPTRACKER_PORT}
+          name: grpc
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "50Mi"

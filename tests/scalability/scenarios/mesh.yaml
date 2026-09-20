@@ -1,0 +1,67 @@
+# Scenario: mesh (bidirectional peer-to-peer). Every sandbox may talk to
+# every other sandbox in every managed namespace, plus the gateway and DNS.
+# An eager per-identity engine needs ~2*I entries per endpoint here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-mesh
+  namespace: ${NAMESPACE}
+  labels:
+    scale.knp.x-k8s.io/managed: "true"
+spec:
+  podSelector:
+    matchLabels:
+      group: sandbox
+  policyTypes: [Ingress, Egress]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          scale.knp.x-k8s.io/managed: "true"
+      podSelector:
+        matchLabels:
+          group: sandbox
+    ports:
+    - protocol: TCP
+      port: 80
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${PROBE_NAMESPACE}
+      podSelector:
+        matchLabels:
+          group: gateway
+    ports:
+    - protocol: TCP
+      port: ${GATEWAY_PORT}
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          scale.knp.x-k8s.io/managed: "true"
+      podSelector:
+        matchLabels:
+          group: sandbox
+    ports:
+    - protocol: TCP
+      port: 80
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${PROBE_NAMESPACE}
+      podSelector:
+        matchLabels:
+          group: gateway
+    ports:
+    - protocol: TCP
+      port: 80

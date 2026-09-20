@@ -1,0 +1,39 @@
+# name|PromQL  -- one range query per line, evaluated over [t0, t1] by collect.sh.
+# Names become file names under _artifacts/<run>/prom/. Lines starting with #
+# are ignored. A DUT can extend this list with dut/<name>/queries.txt.
+
+# --- policy agent (kube-network-policies) ------------------------------------
+agent_cpu_cores|sum by (node) (rate(container_cpu_usage_seconds_total{namespace="kube-system",pod=~"kube-network-policies.*",container!=""}[30s]))
+agent_memory_wss_bytes|sum by (node) (container_memory_working_set_bytes{namespace="kube-system",pod=~"kube-network-policies.*",container!=""})
+agent_memory_rss_bytes|sum by (node) (container_memory_rss{namespace="kube-system",pod=~"kube-network-policies.*",container!=""})
+agent_verdicts_per_s|sum by (node,verdict) (rate(kube_network_policies_packet_count[30s]))
+agent_process_p50_us|max by (node) (kube_network_policies_packet_process_duration_microseconds{quantile="0.5"})
+agent_process_p99_us|max by (node) (kube_network_policies_packet_process_duration_microseconds{quantile="0.99"})
+agent_process_hist_p99_us|histogram_quantile(0.99, sum by (node,le) (rate(kube_network_policies_packet_process_time_bucket[30s])))
+agent_queue_depth|max by (node,queue) (kube_network_policies_nfqueue_queue_total)
+agent_queue_dropped|max by (node,queue) (kube_network_policies_nfqueue_queue_dropped)
+agent_user_dropped|max by (node,queue) (kube_network_policies_nfqueue_user_dropped)
+agent_go_heap_bytes|sum by (node) (go_memstats_heap_inuse_bytes{job="kube-network-policies"})
+agent_go_goroutines|sum by (node) (go_goroutines{job="kube-network-policies"})
+
+# --- metadata distributor (kube-ip-tracker), present only for the iptracker DUT ---
+iptracker_cpu_cores|sum(rate(container_cpu_usage_seconds_total{namespace="kube-system",pod=~"kube-ip-tracker.*",container!=""}[30s]))
+iptracker_memory_wss_bytes|sum(container_memory_working_set_bytes{namespace="kube-system",pod=~"kube-ip-tracker.*",container!=""})
+
+# --- control plane ----------------------------------------------------------------
+apiserver_cpu_cores|sum(rate(container_cpu_usage_seconds_total{namespace="kube-system",pod=~"kube-apiserver.*",container!=""}[30s]))
+apiserver_memory_wss_bytes|sum(container_memory_working_set_bytes{namespace="kube-system",pod=~"kube-apiserver.*",container!=""})
+etcd_cpu_cores|sum(rate(container_cpu_usage_seconds_total{namespace="kube-system",pod=~"etcd.*",container!=""}[30s]))
+apiserver_watch_events_per_s|sum by (kind) (rate(apiserver_watch_events_total[30s]))
+apiserver_requests_per_s|sum by (verb,resource) (rate(apiserver_request_total{resource=~"pods|networkpolicies|nodes|namespaces"}[30s]))
+apiserver_request_p99_s|histogram_quantile(0.99, sum by (verb,resource,le) (rate(apiserver_request_duration_seconds_bucket{resource=~"pods|networkpolicies",verb!~"WATCH|CONNECT"}[30s])))
+apiserver_storage_objects|apiserver_storage_objects{resource=~"pods|networkpolicies|nodes|namespaces|ciliumidentities.cilium.io|ciliumendpoints.cilium.io"}
+apiserver_inflight|sum by (request_kind) (apiserver_current_inflight_requests)
+
+# --- kwok and probes ------------------------------------------------------------------
+kwok_cpu_cores|sum(rate(container_cpu_usage_seconds_total{namespace="kube-system",pod=~"kwok-controller.*",container!=""}[30s]))
+probe_pods_cpu_cores|sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="scale-probes",container!=""}[30s]))
+
+# --- kubelet on real workers -------------------------------------------------------------
+kubelet_pleg_relist_p99_s|histogram_quantile(0.99, sum by (node,le) (rate(kubelet_pleg_relist_duration_seconds_bucket[30s])))
+kubelet_runtime_ops_p99_s|histogram_quantile(0.99, sum by (node,operation_type,le) (rate(kubelet_runtime_operations_duration_seconds_bucket[30s])))
