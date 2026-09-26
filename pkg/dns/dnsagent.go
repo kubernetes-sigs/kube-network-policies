@@ -38,6 +38,10 @@ const (
 	maxDNSSize = 1232
 )
 
+// chainPolicyAccept is declared on the base chain so a sync over a chain left
+// with another policy resets it, the kernel updates the policy in place.
+var chainPolicyAccept = nftables.ChainPolicyAccept
+
 func NewDomainCache(id int) *DomainCache {
 	return &DomainCache{
 		nfQueueID: id,
@@ -56,6 +60,13 @@ type DomainCache struct {
 
 func (n *DomainCache) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
+
+	// Sync the rules before opening the queue: if the sync has to recreate the
+	// table, packets waiting in the nfqueues of the namespace are dropped, and
+	// this way there is none of ours yet.
+	if err := n.syncRules(ctx); err != nil {
+		return err
+	}
 
 	// Set configuration options for nfqueue
 	config := nfqueue.Config{
@@ -121,7 +132,7 @@ func (n *DomainCache) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		err := n.syncRules()
+		err := n.syncRules(ctx)
 		if err != nil {
 			return err
 		}
@@ -136,21 +147,44 @@ func (n *DomainCache) Run(ctx context.Context) error {
 	}
 }
 
-func (n *DomainCache) syncRules() error {
-	klog.V(2).Info("Syncing kube-network-policies dnscache nftables rules")
+// syncRules replaces the rules in place: the table and its base chain are
+// kept, so its netfilter hook stays registered. Deleting a base chain makes the
+// kernel drop every packet waiting in any nfqueue of the network namespace.
+// The table is recreated only when the kernel rejects the in-place update,
+// because a chain left by a previous version has another definition.
+// https://wiki.nftables.org/wiki-nftables/index.php/Atomic_rule_replacement
+func (n *DomainCache) syncRules(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
+	logger.V(2).Info("Syncing kube-network-policies dnscache nftables rules")
+
+	err := n.writeRules(false)
+	if err == nil || network.IsTransientNetlinkError(err) {
+		return err
+	}
+	logger.Info("nftables rules can not be updated in place, recreating the table, packets waiting in the nfqueues of the namespace are dropped", "error", err)
+	return n.writeRules(true)
+}
+
+// writeRules sends the whole ruleset in one transaction. With recreate the
+// table is deleted and created again in the same transaction, otherwise its
+// rules are flushed and the base chain kept.
+func (n *DomainCache) writeRules(recreate bool) error {
 	nft, err := nftables.New()
 	if err != nil {
 		return fmt.Errorf("fastpath failure, can not start nftables:%v", err)
 	}
 
-	// add + delete + add for flushing all the table
 	table := &nftables.Table{
 		Name:   tableName,
 		Family: nftables.TableFamilyINet,
 	}
 	nft.AddTable(table)
-	nft.DelTable(table)
-	nft.AddTable(table)
+	if recreate {
+		nft.DelTable(table)
+		nft.AddTable(table)
+	} else {
+		nft.FlushTable(table)
+	}
 
 	chain := nft.AddChain(&nftables.Chain{
 		Name:     "postrouting",
@@ -158,6 +192,7 @@ func (n *DomainCache) syncRules() error {
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookPostrouting,
 		Priority: nftables.ChainPriorityLast,
+		Policy:   &chainPolicyAccept,
 	})
 
 	// Log UDP DNS answers
@@ -183,7 +218,7 @@ func (n *DomainCache) syncRules() error {
 	})
 	err = nft.Flush()
 	if err != nil {
-		return fmt.Errorf("failed to create kube-network-policices table: %v", err)
+		return fmt.Errorf("failed to create kube-network-policices table: %w", err)
 	}
 	return nil
 }
