@@ -57,11 +57,36 @@ table inet kube-network-policies-dnscache {
 	}
 	defer newns.Close()
 
-	if err := n.syncRules(); err != nil {
+	// A table left by a previous version, its base chain has another priority
+	// and can not be updated in place, so the first sync recreates the table.
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(fmt.Sprintf(`
+		table inet %s {
+			chain postrouting { type filter hook postrouting priority filter; policy drop; }
+		}`, tableName))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("nft -f: %v: %s", err, out)
+	}
+	stale := tableHandle(t)
+
+	ctx := context.Background()
+	if err := n.syncRules(ctx); err != nil {
 		t.Fatalf("NewDomainCache.syncRules() error = %v", err)
 	}
+	first := tableHandle(t)
+	if first == stale {
+		t.Errorf("the sync did not recreate the table left with another chain priority")
+	}
+	// a second sync over the existing table must not duplicate the rules nor
+	// recreate the table
+	if err := n.syncRules(ctx); err != nil {
+		t.Fatalf("NewDomainCache.syncRules() resync error = %v", err)
+	}
+	if second := tableHandle(t); second != first {
+		t.Errorf("the second sync recreated the table (handle %s, then %s)", first, second)
+	}
 
-	cmd := exec.Command("nft", "list", "table", "inet", tableName)
+	cmd = exec.Command("nft", "list", "table", "inet", tableName)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("nft list table error = %v", err)
@@ -81,6 +106,23 @@ table inet kube-network-policies-dnscache {
 	}
 	// Switch back to the original namespace
 	netns.Set(origns)
+}
+
+var tableHandleRE = regexp.MustCompile(`table inet \S+ \{ # handle (\d+)`)
+
+// tableHandle returns the kernel handle of the dnscache table, it changes
+// when the table is recreated.
+func tableHandle(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("nft", "-a", "list", "table", "inet", tableName).CombinedOutput()
+	if err != nil {
+		t.Fatalf("nft -a list table error = %v, output: %s", err, string(out))
+	}
+	m := tableHandleRE.FindStringSubmatch(string(out))
+	if m == nil {
+		t.Fatalf("no table handle in:\n%s", out)
+	}
+	return m[1]
 }
 
 // buildIPv4Header creates a minimal IPv4 header.
