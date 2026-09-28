@@ -1,0 +1,134 @@
+# Base Prometheus scrape configuration for the scalability framework.
+# monitoring/install.sh appends dut/<name>/scrape.yaml (if present) to the
+# scrape_configs list below and renders the result into a ConfigMap.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+# --- Policy agents ---------------------------------------------------------
+# kube-network-policies runs hostNetwork; the metrics server listens on 9080
+# (see --metrics-bind-address). Any DaemonSet labeled k8s-app=kube-network-policies
+# in kube-system is scraped, so all three KNP flavors work without changes.
+- job_name: kube-network-policies
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces: { names: [kube-system] }
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_pod_label_k8s_app]
+    regex: kube-network-policies
+    action: keep
+  - source_labels: [__meta_kubernetes_pod_ip]
+    target_label: __address__
+    replacement: ${1}:9080
+  - source_labels: [__meta_kubernetes_pod_node_name]
+    target_label: node
+  - source_labels: [__meta_kubernetes_pod_name]
+    target_label: pod
+
+# --- Container CPU / memory via kubelet cAdvisor ---------------------------
+# Gives container_cpu_usage_seconds_total and container_memory_working_set_bytes
+# for every container on the real nodes: the DUT agents, kube-ip-tracker,
+# kwok-controller, kube-apiserver, etcd, and the probe Pods.
+- job_name: cadvisor
+  scheme: https
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: true
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+  kubernetes_sd_configs:
+  - role: node
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_node_label_type]
+    regex: kwok
+    action: drop
+  - target_label: __address__
+    replacement: kubernetes.default.svc:443
+  - source_labels: [__meta_kubernetes_node_name]
+    regex: (.+)
+    target_label: __metrics_path__
+    replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+  - source_labels: [__meta_kubernetes_node_name]
+    target_label: node
+  metric_relabel_configs:
+  # Keep only the series the collector queries; cAdvisor is noisy.
+  - source_labels: [__name__]
+    regex: container_(cpu_usage_seconds_total|memory_working_set_bytes|memory_rss|network_.*|fs_.*)
+    action: keep
+  - source_labels: [container]
+    regex: (POD|)
+    action: drop
+
+# --- Kubelet (PLEG, runtime operation latency) -----------------------------
+- job_name: kubelet
+  scheme: https
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: true
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+  kubernetes_sd_configs:
+  - role: node
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_node_label_type]
+    regex: kwok
+    action: drop
+  - target_label: __address__
+    replacement: kubernetes.default.svc:443
+  - source_labels: [__meta_kubernetes_node_name]
+    regex: (.+)
+    target_label: __metrics_path__
+    replacement: /api/v1/nodes/${1}/proxy/metrics
+  - source_labels: [__meta_kubernetes_node_name]
+    target_label: node
+  metric_relabel_configs:
+  - source_labels: [__name__]
+    regex: kubelet_(pleg_.*|runtime_operations_.*|pod_start_.*|cgroup_manager_.*)
+    action: keep
+
+# --- API server -------------------------------------------------------------
+# Watch fan-out and object counts are where the eager designs pay.
+- job_name: kube-apiserver
+  scheme: https
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: true
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+  kubernetes_sd_configs:
+  - role: endpoints
+    namespaces: { names: [default] }
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+    regex: kubernetes;https
+    action: keep
+  metric_relabel_configs:
+  - source_labels: [__name__]
+    regex: apiserver_(request_total|request_duration_seconds_bucket|watch_events_total|watch_events_sizes_sum|storage_objects|current_inflight_requests|flowcontrol_.*)|etcd_request_duration_seconds_bucket|process_(cpu_seconds_total|resident_memory_bytes)
+    action: keep
+
+# --- kwok controller ----------------------------------------------------------
+- job_name: kwok
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces: { names: [kube-system] }
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_pod_label_app]
+    regex: kwok-controller
+    action: keep
+  - source_labels: [__meta_kubernetes_pod_ip]
+    target_label: __address__
+    replacement: ${1}:10247
+
+# --- Probe / load Pods ----------------------------------------------------------
+# fortio results are collected as JSON by probes/; this job exists so a
+# DUT-specific probe Pod in the scale-probes namespace can publish its own
+# series by naming a container port "metrics".
+- job_name: probes
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces: { names: [scale-probes] }
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_pod_container_port_name]
+    regex: metrics
+    action: keep
+  - source_labels: [__meta_kubernetes_pod_name]
+    target_label: pod

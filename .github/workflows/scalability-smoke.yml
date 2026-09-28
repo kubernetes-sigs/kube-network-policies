@@ -1,0 +1,126 @@
+name: scalability-smoke
+
+# Guards the kind+kwok scalability framework against regressions: builds
+# the agent image, brings up the cluster, runs one tiny end-to-end
+# experiment per KNP flavor and asserts the artifacts are complete and the
+# enforcement checks passed. It does not compare performance numbers.
+
+on:
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'tests/scalability/**'
+      - '.github/workflows/scalability-smoke.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'tests/scalability/**'
+      - '.github/workflows/scalability-smoke.yml'
+  workflow_dispatch:
+  schedule:
+    # Weekly, so drift in kind, kwok or the agent surfaces without a PR.
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  KIND_VERSION: "v0.29.0"
+  KWOK_VERSION: "v0.8.0"
+  CLUSTER_NAME: knp-scale
+  REGISTRY: registry.k8s.io/networking
+  IMAGE_NAME: kube-network-policies
+  TAG: scale
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: false
+      - name: shellcheck and go vet
+        run: make -C tests/scalability lint
+      - name: Render templates
+        # Every template must substitute cleanly and parse as YAML/JSON.
+        run: |
+          cd tests/scalability
+          export DUT=ci KNP_IMAGE=img KNP_VERBOSITY=2 KNP_NFQUEUE_ID=98 KNP_METRICS_PORT=9080 \
+                 KNP_DISABLE_NRI=false KNP_FAIL_OPEN=true KNP_STRICT_MODE=true KNP_EXTRA_ARGS="" \
+                 IPTRACKER_IMAGE=img IPTRACKER_PORT=10999 IPTRACKER_REPLICAS=1 \
+                 MONITORING_NS=monitoring PROMETHEUS_NODEPORT=30090 PROMETHEUS_IMAGE=img \
+                 PROBE_NAMESPACE=scale-probes GATEWAY_PORT=8080 FORTIO_IMAGE=img GATEWAY_NODE=a CLIENT_NODE=b \
+                 NAMESPACE=ns KIND_POD_SUBNET=10.244.0.0/16 KIND_SERVICE_SUBNET=10.96.0.0/16 KIND_DISABLE_DEFAULT_CNI=false
+          source lib.sh
+          for t in templates/*.yaml scenarios/*.yaml probes/probes.yaml monitoring/prometheus.yaml templates/kube-ip-tracker.yaml; do
+            vars=$(grep -oE '\$\{[A-Z_]+\}' "$t" | tr -d '${}' | sort -u | tr '\n' ' ')
+            # shellcheck disable=SC2086
+            render "$t" $vars | python3 -c 'import sys,yaml; list(yaml.safe_load_all(sys.stdin))' || { echo "template $t failed"; exit 1; }
+          done
+          python3 -c 'import yaml; yaml.safe_load(open("monitoring/scrape-base.yaml"))'
+
+  smoke:
+    name: smoke ${{ matrix.dut }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        dut: [knp, knp-nri, knp-nri-iptracker]
+    env:
+      DUT: ${{ matrix.dut }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: false
+
+      - name: Install kind and host prerequisites
+        run: |
+          curl -Lo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          sudo apt-get update -q && sudo apt-get install -y -q gettext-base jq shellcheck
+          # kind nodes run systemd; the runner default of 128 instances is not enough.
+          sudo sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
+          sudo sysctl -w net.ipv4.ip_forward=1
+
+      - name: Create cluster (kind + kwok + Prometheus)
+        run: make -C tests/scalability cluster-up
+
+      - name: Smoke run, verify, report
+        # CONNRATE_DURATION is shortened; the point is coverage, not throughput.
+        run: make -C tests/scalability smoke DUT="${DUT}" CONNRATE_DURATION=10s
+
+      - name: Show report
+        if: always()
+        run: cat tests/scalability/_artifacts/smoke-${DUT}/report/*.md || true
+
+      - name: Export cluster logs
+        if: failure()
+        run: |
+          kind export logs "tests/scalability/_artifacts/kind-logs" --name "${CLUSTER_NAME}" || true
+          kubectl --context "kind-${CLUSTER_NAME}" get pods -A -o wide > tests/scalability/_artifacts/pods.txt || true
+          kubectl --context "kind-${CLUSTER_NAME}" get events -A --sort-by=.lastTimestamp | tail -100 > tests/scalability/_artifacts/events.txt || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
+        with:
+          name: scalability-smoke-${{ matrix.dut }}-${{ github.run_id }}
+          path: tests/scalability/_artifacts
+          if-no-files-found: warn

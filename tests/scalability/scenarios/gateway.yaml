@@ -1,0 +1,48 @@
+# Scenario: gateway (hub-and-spoke). Sandboxes may reach the gateway and
+# DNS; the gateway accepts from every sandbox. Per-endpoint peer set is
+# constant (gateway + DNS) regardless of identity count; the gateway's
+# ingress peer set grows with identities.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-gateway
+  namespace: ${NAMESPACE}
+  labels:
+    scale.knp.x-k8s.io/managed: "true"
+spec:
+  podSelector:
+    matchLabels:
+      group: sandbox
+  policyTypes: [Ingress, Egress]
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${PROBE_NAMESPACE}
+      podSelector:
+        matchLabels:
+          group: gateway
+    ports:
+    - protocol: TCP
+      port: ${GATEWAY_PORT}
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${PROBE_NAMESPACE}
+      podSelector:
+        matchLabels:
+          group: gateway
+    ports:
+    - protocol: TCP
+      port: 80
