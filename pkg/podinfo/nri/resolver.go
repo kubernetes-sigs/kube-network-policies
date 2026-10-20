@@ -12,6 +12,7 @@ import (
 	"github.com/containerd/nri/pkg/stub"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"k8s.io/apimachinery/pkg/util/sets"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
@@ -21,15 +22,35 @@ import (
 
 var _ podinfo.IPResolver = &NRIResolver{}
 var _ api.PodInfoProvider = &NRIResolver{}
+var _ stub.StopPodInterface = &NRIResolver{}
+
+// sandboxRecord is what the resolver knows about a sandbox reported by the runtime.
+type sandboxRecord struct {
+	podInfo *api.PodInfo
+	// ips are the IPs claimed by the sandbox, some of them may be owned by
+	// another sandbox now.
+	ips []string
+}
 
 // NRIResolver is a standalone component that listens to NRI events
 // and maintains a cache of PodInfo objects.
 type NRIResolver struct {
-	nodeName    string
-	stub        stub.Stub
-	mu          sync.Mutex
-	podInfoByIP map[string]*api.PodInfo
-	nsLister    corelisters.NamespaceLister
+	nodeName string
+	stub     stub.Stub
+	nsLister corelisters.NamespaceLister
+
+	// mu protects sandboxes, ipOwners and stopped.
+	mu sync.Mutex
+	// sandboxes indexes the sandboxes by ID, so their IPs can be released on
+	// removal even if the removal event does not include them.
+	sandboxes map[string]*sandboxRecord
+	// ipOwners maps an IP to the ID of the sandbox that owns it. An IP claimed
+	// by more than one sandbox in a runtime snapshot has no owner until a
+	// sandbox claims it again in RunPodSandbox or a later snapshot.
+	ipOwners map[string]string
+	// stopped has the IDs of the stopped sandboxes. A stopped sandbox never
+	// runs again, but the runtime snapshot lists it until it is removed.
+	stopped sets.Set[string]
 }
 
 // NewNRIResolver creates a new resolver that looks up pods via the NRI plugin.
@@ -39,8 +60,10 @@ func NewNRIResolver(ctx context.Context, nodeName string, namespaceInformer core
 		pluginIdx  = "10"
 	)
 	p := &NRIResolver{
-		nodeName:    nodeName,
-		podInfoByIP: make(map[string]*api.PodInfo),
+		nodeName:  nodeName,
+		sandboxes: make(map[string]*sandboxRecord),
+		ipOwners:  make(map[string]string),
+		stopped:   sets.New[string](),
 	}
 	if namespaceInformer != nil {
 		p.nsLister = namespaceInformer.Lister()
@@ -113,26 +136,76 @@ func (p *NRIResolver) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	podInfo, found := p.podInfoByIP[ip]
-	return podInfo, found
+	id, found := p.ipOwners[ip]
+	if !found {
+		return nil, false
+	}
+	sandbox, found := p.sandboxes[id]
+	if !found {
+		return nil, false
+	}
+	return sandbox.podInfo, true
 }
 
+// Synchronize replaces the cache with the runtime snapshot.
 func (p *NRIResolver) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, containers []*nriapi.Container) ([]*nriapi.ContainerUpdate, error) {
 	klog.Infof("Synchronized state with the runtime (%d pods, %d containers)...",
 		len(pods), len(containers))
 
+	listed := sets.New[string]()
+	var running []*sandboxRecord
+	var runningIDs []string
 	for _, pod := range pods {
+		listed.Insert(pod.GetId())
 		ips := getPodIPs(pod)
 		podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
-		klog.V(4).Infof("pod=%s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
-		podInfo := p.getPodInfo(pod)
-		for _, ip := range ips {
-			p.mu.Lock()
-			p.podInfoByIP[ip] = podInfo
-			p.mu.Unlock()
+		nsPath := getNetworkNamespace(pod)
+		klog.V(4).Infof("pod=%s netns=%s ips=%v", podKey, nsPath, ips)
+		// The snapshot includes stopped sandboxes and containerd 2.1+ still
+		// reports the IPs they had, so a sandbox only owns its IPs if its
+		// network namespace still exists.
+		if len(ips) > 0 {
+			if err := checkNetworkNamespace(nsPath); err != nil {
+				klog.V(2).Infof("Ignoring Pod %s sandbox=%s ips=%v, its network namespace %q can not be opened: %v", podKey, pod.GetId(), ips, nsPath, err)
+				continue
+			}
 		}
+		running = append(running, &sandboxRecord{podInfo: p.getPodInfo(pod), ips: ips})
+		runningIDs = append(runningIDs, pod.GetId())
 	}
 
+	// The stopped sandboxes are checked with the lock held, so a concurrent
+	// StopPodSandbox is not lost.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sandboxes := make(map[string]*sandboxRecord, len(running))
+	ipOwners := make(map[string]string)
+	// An IP claimed by more than one sandbox may have been reused and the
+	// snapshot does not tell which sandbox owns it.
+	conflicts := sets.New[string]()
+	for i, sandbox := range running {
+		id := runningIDs[i]
+		// The network namespace may still exist if tearing it down failed.
+		if p.stopped.Has(id) {
+			klog.V(4).Infof("Ignoring stopped sandbox=%s ips=%v", id, sandbox.ips)
+			continue
+		}
+		sandboxes[id] = sandbox
+		for _, ip := range sandbox.ips {
+			if owner, ok := ipOwners[ip]; ok && owner != id {
+				conflicts.Insert(ip)
+			}
+			ipOwners[ip] = id
+		}
+	}
+	for ip := range conflicts {
+		klog.Infof("IP %s is claimed by more than one sandbox, ignoring it until a sandbox claims it", ip)
+		delete(ipOwners, ip)
+	}
+	p.sandboxes = sandboxes
+	p.ipOwners = ipOwners
+	// The sandboxes that are not listed have been removed.
+	p.stopped = p.stopped.Intersection(listed)
 	return nil, nil
 }
 
@@ -145,27 +218,62 @@ func (p *NRIResolver) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) e
 	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
 	klog.V(4).Infof("Starting Pod %s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
 	podInfo := p.getPodInfo(pod)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// The sandbox may be registered again with different IPs.
+	p.releaseSandbox(pod.GetId())
+	p.stopped.Delete(pod.GetId())
+	p.sandboxes[pod.GetId()] = &sandboxRecord{podInfo: podInfo, ips: ips}
+	// The runtime has just assigned these IPs to the sandbox, so it owns them
+	// even if another sandbox claimed them before.
 	for _, ip := range ips {
-		p.mu.Lock()
-		p.podInfoByIP[ip] = podInfo
-		p.mu.Unlock()
+		p.ipOwners[ip] = pod.GetId()
 	}
 	return nil
 }
 
-func (p *NRIResolver) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
-	// because of this bug in https://github.com/containerd/containerd/pull/11331
-	// PodIPs may not be present, but since the pod is going to be deleted
-	// we just remove it from the cache
-	ips := getPodIPs(pod)
+// StopPodSandbox is called when the runtime stops the sandbox, before it tears
+// down the network and releases the IPs. The event may not include the IPs and
+// the IPs may have been reused by another sandbox, so release the IPs cached
+// for the sandbox that it still owns.
+func (p *NRIResolver) StopPodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
 	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
-	klog.V(4).Infof("Removing Pod %s ips=%v", podKey, ips)
-	for _, ip := range ips {
-		p.mu.Lock()
-		delete(p.podInfoByIP, ip)
-		p.mu.Unlock()
-	}
+	klog.V(4).Infof("Stopping Pod %s sandbox=%s", podKey, pod.GetId())
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.releaseSandbox(pod.GetId())
+	p.stopped.Insert(pod.GetId())
 	return nil
+}
+
+func (p *NRIResolver) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
+	// The event may not include the IPs because of this bug in
+	// https://github.com/containerd/containerd/pull/11331 and the IPs may have
+	// been reused by another sandbox, so release the IPs cached for the sandbox.
+	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
+	klog.V(4).Infof("Removing Pod %s sandbox=%s", podKey, pod.GetId())
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.releaseSandbox(pod.GetId())
+	// The sandbox does not exist anymore, so a later snapshot can not list it.
+	p.stopped.Delete(pod.GetId())
+	return nil
+}
+
+// releaseSandbox forgets a sandbox and the IPs it still owns. It must be
+// called with p.mu held.
+func (p *NRIResolver) releaseSandbox(id string) {
+	sandbox, found := p.sandboxes[id]
+	if !found {
+		return
+	}
+	for _, ip := range sandbox.ips {
+		if p.ipOwners[ip] == id {
+			delete(p.ipOwners, ip)
+		}
+	}
+	delete(p.sandboxes, id)
 }
 
 func (p *NRIResolver) onClose() {
@@ -205,6 +313,19 @@ func getNetworkNamespace(pod *nriapi.PodSandbox) string {
 		}
 	}
 	return ""
+}
+
+// checkNetworkNamespace returns an error if the network namespace does not
+// exist or can not be opened.
+func checkNetworkNamespace(path string) error {
+	if path == "" {
+		return fmt.Errorf("the runtime does not report a network namespace")
+	}
+	ns, err := netns.GetFromPath(path)
+	if err != nil {
+		return err
+	}
+	return ns.Close()
 }
 
 // getPodIPs return the IPs, it tries first to use
