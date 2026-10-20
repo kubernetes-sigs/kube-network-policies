@@ -10,6 +10,7 @@ import (
 
 	nriapi "github.com/containerd/nri/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
+	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 )
 
 // --- Helpers ---
@@ -114,6 +115,62 @@ func TestNRIResolver_LookupPod(t *testing.T) {
 
 	// Test not found
 	key, ok = resolver.LookupPod("1.2.3.4")
+	if ok || key != "" {
+		t.Errorf("LookupPod() got key %q, ok %v; want %q, false", key, ok, "")
+	}
+}
+
+// failOnPanic reports a panic as a test failure so the remaining tests still run.
+func failOnPanic(t *testing.T) {
+	t.Helper()
+	if r := recover(); r != nil {
+		t.Fatalf("unexpected panic: %v", r)
+	}
+}
+
+func TestNRIResolver_NilReceiver(t *testing.T) {
+	// NewNRIResolver returns a nil resolver when the NRI plugin can not be created.
+	var resolver *NRIResolver
+
+	t.Run("LookupPod", func(t *testing.T) {
+		defer failOnPanic(t)
+		key, ok := resolver.LookupPod("10.0.0.1")
+		if ok || key != "" {
+			t.Errorf("LookupPod() got key %q, ok %v; want %q, false", key, ok, "")
+		}
+	})
+
+	t.Run("GetPodInfoByIP", func(t *testing.T) {
+		defer failOnPanic(t)
+		podInfo, ok := resolver.GetPodInfoByIP("10.0.0.1")
+		if ok || podInfo != nil {
+			t.Errorf("GetPodInfoByIP() got %v, ok %v; want nil, false", podInfo, ok)
+		}
+	})
+
+	t.Run("typed nil IPResolver", func(t *testing.T) {
+		defer failOnPanic(t)
+		var ipResolver podinfo.IPResolver = resolver
+		key, ok := ipResolver.LookupPod("10.0.0.1")
+		if ok || key != "" {
+			t.Errorf("LookupPod() got key %q, ok %v; want %q, false", key, ok, "")
+		}
+	})
+}
+
+func TestNRIResolver_LookupPodThroughIPResolver(t *testing.T) {
+	var ipResolver podinfo.IPResolver = &NRIResolver{
+		podInfoByIP: map[string]*api.PodInfo{
+			"10.0.0.1": {Namespace: &api.Namespace{Name: "ns1"}, Name: "pod1"},
+		},
+	}
+
+	key, ok := ipResolver.LookupPod("10.0.0.1")
+	if !ok || key != "ns1/pod1" {
+		t.Errorf("LookupPod() got key %q, ok %v; want %q, true", key, ok, "ns1/pod1")
+	}
+
+	key, ok = ipResolver.LookupPod("1.2.3.4")
 	if ok || key != "" {
 		t.Errorf("LookupPod() got key %q, ok %v; want %q, false", key, ok, "")
 	}

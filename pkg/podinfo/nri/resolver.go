@@ -107,6 +107,10 @@ func (p *NRIResolver) Run(ctx context.Context) error {
 
 // GetPodInfoByIP returns a PodInfo object from the local cache.
 func (p *NRIResolver) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {
+	// A nil resolver has no cache, it is returned when the NRI plugin can not be created.
+	if p == nil {
+		return nil, false
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	podInfo, found := p.podInfoByIP[ip]

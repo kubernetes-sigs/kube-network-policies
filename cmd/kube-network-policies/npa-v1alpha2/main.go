@@ -149,8 +149,9 @@ func run() int {
 		nriIPResolver, err := nri.NewNRIResolver(ctx, nodeName, nil)
 		if err != nil {
 			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
+		} else if nriIPResolver != nil {
+			resolvers = append(resolvers, nriIPResolver)
 		}
-		resolvers = append(resolvers, nriIPResolver)
 	}
 
 	// Create the pod info provider to obtain the Pod information

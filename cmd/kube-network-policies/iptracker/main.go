@@ -179,18 +179,17 @@ func run() int {
 	if err != nil {
 		klog.Fatalf("Failed to create ipcache client: %v", err)
 	}
-	var podInfoProvider api.PodInfoProvider
+	var podInfoProvider api.PodInfoProvider = ipcacheClient
 	// Create an NRI Pod IP resolver if enabled, since NRI connects to the container runtime
 	// the Pod and IP information is provided at the time the Pod Sandbox is created and before
 	// the containers start running, so policies can be enforced without race conditions.
 	if !opts.DisableNRI {
 		nriIPResolver, err := nri.NewNRIResolver(ctx, nodeName, informersFactory.Core().V1().Namespaces())
 		if err != nil {
-			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
+			klog.Infof("failed to create NRI plugin, using IP cache only: %v", err)
+		} else if nriIPResolver != nil {
+			podInfoProvider = podinfo.NewFallbackPodInfoProvider(ipcacheClient, nriIPResolver)
 		}
-		podInfoProvider = podinfo.NewFallbackPodInfoProvider(ipcacheClient, nriIPResolver)
-	} else {
-		podInfoProvider = ipcacheClient
 	}
 
 	// Create the evaluators for the Pipeline to process the packets
