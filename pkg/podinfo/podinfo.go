@@ -46,7 +46,10 @@ func (p *InformerProvider) getPodByIP(podIP string) (*v1.Pod, bool) {
 		if podKey, ok := resolver.LookupPod(podIP); ok {
 			obj, exists, err := p.podIndexer.GetByKey(podKey)
 			if err == nil && exists {
-				return obj.(*v1.Pod), true
+				// Skip terminal pods, their IP may have been reused.
+				if pod := obj.(*v1.Pod); !isTerminalPod(pod) {
+					return pod, true
+				}
 			}
 		}
 	}
@@ -57,7 +60,7 @@ func (p *InformerProvider) getPodByIP(podIP string) (*v1.Pod, bool) {
 	// if not resolver is provided use a linear search
 	for _, obj := range p.podIndexer.List() {
 		pod, ok := obj.(*v1.Pod)
-		if !ok || pod.Spec.HostNetwork || len(pod.Status.PodIP) == 0 {
+		if !ok || pod.Spec.HostNetwork || len(pod.Status.PodIP) == 0 || isTerminalPod(pod) {
 			continue
 		}
 

@@ -30,7 +30,7 @@ func NewInformerResolver(podInformer cache.SharedIndexInformer) (*InformerResolv
 	err := podInformer.AddIndexers(cache.Indexers{
 		PodIPIndex: func(obj interface{}) ([]string, error) {
 			pod, ok := obj.(*v1.Pod)
-			if !ok || pod.Spec.HostNetwork {
+			if !ok || pod.Spec.HostNetwork || isTerminalPod(pod) {
 				return []string{}, nil
 			}
 			ips := make([]string, 0, len(pod.Status.PodIPs))
@@ -47,6 +47,12 @@ func NewInformerResolver(podInformer cache.SharedIndexInformer) (*InformerResolv
 	return &InformerResolver{
 		podIndexer: podInformer.GetIndexer(),
 	}, nil
+}
+
+// isTerminalPod reports whether a pod has reached a terminal phase.
+// Terminal pods may retain stale IPs in status after the addresses are reused.
+func isTerminalPod(pod *v1.Pod) bool {
+	return pod.Status.Phase == v1.PodSucceeded || pod.Status.Phase == v1.PodFailed
 }
 
 // LookupPod implements the Resolver interface using the informer's index.
