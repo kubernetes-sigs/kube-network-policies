@@ -1,6 +1,7 @@
 package podinfo
 
 import (
+	"fmt"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
@@ -235,5 +236,139 @@ func TestInformerResolver_LookupPod_PendingAndSucceededShareIP(t *testing.T) {
 
 	if key, ok := resolver.LookupPod("10.0.0.11"); !ok || key != "ns1/new-pod" {
 		t.Errorf("LookupPod() got %q, %v; want %q, true", key, ok, "ns1/new-pod")
+	}
+}
+
+func deletingPod(pod *v1.Pod) *v1.Pod {
+	now := metav1.Now()
+	pod.DeletionTimestamp = &now
+	return pod
+}
+
+// permutations returns every order of the pods.
+func permutations(pods []*v1.Pod) [][]*v1.Pod {
+	if len(pods) <= 1 {
+		return [][]*v1.Pod{pods}
+	}
+	var result [][]*v1.Pod
+	for i := range pods {
+		rest := append(append([]*v1.Pod{}, pods[:i]...), pods[i+1:]...)
+		for _, permutation := range permutations(rest) {
+			result = append(result, append([]*v1.Pod{pods[i]}, permutation...))
+		}
+	}
+	return result
+}
+
+func TestInformerResolver_LookupPod_PodBeingDeleted(t *testing.T) {
+	for _, ip := range []string{"10.0.0.1", "fd00::1"} {
+		t.Run(ip, func(t *testing.T) {
+			informer, resolver := newTestInformerResolver(t)
+			// The pod may still be using the IP while it terminates.
+			pod := deletingPod(makePod("ns1", "pod1", ip, v1.PodRunning, false))
+			if err := informer.GetIndexer().Add(pod); err != nil {
+				t.Fatalf("Add() failed: %v", err)
+			}
+
+			if key, ok := resolver.LookupPod(ip); !ok || key != "ns1/pod1" {
+				t.Errorf("LookupPod() got %q, %v; want %q, true", key, ok, "ns1/pod1")
+			}
+		})
+	}
+}
+
+func TestInformerResolver_LookupPod_SharedIPPriority(t *testing.T) {
+	tests := []struct {
+		name string
+		pods func(ip string) []*v1.Pod
+		want string
+	}{
+		{
+			// A pod being deleted still shows Running with its IPs after its
+			// sandbox is gone, and the IP may belong to another pod.
+			name: "pending pod over running pod being deleted",
+			pods: func(ip string) []*v1.Pod {
+				return []*v1.Pod{
+					deletingPod(makePod("ns1", "old-pod", ip, v1.PodRunning, false)),
+					makePod("ns1", "new-pod", ip, v1.PodPending, false),
+				}
+			},
+			want: "ns1/new-pod",
+		},
+		{
+			name: "running pod over pending pod",
+			pods: func(ip string) []*v1.Pod {
+				return []*v1.Pod{
+					makePod("ns1", "running-pod", ip, v1.PodRunning, false),
+					makePod("ns1", "pending-pod", ip, v1.PodPending, false),
+				}
+			},
+			want: "ns1/running-pod",
+		},
+		{
+			name: "running pod over running pod being deleted",
+			pods: func(ip string) []*v1.Pod {
+				return []*v1.Pod{
+					deletingPod(makePod("ns1", "old-pod", ip, v1.PodRunning, false)),
+					makePod("ns1", "new-pod", ip, v1.PodRunning, false),
+				}
+			},
+			want: "ns1/new-pod",
+		},
+		{
+			name: "running pod over pending pod, both being deleted",
+			pods: func(ip string) []*v1.Pod {
+				return []*v1.Pod{
+					deletingPod(makePod("ns1", "running-pod", ip, v1.PodRunning, false)),
+					deletingPod(makePod("ns1", "pending-pod", ip, v1.PodPending, false)),
+				}
+			},
+			want: "ns1/running-pod",
+		},
+		{
+			name: "pending pod over running pod being deleted and terminal pod",
+			pods: func(ip string) []*v1.Pod {
+				return []*v1.Pod{
+					makePod("ns1", "finished-pod", ip, v1.PodSucceeded, false),
+					deletingPod(makePod("ns1", "old-pod", ip, v1.PodRunning, false)),
+					makePod("ns1", "new-pod", ip, v1.PodPending, false),
+				}
+			},
+			want: "ns1/new-pod",
+		},
+		{
+			name: "running pod being deleted over terminal pods",
+			pods: func(ip string) []*v1.Pod {
+				return []*v1.Pod{
+					makePod("ns1", "succeeded-pod", ip, v1.PodSucceeded, false),
+					makePod("ns1", "failed-pod", ip, v1.PodFailed, false),
+					deletingPod(makePod("ns1", "old-pod", ip, v1.PodRunning, false)),
+				}
+			},
+			want: "ns1/old-pod",
+		},
+	}
+
+	for _, tt := range tests {
+		for _, ip := range []string{"10.0.0.1", "fd00::1"} {
+			for i, pods := range permutations(tt.pods(ip)) {
+				t.Run(fmt.Sprintf("%s/%s/order %d", tt.name, ip, i), func(t *testing.T) {
+					informer, resolver := newTestInformerResolver(t)
+					for _, pod := range pods {
+						if err := informer.GetIndexer().Add(pod); err != nil {
+							t.Fatalf("Add() failed: %v", err)
+						}
+					}
+
+					// ByIndex returns the pods in map order, look up several
+					// times so the result can not depend on it.
+					for range 10 {
+						if key, ok := resolver.LookupPod(ip); !ok || key != tt.want {
+							t.Fatalf("LookupPod() got %q, %v; want %q, true", key, ok, tt.want)
+						}
+					}
+				})
+			}
+		}
 	}
 }

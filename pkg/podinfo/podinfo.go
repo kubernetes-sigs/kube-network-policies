@@ -5,6 +5,7 @@ import (
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
@@ -46,10 +47,15 @@ func (p *InformerProvider) getPodByIP(podIP string) (*v1.Pod, bool) {
 		if podKey, ok := resolver.LookupPod(podIP); ok {
 			obj, exists, err := p.podIndexer.GetByKey(podKey)
 			if err == nil && exists {
-				// Skip terminal pods, their IP may have been reused.
-				if pod := obj.(*v1.Pod); !isTerminalPod(pod) {
+				pod := obj.(*v1.Pod)
+				// The informer index already excludes terminal pods, but other
+				// resolvers, like NRI, may return a pod that the API server has
+				// already marked as Succeeded or Failed, and its IP may have been
+				// reused.
+				if !isTerminalPod(pod) {
 					return pod, true
 				}
+				klog.V(4).Infof("Skipping terminal pod %s/%s with phase %s for IP %s", pod.Namespace, pod.Name, pod.Status.Phase, podIP)
 			}
 		}
 	}

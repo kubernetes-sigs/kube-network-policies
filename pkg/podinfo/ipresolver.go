@@ -61,19 +61,35 @@ func (r *InformerResolver) LookupPod(ip string) (string, bool) {
 	if err != nil || len(objs) == 0 {
 		return "", false
 	}
-	// Prefer a running pod if multiple pods share the same IP.
+	// If multiple pods share the same IP, prefer a pod that is not being
+	// deleted, then a running pod. A pod being deleted still shows Running
+	// with its IPs after its sandbox is gone, and by then the IP may belong
+	// to another pod.
+	var found *v1.Pod
 	for _, obj := range objs {
-		if pod, ok := obj.(*v1.Pod); ok && pod.Status.Phase == v1.PodRunning {
-			key, err := cache.MetaNamespaceKeyFunc(pod)
-			if err == nil {
-				return key, true
-			}
+		if pod, ok := obj.(*v1.Pod); ok && (found == nil || podPriority(pod) > podPriority(found)) {
+			found = pod
 		}
 	}
-	// Fallback to the first pod found.
-	key, err := cache.MetaNamespaceKeyFunc(objs[0])
+	if found == nil {
+		return "", false
+	}
+	key, err := cache.MetaNamespaceKeyFunc(found)
 	if err != nil {
 		return "", false
 	}
 	return key, true
+}
+
+// podPriority ranks the pods that share an IP, not being deleted ranks above
+// running.
+func podPriority(pod *v1.Pod) int {
+	priority := 0
+	if pod.DeletionTimestamp == nil {
+		priority += 2
+	}
+	if pod.Status.Phase == v1.PodRunning {
+		priority++
+	}
+	return priority
 }
