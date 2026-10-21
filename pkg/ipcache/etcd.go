@@ -236,6 +236,55 @@ func (s *EtcdStore) Delete(ip string) error {
 	return err
 }
 
+// DeleteIfOwner deletes the entry of the IP if it belongs to the Pod, see
+// api.SamePod. The entry may be written for another Pod after it is read, so
+// it is only deleted if it was not modified since then.
+func (s *EtcdStore) DeleteIfOwner(ip string, owner *api.PodInfo) error {
+	klog.V(7).Infof("DeleteIfOwner(%s)", ip)
+	key, err := ipToKey(ip)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutOperation)
+	defer cancel()
+
+	for {
+		resp, err := s.client.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		if len(resp.Kvs) == 0 {
+			return nil
+		}
+		var stored api.PodInfo
+		if err := proto.Unmarshal(resp.Kvs[0].Value, &stored); err != nil {
+			return fmt.Errorf("failed to unmarshal the entry of IP %s: %w", ip, err)
+		}
+		if !api.SamePod(&stored, owner) {
+			klog.V(2).Infof("Keeping the entry of IP %s, it belongs to Pod %s/%s", ip, stored.GetNamespace().GetName(), stored.GetName())
+			return nil
+		}
+		deleted, err := s.deleteIfUnchanged(ctx, key, resp.Kvs[0].ModRevision)
+		if err != nil || deleted {
+			return err
+		}
+		// The entry was modified after it was read, check the new entry.
+	}
+}
+
+// deleteIfUnchanged deletes the key if its last modification is the revision.
+func (s *EtcdStore) deleteIfUnchanged(ctx context.Context, key string, modRevision int64) (bool, error) {
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(key), "=", modRevision)).
+		Then(clientv3.OpDelete(key)).
+		Commit()
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
 func (s *EtcdStore) List() ([]*api.PodInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutList)
 	defer cancel()

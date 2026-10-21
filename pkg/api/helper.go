@@ -39,5 +39,16 @@ func NewPodInfo(pod *v1.Pod, nsLabels map[string]string, nodeLabels map[string]s
 		},
 		ClusterId:   clusterID,
 		LastUpdated: time.Now().Unix(), // TODO: maybe get it from the managedFields metadata
+		Uid:         string(pod.UID),
 	}
+}
+
+// SamePod returns true if both records belong to the same Pod. The UIDs are
+// compared if both records have one, the records written before the UID was
+// added only have the namespace and name.
+func SamePod(a, b *PodInfo) bool {
+	if a.GetUid() != "" && b.GetUid() != "" {
+		return a.GetUid() == b.GetUid()
+	}
+	return a.GetNamespace().GetName() == b.GetNamespace().GetName() && a.GetName() == b.GetName()
 }
