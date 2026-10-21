@@ -5,6 +5,7 @@ package networkpolicy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 
+	"github.com/prometheus/client_golang/prometheus"
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,6 +22,8 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/component-base/logs"
+	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/ktesting"
 )
 
 // FuncProvider is a test helper that wraps a function to satisfy the
@@ -425,6 +429,335 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 
 			if allow != tt.wantAllow {
 				t.Errorf("Final verdict mismatch: got allow=%v, want allow=%v", allow, tt.wantAllow)
+			}
+		})
+	}
+}
+
+// --- Unresolved Pod IP Tests ---
+
+const unresolvedPodIPsMetric = "kube_network_policies_unresolved_pod_ips_total"
+
+// unresolvedCount returns the value of the counter of the direction in the
+// default Prometheus registry, 0 if it is not registered. Tests compare the
+// values before and after a packet, since the counter is global.
+func unresolvedCount(t *testing.T, direction string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather() failed: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != unresolvedPodIPsMetric {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "direction" && label.GetValue() == direction {
+					return metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// lookupProvider returns the PodInfo of the IPs in pods, an IP mapped to nil
+// is found without PodInfo. It counts the lookups of each IP.
+type lookupProvider struct {
+	pods    map[string]*api.PodInfo
+	lookups map[string]int
+}
+
+func (p *lookupProvider) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {
+	p.lookups[ip]++
+	podInfo, ok := p.pods[ip]
+	return podInfo, ok
+}
+
+// lookup is what the provider returns for an endpoint of the packet.
+type lookup string
+
+const (
+	podFound    lookup = "Pod"
+	notFound    lookup = "not found"
+	foundNoInfo lookup = "found without PodInfo"
+)
+
+// newLookupProvider returns a provider with the results of the source and
+// destination IPs of the packet.
+func newLookupProvider(packet *network.Packet, src, dst lookup) *lookupProvider {
+	provider := &lookupProvider{pods: map[string]*api.PodInfo{}, lookups: map[string]int{}}
+	for ip, result := range map[string]lookup{packet.SrcIP.String(): src, packet.DstIP.String(): dst} {
+		switch result {
+		case podFound:
+			provider.pods[ip] = &api.PodInfo{Name: "pod-" + ip, Namespace: &api.Namespace{Name: "ns1"}}
+		case foundNoInfo:
+			provider.pods[ip] = nil
+		}
+	}
+	return provider
+}
+
+func testPackets() map[string]*network.Packet {
+	return map[string]*network.Packet{
+		"IPv4": {ID: 42, Family: v1.IPv4Protocol, SrcIP: net.ParseIP("10.0.1.10"), DstIP: net.ParseIP("10.0.2.20"), Proto: v1.ProtocolTCP, SrcPort: 40000, DstPort: 80},
+		"IPv6": {ID: 43, Family: v1.IPv6Protocol, SrcIP: net.ParseIP("fd00::1:10"), DstIP: net.ParseIP("fd00::2:20"), Proto: v1.ProtocolTCP, SrcPort: 40000, DstPort: 80},
+	}
+}
+
+func TestPolicyEngine_UnresolvedPodIPs(t *testing.T) {
+	passer := func(name string) api.PolicyEvaluator { return newMockEvaluator(name, api.VerdictNext, nil) }
+	tests := []struct {
+		name            string
+		src, dst        lookup
+		evaluators      []api.PolicyEvaluator
+		wantAllow       bool
+		wantErr         bool
+		wantSource      float64
+		wantDestination float64
+	}{
+		{
+			name:       "both endpoints resolve",
+			src:        podFound,
+			dst:        podFound,
+			evaluators: []api.PolicyEvaluator{passer("passer")},
+			wantAllow:  true,
+		},
+		{
+			name:       "source unresolved",
+			src:        notFound,
+			dst:        podFound,
+			evaluators: []api.PolicyEvaluator{passer("passer")},
+			wantAllow:  true,
+			wantSource: 1,
+		},
+		{
+			name:            "destination unresolved",
+			src:             podFound,
+			dst:             notFound,
+			evaluators:      []api.PolicyEvaluator{passer("passer")},
+			wantAllow:       true,
+			wantDestination: 1,
+		},
+		{
+			name:            "both endpoints unresolved",
+			src:             notFound,
+			dst:             notFound,
+			evaluators:      []api.PolicyEvaluator{passer("passer")},
+			wantAllow:       true,
+			wantSource:      1,
+			wantDestination: 1,
+		},
+		{
+			name:            "provider finds the IPs without PodInfo",
+			src:             foundNoInfo,
+			dst:             foundNoInfo,
+			evaluators:      []api.PolicyEvaluator{passer("passer")},
+			wantAllow:       true,
+			wantSource:      1,
+			wantDestination: 1,
+		},
+		{
+			name:       "provider finds the source IP without PodInfo",
+			src:        foundNoInfo,
+			dst:        podFound,
+			evaluators: []api.PolicyEvaluator{passer("passer")},
+			wantAllow:  true,
+			wantSource: 1,
+		},
+		{
+			name:            "early egress denial",
+			src:             notFound,
+			dst:             notFound,
+			evaluators:      []api.PolicyEvaluator{newMockEvaluator("denier", api.VerdictDeny, nil)},
+			wantAllow:       false,
+			wantSource:      1,
+			wantDestination: 1,
+		},
+		{
+			name:            "egress evaluation error",
+			src:             notFound,
+			dst:             notFound,
+			evaluators:      []api.PolicyEvaluator{newMockEvaluator("error-producer", api.VerdictNext, errors.New("evaluation failed"))},
+			wantAllow:       false,
+			wantErr:         true,
+			wantSource:      1,
+			wantDestination: 1,
+		},
+		{
+			name:            "multiple evaluators",
+			src:             notFound,
+			dst:             notFound,
+			evaluators:      []api.PolicyEvaluator{passer("passer-1"), passer("passer-2"), passer("passer-3")},
+			wantAllow:       true,
+			wantSource:      1,
+			wantDestination: 1,
+		},
+	}
+	for _, tt := range tests {
+		for family, packet := range testPackets() {
+			t.Run(tt.name+"/"+family, func(t *testing.T) {
+				provider := newLookupProvider(packet, tt.src, tt.dst)
+				engine := NewPolicyEngine(provider, tt.evaluators)
+				source, destination := unresolvedCount(t, "source"), unresolvedCount(t, "destination")
+
+				allow, err := engine.EvaluatePacket(context.Background(), packet)
+
+				if allow != tt.wantAllow || (err != nil) != tt.wantErr {
+					t.Errorf("EvaluatePacket() = %v, %v; want %v with error %v", allow, err, tt.wantAllow, tt.wantErr)
+				}
+				if got := unresolvedCount(t, "source") - source; got != tt.wantSource {
+					t.Errorf("source counter increased by %v, want %v", got, tt.wantSource)
+				}
+				if got := unresolvedCount(t, "destination") - destination; got != tt.wantDestination {
+					t.Errorf("destination counter increased by %v, want %v", got, tt.wantDestination)
+				}
+				// Each endpoint is looked up once.
+				for _, ip := range []string{packet.SrcIP.String(), packet.DstIP.String()} {
+					if provider.lookups[ip] != 1 {
+						t.Errorf("%s looked up %d times, want 1", ip, provider.lookups[ip])
+					}
+				}
+			})
+		}
+	}
+}
+
+// The verdict only depends on the evaluators, and they receive what the
+// provider returned, nil for an unresolved endpoint.
+func TestPolicyEngine_UnresolvedPodIPsVerdict(t *testing.T) {
+	evaluators := []struct {
+		name      string
+		evaluator api.PolicyEvaluator
+		wantAllow bool
+		wantErr   bool
+	}{
+		{name: "accept", evaluator: newMockEvaluator("acceptor", api.VerdictAccept, nil), wantAllow: true},
+		{name: "deny", evaluator: newMockEvaluator("denier", api.VerdictDeny, nil), wantAllow: false},
+		{name: "next", evaluator: newMockEvaluator("passer", api.VerdictNext, nil), wantAllow: true},
+		{
+			name: "deny ingress",
+			evaluator: &mockPolicyEvaluator{
+				name: "ingress-denier",
+				evaluateIngress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+					return api.VerdictDeny, nil
+				},
+			},
+			wantAllow: false,
+		},
+		{name: "error", evaluator: newMockEvaluator("error-producer", api.VerdictNext, errors.New("evaluation failed")), wantAllow: false, wantErr: true},
+	}
+	lookups := [][2]lookup{
+		{podFound, podFound},
+		{notFound, podFound},
+		{podFound, notFound},
+		{notFound, notFound},
+		{foundNoInfo, foundNoInfo},
+	}
+	for _, e := range evaluators {
+		for _, l := range lookups {
+			for family, packet := range testPackets() {
+				t.Run(e.name+"/"+string(l[0])+" to "+string(l[1])+"/"+family, func(t *testing.T) {
+					provider := newLookupProvider(packet, l[0], l[1])
+					wantSrc, wantDst := provider.pods[packet.SrcIP.String()], provider.pods[packet.DstIP.String()]
+					var seen []string
+					recorder := &mockPolicyEvaluator{name: "recorder"}
+					record := func(_ context.Context, _ *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
+						if srcPod != wantSrc || dstPod != wantDst {
+							seen = append(seen, srcPod.GetName()+" to "+dstPod.GetName())
+						}
+						return api.VerdictNext, nil
+					}
+					recorder.evaluateEgress, recorder.evaluateIngress = record, record
+					engine := NewPolicyEngine(provider, []api.PolicyEvaluator{recorder, e.evaluator})
+
+					allow, err := engine.EvaluatePacket(context.Background(), packet)
+
+					if allow != e.wantAllow || (err != nil) != e.wantErr {
+						t.Errorf("EvaluatePacket() = %v, %v; want %v with error %v", allow, err, e.wantAllow, e.wantErr)
+					}
+					if len(seen) > 0 {
+						t.Errorf("evaluators received %v, want what the provider returned", seen)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPolicyEngine_UnresolvedPodIPsMetric(t *testing.T) {
+	// Creating engines again does not register the metric again.
+	for range 3 {
+		NewPolicyEngine(&FuncProvider{}, nil)
+	}
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather() failed: %v", err)
+	}
+	directions := map[string]bool{}
+	for _, family := range families {
+		if family.GetName() != unresolvedPodIPsMetric {
+			continue
+		}
+		if family.GetType().String() != "COUNTER" || family.GetHelp() == "" {
+			t.Errorf("%s is a %v with help %q, want a counter with help", unresolvedPodIPsMetric, family.GetType(), family.GetHelp())
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() != "direction" {
+					t.Errorf("%s has label %s, want only direction", unresolvedPodIPsMetric, label.GetName())
+				}
+				directions[label.GetValue()] = true
+			}
+		}
+	}
+	// Both series are exported before any packet is unresolved.
+	if len(directions) != 2 || !directions["source"] || !directions["destination"] {
+		t.Errorf("%s directions = %v, want source and destination", unresolvedPodIPsMetric, directions)
+	}
+}
+
+func TestPolicyEngine_UnresolvedPodIPsLog(t *testing.T) {
+	tests := []struct {
+		name     string
+		src, dst lookup
+		want     []string // endpoint and IP of each log entry
+	}{
+		{name: "both endpoints resolve", src: podFound, dst: podFound},
+		{name: "source unresolved", src: notFound, dst: podFound, want: []string{"source 10.0.1.10"}},
+		{name: "destination found without PodInfo", src: podFound, dst: foundNoInfo, want: []string{"destination 10.0.2.20"}},
+		{name: "both endpoints unresolved", src: notFound, dst: notFound, want: []string{"source 10.0.1.10", "destination 10.0.2.20"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			packet := testPackets()["IPv4"]
+			logger := ktesting.NewLogger(t, ktesting.NewConfig(ktesting.Verbosity(2), ktesting.BufferLogs(true)))
+			ctx := klog.NewContext(context.Background(), logger)
+			engine := NewPolicyEngine(newLookupProvider(packet, tt.src, tt.dst), nil)
+
+			if _, err := engine.EvaluatePacket(ctx, packet); err != nil {
+				t.Fatalf("EvaluatePacket() failed: %v", err)
+			}
+
+			var got []string
+			for _, entry := range logger.GetSink().(ktesting.Underlier).GetBuffer().Data() {
+				if entry.Message != "Unresolved Pod IP, evaluating it as external" {
+					continue
+				}
+				values := map[string]any{}
+				kvs := append(append([]any{}, entry.WithKVList...), entry.ParameterKVList...)
+				for i := 0; i+1 < len(kvs); i += 2 {
+					values[kvs[i].(string)] = kvs[i+1]
+				}
+				if entry.Verbosity != 2 || values["id"] != packet.ID {
+					t.Errorf("log entry with verbosity %d and id %v, want verbosity 2 and id %d", entry.Verbosity, values["id"], packet.ID)
+				}
+				got = append(got, fmt.Sprintf("%v %v", values["endpoint"], values["ip"]))
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Errorf("unresolved Pod IP log entries = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -31,6 +31,7 @@ type PolicyEngine struct {
 
 // NewPolicyEngine creates a new engine with a predefined evaluation order.
 func NewPolicyEngine(podInfoProvider api.PodInfoProvider, evaluators []api.PolicyEvaluator) *PolicyEngine {
+	registerMetrics()
 	return &PolicyEngine{
 		podInfoProvider: podInfoProvider,
 		evaluators:      evaluators,
@@ -44,8 +45,21 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 
 	// Only run podInfoProvider once per packet to guarantee consistency
 	// across the pipeline and for efficiency.
-	srcPod, _ := e.podInfoProvider.GetPodInfoByIP(packet.SrcIP.String())
-	dstPod, _ := e.podInfoProvider.GetPodInfoByIP(packet.DstIP.String())
+	srcIP, dstIP := packet.SrcIP.String(), packet.DstIP.String()
+	srcPod, _ := e.podInfoProvider.GetPodInfoByIP(srcIP)
+	dstPod, _ := e.podInfoProvider.GetPodInfoByIP(dstIP)
+
+	// The evaluators treat an IP without PodInfo as external, but the Pod
+	// information may be missing or delayed. Count them before evaluating, so
+	// an early verdict does not hide them.
+	if srcPod == nil {
+		unresolvedSourceIPs.Inc()
+		logger.V(2).Info("Unresolved Pod IP, evaluating it as external", "endpoint", "source", "ip", srcIP)
+	}
+	if dstPod == nil {
+		unresolvedDestinationIPs.Inc()
+		logger.V(2).Info("Unresolved Pod IP, evaluating it as external", "endpoint", "destination", "ip", dstIP)
+	}
 
 	// 1. Evaluate Egress
 	verdict, err := e.runEgressPipeline(ctx, packet, srcPod, dstPod)

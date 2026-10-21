@@ -13,9 +13,10 @@ Pass the following flags to the controller binary (or set them in the DaemonSet 
 --logging-format=json -v=2
 ```
 
-At `-v=2`, two things happen:
+At `-v=2`, three things happen:
 - The `LoggingPolicy` evaluator is activated and emits one log entry per packet with its 5-tuple and the source/destination pod names.
 - The policy engine emits a verdict entry for each packet indicating whether it was accepted or denied.
+- The policy engine emits an entry for each source or destination IP that does not resolve to a Pod, see [Unresolved Pod IPs](#unresolved-pod-ips).
 
 Without `-v=2`, the `LoggingPolicy` evaluator is not added to the pipeline and packet-level logs are not produced.
 
@@ -49,7 +50,7 @@ Emitted once per direction (Egress then Ingress) for each packet:
 Key fields:
 - `id`: packet ID; links this entry to the corresponding verdict entry
 - `direction`: `"Egress"` or `"Ingress"`
-- `srcPod` / `dstPod`: `"namespace/name"`, or `"external"` for traffic outside the cluster
+- `srcPod` / `dstPod`: `"namespace/name"`, or `"external"` if the IP does not resolve to a Pod, see [Unresolved Pod IPs](#unresolved-pod-ips)
 - `packet`: the 5-tuple without the raw payload (payload is omitted in JSON mode)
 
 ### Verdict entry
@@ -72,6 +73,45 @@ Possible `msg` values:
 - `"Packet accepted by policy"`
 
 The `id` field matches the packet evaluation entries above.
+
+### Unresolved Pod IP entry
+
+Emitted before the packet is evaluated, once for the source and once for the destination if its IP does not resolve to a Pod:
+
+```json
+{
+  "ts": 1792604760324.3484,
+  "caller": "networkpolicy/engine.go:61",
+  "msg": "Unresolved Pod IP, evaluating it as external",
+  "id": 9,
+  "v": 2,
+  "endpoint": "destination",
+  "ip": "203.0.113.7"
+}
+```
+
+Key fields:
+- `id`: packet ID; links this entry to the packet evaluation and verdict entries
+- `endpoint`: `"source"` or `"destination"`
+- `ip`: the IP address that does not resolve to a Pod
+
+## Unresolved Pod IPs
+
+The policy engine looks up the Pod of the source and destination IPs of each packet. If an IP does not resolve to a Pod, the policy engine evaluates that endpoint as external: no policies select it as the Pod they apply to, and as a peer it can only match rules based on IP addresses, not on Pod or namespace selectors.
+
+This does not prove that the IP is external. Node IPs and the IPs of host network Pods never resolve to a Pod, and an IP can also be unresolved because the Pod information is missing or delayed, for example for a Pod that has just started and is not yet known to the agent.
+
+The `kube_network_policies_unresolved_pod_ips_total` counter, exposed on the `/metrics` endpoint, counts the unresolved endpoints of the packets evaluated by the policy engine, with the label:
+
+- `direction`: `"source"` or `"destination"`
+
+It counts packets, not distinct IP addresses: a packet with both IPs unresolved increases both series once, and every packet of a connection that the policy engine evaluates is counted. The counter does not depend on `-v`. Use the V(2) log entries above to find which IPs are unresolved.
+
+For example, the rate of unresolved destinations per agent:
+
+```
+sum by (instance) (rate(kube_network_policies_unresolved_pod_ips_total{direction="destination"}[5m]))
+```
 
 ## Text vs JSON format
 
@@ -141,6 +181,12 @@ kubectl logs ... | jq -c 'select(.srcPod == "default/frontend")'
 
 ```sh
 kubectl logs ... | jq -c 'select(.dstPod == "external")'
+```
+
+### Show the IPs that do not resolve to a Pod
+
+```sh
+kubectl logs ... | jq -r 'select(.msg == "Unresolved Pod IP, evaluating it as external") | "\(.endpoint) \(.ip)"' | sort | uniq -c | sort -rn
 ```
 
 ### Count denials per direction
