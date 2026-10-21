@@ -340,6 +340,7 @@ func (p *NRIResolver) getPodInfo(pod *nriapi.PodSandbox) *api.PodInfo {
 			Name: p.nodeName,
 		},
 		LastUpdated: time.Now().Unix(),
+		Uid:         pod.GetUid(),
 	}
 	if p.nsLister != nil {
 		ns, err := p.nsLister.Get(pod.GetNamespace())

@@ -15,6 +15,7 @@ import (
 	"github.com/containerd/nri/pkg/stub"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 )
 
@@ -1046,4 +1047,138 @@ func TestNRIResolver_LookupPodConsistency(t *testing.T) {
 			t.Fatalf("LookupPod() = %+v with PodInfo of %s, want the identity and PodInfo of the same sandbox", identity, identity.PodInfo.Name)
 		}
 	}
+}
+
+// --- IP cache tests ---
+
+func TestNRIResolver_PodInfoUID(t *testing.T) {
+	sandboxA := makeSandbox("sandbox-a", "uid-a", "ns1", "pod-a", "10.0.0.1", "fd00::1")
+	sandboxC := makeSandbox("sandbox-c", "", "ns1", "pod-c", "10.0.0.3", "fd00::3")
+	wantUIDs := map[string]string{"10.0.0.1": "uid-a", "fd00::1": "uid-a", "10.0.0.3": "", "fd00::3": ""}
+
+	for name, register := range map[string]func(*testing.T, *NRIResolver, ...*nriapi.PodSandbox){
+		"RunPodSandbox": runSandboxes,
+		"Synchronize":   synchronize,
+	} {
+		t.Run(name, func(t *testing.T) {
+			resolver := newTestResolver()
+			register(t, resolver, sandboxA, sandboxC)
+
+			for ip, want := range wantUIDs {
+				podInfo, ok := resolver.GetPodInfoByIP(ip)
+				if !ok || podInfo.GetUid() != want {
+					t.Errorf("GetPodInfoByIP(%s) UID = %q, %v; want %q", ip, podInfo.GetUid(), ok, want)
+				}
+				identity, ok := resolver.LookupPod(ip)
+				if !ok || identity.PodInfo.GetUid() != string(identity.UID) {
+					t.Errorf("LookupPod(%s) PodInfo UID = %q, want the UID %q of the identity", ip, identity.PodInfo.GetUid(), identity.UID)
+				}
+			}
+		})
+	}
+}
+
+// fakeIPCache returns the entries of the IPs like the IP cache client.
+type fakeIPCache map[string]*api.PodInfo
+
+func (c fakeIPCache) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {
+	podInfo, ok := c[ip]
+	return podInfo, ok
+}
+
+// ipCacheEntry is the IP cache entry of a Pod, it has a container port that
+// NRI does not know about.
+func ipCacheEntry(name, uid string) *api.PodInfo {
+	return &api.PodInfo{
+		Name:           name,
+		Uid:            uid,
+		Labels:         map[string]string{"app": name},
+		ContainerPorts: []*api.ContainerPort{{Name: "http", Port: 80, Protocol: "TCP"}},
+		Namespace:      &api.Namespace{Name: "ns1", Labels: map[string]string{"team": "a"}},
+	}
+}
+
+// assertRecord checks the Pod that ip resolves to and where the record comes
+// from, the sandbox of an NRI record or the IP cache.
+func assertRecord(t *testing.T, provider api.PodInfoProvider, ip, want string) {
+	t.Helper()
+	got := ""
+	if podInfo, ok := provider.GetPodInfoByIP(ip); ok {
+		source := "cache"
+		if id, ok := podInfo.GetLabels()[sandboxIDLabel]; ok {
+			source = id
+		}
+		got = fmt.Sprintf("%s/%s %s from %s with %d ports", podInfo.GetNamespace().GetName(), podInfo.GetName(), podInfo.GetUid(), source, len(podInfo.GetContainerPorts()))
+	}
+	if got != want {
+		t.Errorf("GetPodInfoByIP(%s) = %q, want %q", ip, got, want)
+	}
+}
+
+// The iptracker binary resolves the IPs with NRI and the IP cache. NRI decides
+// which local Pod owns an IP, the IP cache has the details of that Pod only if
+// its entry has the same UID.
+func TestNRIResolver_WithIPCache(t *testing.T) {
+	ips := []string{"10.0.0.1", "fd00::1"}
+	sandboxA := makeSandbox("sandbox-a", "uid-a", "ns1", "pod-a", ips...)
+	sandboxB := makeSandbox("sandbox-b", "uid-b", "ns1", "pod-b", ips...)
+
+	t.Run("new pod with the IPs of a previous pod", func(t *testing.T) {
+		resolver := newTestResolver()
+		runSandboxes(t, resolver, sandboxA)
+		removeSandbox(t, resolver, idOnly(sandboxA))
+		runSandboxes(t, resolver, sandboxB)
+		cache := fakeIPCache{}
+		for _, ip := range ips {
+			cache[ip] = ipCacheEntry("pod-a", "uid-a")
+		}
+		provider := podinfo.NewFallbackPodInfoProvider(cache, resolver)
+
+		for _, ip := range ips {
+			assertRecord(t, provider, ip, "ns1/pod-b uid-b from sandbox-b with 0 ports")
+		}
+
+		// kube-ip-tracker writes the entries of the new pod.
+		for _, ip := range ips {
+			cache[ip] = ipCacheEntry("pod-b", "uid-b")
+		}
+		for _, ip := range ips {
+			assertRecord(t, provider, ip, "ns1/pod-b uid-b from cache with 1 ports")
+		}
+	})
+
+	t.Run("new pod with the same name", func(t *testing.T) {
+		resolver := newTestResolver()
+		runSandboxes(t, resolver, makeSandbox("sandbox-2", "uid-2", "ns1", "web-0", ips...))
+		cache := fakeIPCache{}
+		for _, ip := range ips {
+			cache[ip] = ipCacheEntry("web-0", "uid-1")
+		}
+		provider := podinfo.NewFallbackPodInfoProvider(cache, resolver)
+
+		for _, ip := range ips {
+			assertRecord(t, provider, ip, "ns1/web-0 uid-2 from sandbox-2 with 0 ports")
+		}
+	})
+
+	t.Run("remote pod", func(t *testing.T) {
+		resolver := newTestResolver()
+		runSandboxes(t, resolver, sandboxA)
+		cache := fakeIPCache{"10.0.1.1": ipCacheEntry("pod-r", "uid-r"), "fd00:1::1": ipCacheEntry("pod-r", "uid-r")}
+		provider := podinfo.NewFallbackPodInfoProvider(cache, resolver)
+
+		for _, ip := range []string{"10.0.1.1", "fd00:1::1"} {
+			assertRecord(t, provider, ip, "ns1/pod-r uid-r from cache with 1 ports")
+		}
+	})
+
+	t.Run("nil resolver", func(t *testing.T) {
+		defer failOnPanic(t)
+		var resolver *NRIResolver
+		cache := fakeIPCache{"10.0.0.1": ipCacheEntry("pod-a", "uid-a")}
+		provider := podinfo.NewFallbackPodInfoProvider(cache, resolver)
+
+		assertRecord(t, provider, "10.0.0.1", "ns1/pod-a uid-a from cache with 1 ports")
+		assertRecord(t, provider, "10.0.0.2", "")
+	})
 }
