@@ -12,6 +12,7 @@ import (
 	"github.com/containerd/nri/pkg/stub"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -21,11 +22,14 @@ import (
 )
 
 var _ podinfo.IPResolver = &NRIResolver{}
+var _ podinfo.FinishedPodReleaser = &NRIResolver{}
 var _ api.PodInfoProvider = &NRIResolver{}
 var _ stub.StopPodInterface = &NRIResolver{}
 
 // sandboxRecord is what the resolver knows about a sandbox reported by the runtime.
 type sandboxRecord struct {
+	// uid is the UID of the pod, empty if the runtime does not report it.
+	uid     types.UID
 	podInfo *api.PodInfo
 	// ips are the IPs claimed by the sandbox, some of them may be owned by
 	// another sandbox now.
@@ -115,13 +119,54 @@ func NewNRIResolver(ctx context.Context, nodeName string, namespaceInformer core
 	return p, nil
 }
 
-// LookupPod implements the Resolver interface using the NRI plugin.
-func (p *NRIResolver) LookupPod(ip string) (string, bool) {
-	podInfo, found := p.GetPodInfoByIP(ip)
-	if !found {
-		return "", false
+// LookupPod implements the Resolver interface using the NRI plugin. The
+// identity and the PodInfo come from the same sandbox.
+func (p *NRIResolver) LookupPod(ip string) (podinfo.PodIdentity, bool) {
+	// A nil resolver has no cache, it is returned when the NRI plugin can not be created.
+	if p == nil {
+		return podinfo.PodIdentity{}, false
 	}
-	return podInfo.Namespace.Name + "/" + podInfo.Name, true
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	id, found := p.ipOwners[ip]
+	if !found {
+		return podinfo.PodIdentity{}, false
+	}
+	sandbox, found := p.sandboxes[id]
+	if !found {
+		return podinfo.PodIdentity{}, false
+	}
+	return podinfo.PodIdentity{
+		Namespace: sandbox.podInfo.Namespace.Name,
+		Name:      sandbox.podInfo.Name,
+		UID:       sandbox.uid,
+		SandboxID: id,
+		PodInfo:   sandbox.podInfo,
+	}, true
+}
+
+// ReleaseFinishedPod implements the FinishedPodReleaser interface. The sandbox
+// that owns the IP is released only if it is still the sandbox that was looked
+// up, the IP may have been assigned to another sandbox since then, even of the
+// same pod.
+func (p *NRIResolver) ReleaseFinishedPod(ip string, identity podinfo.PodIdentity) {
+	if p == nil || identity.UID == "" || identity.SandboxID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	id := identity.SandboxID
+	if p.ipOwners[ip] != id {
+		return
+	}
+	if sandbox, found := p.sandboxes[id]; !found || sandbox.uid != identity.UID {
+		return
+	}
+	klog.V(2).Infof("Releasing sandbox=%s of the finished pod with UID %s", id, identity.UID)
+	p.releaseSandbox(id)
+	// The sandbox of a finished pod does not run again, a later snapshot may
+	// still list it until it is removed.
+	p.stopped.Insert(id)
 }
 
 func (p *NRIResolver) Run(ctx context.Context) error {
@@ -170,7 +215,7 @@ func (p *NRIResolver) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, 
 				continue
 			}
 		}
-		running = append(running, &sandboxRecord{podInfo: p.getPodInfo(pod), ips: ips})
+		running = append(running, &sandboxRecord{uid: types.UID(pod.GetUid()), podInfo: p.getPodInfo(pod), ips: ips})
 		runningIDs = append(runningIDs, pod.GetId())
 	}
 
@@ -224,7 +269,7 @@ func (p *NRIResolver) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) e
 	// The sandbox may be registered again with different IPs.
 	p.releaseSandbox(pod.GetId())
 	p.stopped.Delete(pod.GetId())
-	p.sandboxes[pod.GetId()] = &sandboxRecord{podInfo: podInfo, ips: ips}
+	p.sandboxes[pod.GetId()] = &sandboxRecord{uid: types.UID(pod.GetUid()), podInfo: podInfo, ips: ips}
 	// The runtime has just assigned these IPs to the sandbox, so it owns them
 	// even if another sandbox claimed them before.
 	for _, ip := range ips {

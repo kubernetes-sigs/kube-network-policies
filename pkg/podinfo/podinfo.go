@@ -40,27 +40,45 @@ func NewInformerProvider(
 	return provider
 }
 
-// getPodByIP finds a running pod by its IP address using the informer index
-// and falling back to the NRI plugin if available.
-func (p *InformerProvider) getPodByIP(podIP string) (*v1.Pod, bool) {
+// getPodByIP finds the pod that has an IP address. It returns the informer pod
+// if it is the pod that a resolver found, otherwise what the resolver knows
+// about the pod.
+func (p *InformerProvider) getPodByIP(podIP string) (*v1.Pod, *api.PodInfo, bool) {
 	for _, resolver := range p.resolvers {
-		if podKey, ok := resolver.LookupPod(podIP); ok {
-			obj, exists, err := p.podIndexer.GetByKey(podKey)
-			if err == nil && exists {
-				pod := obj.(*v1.Pod)
-				// The informer index already excludes terminal pods, but other
-				// resolvers, like NRI, may return a pod that the API server has
-				// already marked as Succeeded or Failed, and its IP may have been
-				// reused.
-				if !isTerminalPod(pod) {
-					return pod, true
-				}
-				klog.V(4).Infof("Skipping terminal pod %s/%s with phase %s for IP %s", pod.Namespace, pod.Name, pod.Status.Phase, podIP)
+		identity, ok := resolver.LookupPod(podIP)
+		if !ok {
+			continue
+		}
+		var pod *v1.Pod
+		obj, exists, err := p.podIndexer.GetByKey(identity.Namespace + "/" + identity.Name)
+		if err == nil && exists {
+			pod = obj.(*v1.Pod)
+		}
+		// Pod names are reused, StatefulSets for example, so the informer pod
+		// is only the same pod if it has the same UID.
+		if pod != nil && identity.UID != "" && pod.UID == identity.UID {
+			// The informer index already excludes terminal pods, but other
+			// resolvers, like NRI, may return a pod that the API server has
+			// already marked as Succeeded or Failed, and its IP may have been
+			// reused.
+			if !isTerminalPod(pod) {
+				return pod, nil, true
 			}
+			klog.V(4).Infof("Skipping terminal pod %s/%s with phase %s for IP %s", pod.Namespace, pod.Name, pod.Status.Phase, podIP)
+			if releaser, ok := resolver.(FinishedPodReleaser); ok {
+				releaser.ReleaseFinishedPod(podIP, identity)
+			}
+			continue
+		}
+		// The informer does not have the pod yet, or it has another pod with
+		// the same name.
+		if identity.PodInfo != nil {
+			klog.V(4).Infof("Using the resolver information for pod %s/%s with UID %q and IP %s", identity.Namespace, identity.Name, identity.UID, podIP)
+			return nil, identity.PodInfo, true
 		}
 	}
 	if len(p.resolvers) > 0 {
-		return nil, false
+		return nil, nil, false
 	}
 
 	// if not resolver is provided use a linear search
@@ -72,18 +90,21 @@ func (p *InformerProvider) getPodByIP(podIP string) (*v1.Pod, bool) {
 
 		for _, ip := range pod.Status.PodIPs {
 			if ip.IP == podIP {
-				return pod, true
+				return pod, nil, true
 			}
 		}
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 // GetPodInfoByIP implements the Provider interface.
 func (p *InformerProvider) GetPodInfoByIP(podIP string) (*api.PodInfo, bool) {
-	pod, ok := p.getPodByIP(podIP)
+	pod, podInfo, ok := p.getPodByIP(podIP)
 	if !ok {
 		return nil, false
+	}
+	if pod == nil {
+		return podInfo, true
 	}
 
 	var nsLabels, nodeLabels map[string]string

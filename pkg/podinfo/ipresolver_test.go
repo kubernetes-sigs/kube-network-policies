@@ -6,6 +6,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -16,6 +17,7 @@ func makePod(namespace, name, ip string, phase v1.PodPhase, hostNetwork bool) *v
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
+			UID:       types.UID(namespace + "/" + name),
 		},
 		Spec: v1.PodSpec{
 			HostNetwork: hostNetwork,
@@ -37,6 +39,7 @@ func makePodWithIPs(namespace, name string, ips []string, phase v1.PodPhase) *v1
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
+			UID:       types.UID(namespace + "/" + name),
 		},
 		Status: v1.PodStatus{
 			Phase:  phase,
@@ -44,6 +47,15 @@ func makePodWithIPs(namespace, name string, ips []string, phase v1.PodPhase) *v1
 			PodIPs: podIPs,
 		},
 	}
+}
+
+// lookupKey returns the namespace/name of the pod that the resolver finds with the IP.
+func lookupKey(resolver IPResolver, ip string) (string, bool) {
+	identity, ok := resolver.LookupPod(ip)
+	if !ok {
+		return "", false
+	}
+	return identity.Namespace + "/" + identity.Name, true
 }
 
 func newTestInformerResolver(t *testing.T) (cache.SharedIndexInformer, *InformerResolver) {
@@ -177,7 +189,7 @@ func TestInformerResolver_LookupPod(t *testing.T) {
 				informer.GetIndexer().Add(pod)
 			}
 
-			key, ok := resolver.LookupPod(tt.lookupIP)
+			key, ok := lookupKey(resolver, tt.lookupIP)
 			if ok != tt.expectedOk {
 				t.Errorf("LookupPod() ok = %v, want %v", ok, tt.expectedOk)
 			}
@@ -195,7 +207,7 @@ func TestInformerResolver_LookupPod_RunningPodUpdatedToSucceeded(t *testing.T) {
 	if err := informer.GetIndexer().Add(pod); err != nil {
 		t.Fatalf("Add() failed: %v", err)
 	}
-	if key, ok := resolver.LookupPod("10.0.0.10"); !ok || key != "ns1/job-pod" {
+	if key, ok := lookupKey(resolver, "10.0.0.10"); !ok || key != "ns1/job-pod" {
 		t.Fatalf("LookupPod() before update got %q, %v; want %q, true", key, ok, "ns1/job-pod")
 	}
 
@@ -206,7 +218,7 @@ func TestInformerResolver_LookupPod_RunningPodUpdatedToSucceeded(t *testing.T) {
 		t.Fatalf("Update() failed: %v", err)
 	}
 
-	if key, ok := resolver.LookupPod("10.0.0.10"); ok || key != "" {
+	if key, ok := lookupKey(resolver, "10.0.0.10"); ok || key != "" {
 		t.Errorf("LookupPod() after pod succeeded got %q, %v; want %q, false", key, ok, "")
 	}
 }
@@ -234,7 +246,7 @@ func TestInformerResolver_LookupPod_PendingAndSucceededShareIP(t *testing.T) {
 		t.Fatalf("ByIndex() got pods %v, want only [new-pod]", names)
 	}
 
-	if key, ok := resolver.LookupPod("10.0.0.11"); !ok || key != "ns1/new-pod" {
+	if key, ok := lookupKey(resolver, "10.0.0.11"); !ok || key != "ns1/new-pod" {
 		t.Errorf("LookupPod() got %q, %v; want %q, true", key, ok, "ns1/new-pod")
 	}
 }
@@ -270,7 +282,7 @@ func TestInformerResolver_LookupPod_PodBeingDeleted(t *testing.T) {
 				t.Fatalf("Add() failed: %v", err)
 			}
 
-			if key, ok := resolver.LookupPod(ip); !ok || key != "ns1/pod1" {
+			if key, ok := lookupKey(resolver, ip); !ok || key != "ns1/pod1" {
 				t.Errorf("LookupPod() got %q, %v; want %q, true", key, ok, "ns1/pod1")
 			}
 		})
@@ -363,7 +375,7 @@ func TestInformerResolver_LookupPod_SharedIPPriority(t *testing.T) {
 					// ByIndex returns the pods in map order, look up several
 					// times so the result can not depend on it.
 					for range 10 {
-						if key, ok := resolver.LookupPod(ip); !ok || key != tt.want {
+						if key, ok := lookupKey(resolver, ip); !ok || key != tt.want {
 							t.Fatalf("LookupPod() got %q, %v; want %q, true", key, ok, tt.want)
 						}
 					}

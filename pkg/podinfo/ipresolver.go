@@ -2,14 +2,39 @@ package podinfo
 
 import (
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
-// IPResolver defines an interface for resolving an IP address to a pod's key ("namespace/name").
+// PodIdentity identifies the pod that has an IP.
+type PodIdentity struct {
+	Namespace string
+	Name      string
+	// UID is empty if the resolver does not know it.
+	UID types.UID
+	// SandboxID is the sandbox that has the IP, empty if the resolver does not
+	// know the sandboxes.
+	SandboxID string
+	// PodInfo is what the resolver knows about the pod, it is used when the
+	// informer does not have the pod with this UID. It is nil if the resolver
+	// only knows the identity.
+	PodInfo *api.PodInfo
+}
+
+// IPResolver defines an interface for resolving an IP address to a pod.
 type IPResolver interface {
-	// LookupPod abstracts the logic of finding a pod's key given its IP.
-	// It returns the key and true if found, otherwise an empty string and false.
-	LookupPod(ip string) (string, bool)
+	// LookupPod abstracts the logic of finding a pod given its IP.
+	// It returns the pod identity and true if found, otherwise false.
+	LookupPod(ip string) (PodIdentity, bool)
+}
+
+// FinishedPodReleaser is implemented by resolvers that can keep the IPs of a
+// pod after it finished. ReleaseFinishedPod is called with the identity that
+// the resolver found for the IP when the informer shows that the pod with that
+// UID has finished.
+type FinishedPodReleaser interface {
+	ReleaseFinishedPod(ip string, identity PodIdentity)
 }
 
 // --- Informer-based Resolver ---
@@ -56,10 +81,10 @@ func isTerminalPod(pod *v1.Pod) bool {
 }
 
 // LookupPod implements the Resolver interface using the informer's index.
-func (r *InformerResolver) LookupPod(ip string) (string, bool) {
+func (r *InformerResolver) LookupPod(ip string) (PodIdentity, bool) {
 	objs, err := r.podIndexer.ByIndex(PodIPIndex, ip)
 	if err != nil || len(objs) == 0 {
-		return "", false
+		return PodIdentity{}, false
 	}
 	// If multiple pods share the same IP, prefer a pod that is not being
 	// deleted, then a running pod. A pod being deleted still shows Running
@@ -72,13 +97,9 @@ func (r *InformerResolver) LookupPod(ip string) (string, bool) {
 		}
 	}
 	if found == nil {
-		return "", false
+		return PodIdentity{}, false
 	}
-	key, err := cache.MetaNamespaceKeyFunc(found)
-	if err != nil {
-		return "", false
-	}
-	return key, true
+	return PodIdentity{Namespace: found.Namespace, Name: found.Name, UID: found.UID}, true
 }
 
 // podPriority ranks the pods that share an IP, not being deleted ranks above

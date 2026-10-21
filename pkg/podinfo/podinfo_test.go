@@ -2,20 +2,25 @@ package podinfo
 
 import (
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
-// staticResolver always resolves to the same pod key.
+// staticResolver always resolves to the same pod, with the UID of makePod.
 type staticResolver struct {
 	key string
 }
 
-func (r staticResolver) LookupPod(ip string) (string, bool) {
-	return r.key, true
+func (r staticResolver) LookupPod(ip string) (PodIdentity, bool) {
+	namespace, name, _ := strings.Cut(r.key, "/")
+	return PodIdentity{Namespace: namespace, Name: name, UID: types.UID(r.key)}, true
 }
 
 func newTestInformerProvider(t *testing.T, pods []*v1.Pod, resolvers []IPResolver) *InformerProvider {
@@ -148,5 +153,106 @@ func TestInformerProvider_GetPodInfoByIP_PodBeingDeletedFromResolver(t *testing.
 	}
 	if podInfo.Namespace.Name != "ns1" || podInfo.Name != "pod1" {
 		t.Errorf("GetPodInfoByIP() got %s/%s, want ns1/pod1", podInfo.Namespace.Name, podInfo.Name)
+	}
+}
+
+// fakeResolver returns the same identity for every IP and records the
+// finished pods that it is told to release.
+type fakeResolver struct {
+	identity PodIdentity
+	released []string
+}
+
+func (r *fakeResolver) LookupPod(ip string) (PodIdentity, bool) {
+	return r.identity, r.identity.Name != ""
+}
+
+func (r *fakeResolver) ReleaseFinishedPod(ip string, identity PodIdentity) {
+	r.released = append(r.released, ip+" "+identity.SandboxID+" "+string(identity.UID))
+}
+
+func TestInformerProvider_GetPodInfoByIP_ResolverIdentity(t *testing.T) {
+	const ip = "10.0.0.1"
+	// What the resolver knows about the pod when the informer does not have it.
+	resolverInfo := &api.PodInfo{Name: "pod1", Namespace: &api.Namespace{Name: "ns1"}}
+	identity := PodIdentity{Namespace: "ns1", Name: "pod1", UID: "ns1/pod1", SandboxID: "sandbox-1", PodInfo: resolverInfo}
+	withoutUID := identity
+	withoutUID.UID = ""
+	withoutInfo := identity
+	withoutInfo.PodInfo = nil
+	withUID := func(pod *v1.Pod, uid types.UID) *v1.Pod {
+		pod.UID = uid
+		return pod
+	}
+
+	tests := []struct {
+		name         string
+		identity     PodIdentity
+		pods         []*v1.Pod
+		want         string // "informer", "resolver" or "" if not found
+		wantReleased []string
+	}{
+		{
+			name:     "informer pod with the same UID",
+			identity: identity,
+			pods:     []*v1.Pod{makePod("ns1", "pod1", ip, v1.PodPending, false)},
+			want:     "informer",
+		},
+		{
+			name:     "informer pod with another UID",
+			identity: identity,
+			pods:     []*v1.Pod{withUID(makePod("ns1", "pod1", ip, v1.PodRunning, false), "other")},
+			want:     "resolver",
+		},
+		{
+			name:     "pod not in the informer",
+			identity: identity,
+			want:     "resolver",
+		},
+		{
+			name:     "resolver without UID",
+			identity: withoutUID,
+			pods:     []*v1.Pod{makePod("ns1", "pod1", ip, v1.PodRunning, false)},
+			want:     "resolver",
+		},
+		{
+			name:     "resolver without pod information",
+			identity: withoutInfo,
+			pods:     []*v1.Pod{withUID(makePod("ns1", "pod1", ip, v1.PodRunning, false), "other")},
+			want:     "",
+		},
+		{
+			name:         "terminal informer pod with the same UID",
+			identity:     identity,
+			pods:         []*v1.Pod{makePod("ns1", "pod1", ip, v1.PodSucceeded, false)},
+			want:         "",
+			wantReleased: []string{ip + " sandbox-1 ns1/pod1"},
+		},
+		{
+			name:     "terminal informer pod with another UID",
+			identity: identity,
+			pods:     []*v1.Pod{withUID(makePod("ns1", "pod1", ip, v1.PodFailed, false), "other")},
+			want:     "resolver",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := &fakeResolver{identity: tt.identity}
+			provider := newTestInformerProvider(t, tt.pods, []IPResolver{resolver})
+
+			podInfo, ok := provider.GetPodInfoByIP(ip)
+			got := ""
+			if ok && podInfo == resolverInfo {
+				got = "resolver"
+			} else if ok {
+				got = "informer"
+			}
+			if got != tt.want {
+				t.Errorf("GetPodInfoByIP() from %q, want %q", got, tt.want)
+			}
+			if !reflect.DeepEqual(resolver.released, tt.wantReleased) {
+				t.Errorf("released pods = %v, want %v", resolver.released, tt.wantReleased)
+			}
+		})
 	}
 }

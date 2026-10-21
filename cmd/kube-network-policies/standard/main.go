@@ -126,23 +126,26 @@ func run() int {
 	if err != nil {
 		klog.Fatalf("Failed to create informer resolver: %v", err)
 	}
-	resolvers := []podinfo.IPResolver{informerResolver}
+	var resolvers []podinfo.IPResolver
 
 	// Create an NRI Pod IP resolver if enabled, since NRI connects to the container runtime
 	// the Pod and IP information is provided at the time the Pod Sandbox is created and before
 	// the containers start running, so policies can be enforced without race conditions.
 	if !opts.DisableNRI {
-		nriIPResolver, err := nri.NewNRIResolver(ctx, nodeName, nil)
+		nriIPResolver, err := nri.NewNRIResolver(ctx, nodeName, nsInformer)
 		if err != nil {
 			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
 		} else if nriIPResolver != nil {
 			resolvers = append(resolvers, nriIPResolver)
 		}
 	}
+	// NRI decides which Pod owns the IP of a local Pod, so it goes first, the
+	// informer index is used for the IPs that NRI does not have.
+	resolvers = append(resolvers, informerResolver)
 
 	// Create the pod info provider to obtain the Pod information
 	// necessary for the network policy evaluation, it uses the resolvers
-	// to obtain the key (Pod name and namespace) and use the informers to obtain
+	// to obtain the Pod (namespace, name and UID) and use the informers to obtain
 	// the labels that are necessary to match the network policies.
 	podInfoProvider := podinfo.NewInformerProvider(
 		podInformer,

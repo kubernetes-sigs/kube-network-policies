@@ -12,6 +12,7 @@ import (
 )
 
 var _ podinfo.IPResolver = &NRIResolver{}
+var _ podinfo.FinishedPodReleaser = &NRIResolver{}
 var _ api.PodInfoProvider = &NRIResolver{}
 
 // NRIResolver is a stub implementation of the NRI-based resolver for non-Linux platforms.
@@ -23,9 +24,12 @@ func NewNRIResolver(ctx context.Context, nodeName string, namespaceInformer core
 }
 
 // LookupPod always returns false on non-Linux platforms.
-func (p *NRIResolver) LookupPod(ip string) (string, bool) {
-	return "", false
+func (p *NRIResolver) LookupPod(ip string) (podinfo.PodIdentity, bool) {
+	return podinfo.PodIdentity{}, false
 }
+
+// ReleaseFinishedPod does nothing on non-Linux platforms.
+func (p *NRIResolver) ReleaseFinishedPod(ip string, identity podinfo.PodIdentity) {}
 
 // GetPodInfoByIP always returns false on non-Linux platforms.
 func (p *NRIResolver) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {

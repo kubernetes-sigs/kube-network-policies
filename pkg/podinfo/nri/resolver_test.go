@@ -13,6 +13,7 @@ import (
 
 	nriapi "github.com/containerd/nri/pkg/api"
 	"github.com/containerd/nri/pkg/stub"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 )
@@ -87,6 +88,15 @@ func stopSandbox(t *testing.T, resolver *NRIResolver, sandbox *nriapi.PodSandbox
 	}
 }
 
+// lookupKey returns the namespace/name of the pod that the resolver finds with the IP.
+func lookupKey(resolver podinfo.IPResolver, ip string) (string, bool) {
+	identity, ok := resolver.LookupPod(ip)
+	if !ok {
+		return "", false
+	}
+	return identity.Namespace + "/" + identity.Name, true
+}
+
 // sandboxOwner returns the ID of the sandbox that owns ip, or "" if none does.
 func sandboxOwner(t *testing.T, resolver *NRIResolver, ip string) string {
 	t.Helper()
@@ -138,12 +148,12 @@ func TestNRIResolver_PodLifecycle(t *testing.T) {
 		t.Fatalf("RunPodSandbox() failed for pod1: %v", err)
 	}
 
-	key, ok := resolver.LookupPod("10.0.0.1")
+	key, ok := lookupKey(resolver, "10.0.0.1")
 	if !ok || key != "ns1/pod1" {
 		t.Errorf("LookupPod(10.0.0.1) got %q, %v; want %q, true", key, ok, "ns1/pod1")
 	}
 
-	key, ok = resolver.LookupPod("192.168.1.1")
+	key, ok = lookupKey(resolver, "192.168.1.1")
 	if !ok || key != "ns1/pod1" {
 		t.Errorf("LookupPod(192.168.1.1) got %q, %v; want %q, true", key, ok, "ns1/pod1")
 	}
@@ -154,7 +164,7 @@ func TestNRIResolver_PodLifecycle(t *testing.T) {
 		t.Fatalf("RunPodSandbox() failed for pod2: %v", err)
 	}
 
-	key, ok = resolver.LookupPod("10.0.0.2")
+	key, ok = lookupKey(resolver, "10.0.0.2")
 	if !ok || key != "ns2/pod2" {
 		t.Errorf("LookupPod(10.0.0.2) got %q, %v; want %q, true", key, ok, "ns2/pod2")
 	}
@@ -169,7 +179,7 @@ func TestNRIResolver_PodLifecycle(t *testing.T) {
 	if len(resolver.ipOwners) != 4 {
 		t.Errorf("After Synchronize, map length is %d, want 4", len(resolver.ipOwners))
 	}
-	key, ok = resolver.LookupPod("10.0.0.3")
+	key, ok = lookupKey(resolver, "10.0.0.3")
 	if !ok || key != "ns3/pod3" {
 		t.Errorf("LookupPod(10.0.0.3) after sync got %q, %v; want %q, true", key, ok, "ns3/pod3")
 	}
@@ -179,15 +189,15 @@ func TestNRIResolver_PodLifecycle(t *testing.T) {
 		t.Fatalf("RemovePodSandbox() failed for pod1: %v", err)
 	}
 
-	if _, ok := resolver.LookupPod("10.0.0.1"); ok {
+	if _, ok := lookupKey(resolver, "10.0.0.1"); ok {
 		t.Error("LookupPod(10.0.0.1) should have failed after removal")
 	}
-	if _, ok := resolver.LookupPod("192.168.1.1"); ok {
+	if _, ok := lookupKey(resolver, "192.168.1.1"); ok {
 		t.Error("LookupPod(192.168.1.1) should have failed after removal")
 	}
 
 	// Check that other pod is still there
-	key, ok = resolver.LookupPod("10.0.0.2")
+	key, ok = lookupKey(resolver, "10.0.0.2")
 	if !ok || key != "ns2/pod2" {
 		t.Errorf("LookupPod(10.0.0.2) after removal got %q, %v; want %q, true", key, ok, "ns2/pod2")
 	}
@@ -201,13 +211,13 @@ func TestNRIResolver_LookupPod(t *testing.T) {
 	)
 
 	// Test found
-	key, ok := resolver.LookupPod("10.0.0.1")
+	key, ok := lookupKey(resolver, "10.0.0.1")
 	if !ok || key != "ns1/pod1" {
 		t.Errorf("LookupPod() got key %q, ok %v; want %q, true", key, ok, "ns1/pod1")
 	}
 
 	// Test not found
-	key, ok = resolver.LookupPod("1.2.3.4")
+	key, ok = lookupKey(resolver, "1.2.3.4")
 	if ok || key != "" {
 		t.Errorf("LookupPod() got key %q, ok %v; want %q, false", key, ok, "")
 	}
@@ -227,7 +237,7 @@ func TestNRIResolver_NilReceiver(t *testing.T) {
 
 	t.Run("LookupPod", func(t *testing.T) {
 		defer failOnPanic(t)
-		key, ok := resolver.LookupPod("10.0.0.1")
+		key, ok := lookupKey(resolver, "10.0.0.1")
 		if ok || key != "" {
 			t.Errorf("LookupPod() got key %q, ok %v; want %q, false", key, ok, "")
 		}
@@ -244,7 +254,7 @@ func TestNRIResolver_NilReceiver(t *testing.T) {
 	t.Run("typed nil IPResolver", func(t *testing.T) {
 		defer failOnPanic(t)
 		var ipResolver podinfo.IPResolver = resolver
-		key, ok := ipResolver.LookupPod("10.0.0.1")
+		key, ok := lookupKey(ipResolver, "10.0.0.1")
 		if ok || key != "" {
 			t.Errorf("LookupPod() got key %q, ok %v; want %q, false", key, ok, "")
 		}
@@ -256,12 +266,12 @@ func TestNRIResolver_LookupPodThroughIPResolver(t *testing.T) {
 	runSandboxes(t, resolver, makeNRIPod("ns1", "pod1", []string{"10.0.0.1"}))
 	var ipResolver podinfo.IPResolver = resolver
 
-	key, ok := ipResolver.LookupPod("10.0.0.1")
+	key, ok := lookupKey(ipResolver, "10.0.0.1")
 	if !ok || key != "ns1/pod1" {
 		t.Errorf("LookupPod() got key %q, ok %v; want %q, true", key, ok, "ns1/pod1")
 	}
 
-	key, ok = ipResolver.LookupPod("1.2.3.4")
+	key, ok = lookupKey(ipResolver, "1.2.3.4")
 	if ok || key != "" {
 		t.Errorf("LookupPod() got key %q, ok %v; want %q, false", key, ok, "")
 	}
@@ -485,7 +495,7 @@ func TestNRIResolver_ConcurrentLifecycle(t *testing.T) {
 		defer wg.Done()
 		for range 100 {
 			_, _ = resolver.Synchronize(context.Background(), []*nriapi.PodSandbox{synced}, nil)
-			resolver.LookupPod("10.0.1.1")
+			lookupKey(resolver, "10.0.1.1")
 		}
 	}()
 	wg.Wait()
@@ -897,4 +907,143 @@ func TestGetPodIPs(t *testing.T) {
 			t.Errorf("getPodIPs() expected empty slice, got %v", ips)
 		}
 	})
+}
+
+// --- Pod identity tests ---
+
+func TestNRIResolver_LookupPodIdentity(t *testing.T) {
+	resolver := newTestResolver()
+	runSandboxes(t, resolver, makeSandbox("sandbox-a", "uid-a", "ns1", "pod-a", "10.0.0.1", "fd00::1"))
+
+	for _, ip := range []string{"10.0.0.1", "fd00::1"} {
+		identity, ok := resolver.LookupPod(ip)
+		if !ok || identity.Namespace != "ns1" || identity.Name != "pod-a" || identity.UID != "uid-a" || identity.SandboxID != "sandbox-a" {
+			t.Errorf("LookupPod(%s) = %+v, %v; want ns1/pod-a with UID uid-a in sandbox-a", ip, identity, ok)
+		}
+		if identity.PodInfo == nil || identity.PodInfo.Name != "pod-a" || identity.PodInfo.Labels[sandboxIDLabel] != "sandbox-a" {
+			t.Errorf("LookupPod(%s) PodInfo = %v, want the PodInfo of sandbox-a", ip, identity.PodInfo)
+		}
+	}
+	if identity, ok := resolver.LookupPod("10.0.0.2"); ok {
+		t.Errorf("LookupPod(10.0.0.2) = %+v, want not found", identity)
+	}
+}
+
+func TestNRIResolver_ReleaseFinishedPod(t *testing.T) {
+	sandboxA := makeSandbox("sandbox-a", "uid-a", "ns1", "pod-a", "10.0.0.1", "fd00::1")
+	sandboxB := makeSandbox("sandbox-b", "uid-b", "ns1", "pod-b", "10.0.0.1", "fd00::1")
+	// lookedUp is the identity that a lookup returned for the sandbox.
+	lookedUp := func(sandboxID, uid string) podinfo.PodIdentity {
+		return podinfo.PodIdentity{SandboxID: sandboxID, UID: types.UID(uid)}
+	}
+
+	t.Run("sandbox of the finished pod", func(t *testing.T) {
+		resolver := newTestResolver()
+		runSandboxes(t, resolver, sandboxA)
+
+		resolver.ReleaseFinishedPod("10.0.0.1", lookedUp("sandbox-a", "uid-a"))
+
+		assertOwner(t, resolver, "10.0.0.1", "")
+		assertOwner(t, resolver, "fd00::1", "")
+		// A later snapshot that still lists the sandbox does not restore it.
+		synchronize(t, resolver, sandboxA)
+		assertOwner(t, resolver, "10.0.0.1", "")
+		assertOwner(t, resolver, "fd00::1", "")
+		// The sandbox is forgotten when it is removed.
+		removeSandbox(t, resolver, idOnly(sandboxA))
+		if resolver.stopped.Len() != 0 {
+			t.Errorf("stopped sandboxes = %v, want none", sets.List(resolver.stopped))
+		}
+	})
+
+	t.Run("IP taken by another sandbox", func(t *testing.T) {
+		resolver := newTestResolver()
+		runSandboxes(t, resolver, sandboxA, sandboxB)
+
+		resolver.ReleaseFinishedPod("10.0.0.1", lookedUp("sandbox-a", "uid-a"))
+
+		assertOwner(t, resolver, "10.0.0.1", "sandbox-b")
+		assertOwner(t, resolver, "fd00::1", "sandbox-b")
+	})
+
+	t.Run("IP taken by another sandbox of the same pod", func(t *testing.T) {
+		resolver := newTestResolver()
+		runSandboxes(t, resolver, makeSandbox("sandbox-1", "uid-a", "ns1", "pod-a", "10.0.0.1", "fd00::1"))
+		identity, _ := resolver.LookupPod("10.0.0.1")
+		runSandboxes(t, resolver, makeSandbox("sandbox-2", "uid-a", "ns1", "pod-a", "10.0.0.1", "fd00::1"))
+
+		resolver.ReleaseFinishedPod("10.0.0.1", identity)
+		assertOwner(t, resolver, "10.0.0.1", "sandbox-2")
+		assertOwner(t, resolver, "fd00::1", "sandbox-2")
+
+		// The identity of the current owner releases it.
+		identity, _ = resolver.LookupPod("10.0.0.1")
+		resolver.ReleaseFinishedPod("10.0.0.1", identity)
+		assertOwner(t, resolver, "10.0.0.1", "")
+		assertOwner(t, resolver, "fd00::1", "")
+	})
+
+	t.Run("sandbox ID or UID that does not match", func(t *testing.T) {
+		resolver := newTestResolver()
+		runSandboxes(t, resolver, sandboxA)
+
+		resolver.ReleaseFinishedPod("10.0.0.1", lookedUp("sandbox-a", "uid-b"))
+		resolver.ReleaseFinishedPod("10.0.0.1", lookedUp("sandbox-b", "uid-a"))
+
+		assertOwner(t, resolver, "10.0.0.1", "sandbox-a")
+		assertOwner(t, resolver, "fd00::1", "sandbox-a")
+	})
+
+	t.Run("incomplete identity and unknown IP", func(t *testing.T) {
+		resolver := newTestResolver()
+		runSandboxes(t, resolver, makeSandbox("sandbox-c", "", "ns1", "pod-c", "10.0.0.3"), sandboxA)
+
+		resolver.ReleaseFinishedPod("10.0.0.3", lookedUp("sandbox-c", ""))
+		resolver.ReleaseFinishedPod("10.0.0.1", lookedUp("", "uid-a"))
+		resolver.ReleaseFinishedPod("10.0.0.9", lookedUp("sandbox-a", "uid-a"))
+
+		assertOwner(t, resolver, "10.0.0.3", "sandbox-c")
+		assertOwner(t, resolver, "10.0.0.1", "sandbox-a")
+	})
+
+	t.Run("nil resolver", func(t *testing.T) {
+		defer failOnPanic(t)
+		var resolver *NRIResolver
+		resolver.ReleaseFinishedPod("10.0.0.1", lookedUp("sandbox-a", "uid-a"))
+	})
+}
+
+// The identity and the PodInfo of a lookup always come from the same sandbox,
+// even while the IP changes owner.
+func TestNRIResolver_LookupPodConsistency(t *testing.T) {
+	resolver := newTestResolver()
+	sandboxA := makeSandbox("sandbox-a", "uid-a", "ns1", "pod-a", "10.0.0.1")
+	sandboxB := makeSandbox("sandbox-b", "uid-b", "ns1", "pod-b", "10.0.0.1")
+	runSandboxes(t, resolver, sandboxA)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 1000 {
+			if i%2 == 0 {
+				_ = resolver.RunPodSandbox(context.Background(), sandboxB)
+			} else {
+				_ = resolver.RunPodSandbox(context.Background(), sandboxA)
+			}
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		identity, ok := resolver.LookupPod("10.0.0.1")
+		if !ok {
+			continue
+		}
+		if identity.PodInfo.Name != identity.Name || string(identity.UID) != "uid-"+identity.Name[len("pod-"):] {
+			t.Fatalf("LookupPod() = %+v with PodInfo of %s, want the identity and PodInfo of the same sandbox", identity, identity.PodInfo.Name)
+		}
+	}
 }
