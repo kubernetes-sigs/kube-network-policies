@@ -7,36 +7,42 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
-// FallbackPodInfoProvider uses a primary provider (like a remote ipcache) and
-// falls back to a local, NRI-based provider for immediate information on new pods.
-// This solves the race condition where a pod's traffic is evaluated before its
-// information has propagated to the central cache.
+// FallbackPodInfoProvider combines a remote provider (the ipcache) with a
+// local, NRI-based provider. The local provider knows which local pod owns an
+// IP as soon as the runtime creates its sandbox, before the information
+// reaches the ipcache, and the ipcache may still have the entry of a previous
+// pod with the same IP.
 type FallbackPodInfoProvider struct {
-	primaryProvider api.PodInfoProvider // The ipcache client
-	localProvider   api.PodInfoProvider // The local, NRI-based provider
+	cacheProvider api.PodInfoProvider // The ipcache client
+	localProvider api.PodInfoProvider // The local, NRI-based provider
 }
 
 var _ api.PodInfoProvider = &FallbackPodInfoProvider{}
 
 // NewFallbackPodInfoProvider creates a new FallbackPodInfoProvider.
 func NewFallbackPodInfoProvider(
-	primaryProvider api.PodInfoProvider,
+	cacheProvider api.PodInfoProvider,
 	localProvider api.PodInfoProvider,
 ) api.PodInfoProvider {
 	return &FallbackPodInfoProvider{
-		primaryProvider: primaryProvider,
-		localProvider:   localProvider,
+		cacheProvider: cacheProvider,
+		localProvider: localProvider,
 	}
 }
 
 // GetPodInfoByIP implements the api.PodInfoProvider interface.
 func (p *FallbackPodInfoProvider) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {
-	// 1. Try the primary provider (ipcache) first. This is the authoritative source.
-	if podInfo, found := p.primaryProvider.GetPodInfoByIP(ip); found {
-		return podInfo, true
+	// 1. The local provider decides which local pod owns the IP. The ipcache
+	// entry has more details, like the container ports, so it is preferred
+	// when it belongs to the same pod.
+	if localInfo, found := p.localProvider.GetPodInfoByIP(ip); found {
+		if cachedInfo, found := p.cacheProvider.GetPodInfoByIP(ip); found && cachedInfo.GetUID() == localInfo.GetUID() {
+			return cachedInfo, true
+		}
+		klog.V(4).Infof("IP %s of pod %s/%s not in the ipcache yet, using the local NRI cache", ip, localInfo.GetNamespace().GetName(), localInfo.GetName())
+		return localInfo, true
 	}
 
-	// 2. If not found, fall back to the local NRI-based provider for immediate data.
-	klog.V(4).Infof("IP %s not found in primary provider, falling back to local NRI cache", ip)
-	return p.localProvider.GetPodInfoByIP(ip)
+	// 2. The pods of other nodes are only in the ipcache.
+	return p.cacheProvider.GetPodInfoByIP(ip)
 }
