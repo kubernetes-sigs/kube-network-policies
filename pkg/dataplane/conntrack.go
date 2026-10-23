@@ -91,3 +91,37 @@ func clearLabelBit(currentLabel []byte, bitIndex int) []byte {
 	newLabel[arrayIndex] &= zeroMask
 	return newLabel
 }
+
+// hasLabelBit reports whether the specified bit is set in a 16-byte (128-bit) big-endian label.
+func hasLabelBit(currentLabel []byte, bitIndex int) bool {
+	if len(currentLabel) != 16 || bitIndex < 0 || bitIndex > 127 {
+		return false
+	}
+	arrayIndex := len(currentLabel) - (bitIndex / 8) - 1
+	bitPos := uint(bitIndex % 8)
+	return (currentLabel[arrayIndex] & (uint8(1) << bitPos)) != 0
+}
+
+// ipCTIsReply is IP_CT_IS_REPLY from enum ip_conntrack_info in
+// include/uapi/linux/netfilter/nf_conntrack_common.h. The kernel sends this
+// value in the NFQA_CT_INFO attribute when the queue is configured with
+// NFQA_CFG_F_CONNTRACK.
+//
+//	IP_CT_ESTABLISHED       = 0
+//	IP_CT_RELATED           = 1
+//	IP_CT_NEW               = 2
+//	IP_CT_IS_REPLY          = 3
+//	IP_CT_ESTABLISHED_REPLY = IP_CT_ESTABLISHED + IP_CT_IS_REPLY = 3
+//	IP_CT_RELATED_REPLY     = IP_CT_RELATED + IP_CT_IS_REPLY     = 4
+//	IP_CT_NUMBER            = 5 (no NEW in the reply direction)
+//	IP_CT_UNTRACKED         = 7
+const ipCTIsReply uint32 = 3
+
+// isReply reports whether the packet flows in the reply direction of its
+// conntrack entry. It mirrors the kernel's CTINFO2DIR() from
+// include/uapi/linux/netfilter/nf_conntrack_tuple_common.h:
+//
+//	#define CTINFO2DIR(ctinfo) ((ctinfo) >= IP_CT_IS_REPLY ? IP_CT_DIR_REPLY : IP_CT_DIR_ORIGINAL)
+func isReply(ctInfo *uint32) bool {
+	return ctInfo != nil && *ctInfo >= ipCTIsReply
+}
