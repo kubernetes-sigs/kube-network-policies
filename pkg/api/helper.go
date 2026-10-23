@@ -6,6 +6,20 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+// mirrorPodAnnotation holds, in the mirror pod the kubelet creates for a
+// static pod, the UID of the static pod. It is the UID the kubelet gives to
+// the runtime, so it is the one NRI reports.
+const mirrorPodAnnotation = "kubernetes.io/config.mirror"
+
+// PodUID returns the UID the kubelet and the runtime use for the pod. It is
+// the pod UID, except for mirror pods where it is the UID of the static pod.
+func PodUID(pod *v1.Pod) string {
+	if uid, ok := pod.Annotations[mirrorPodAnnotation]; ok && uid != "" {
+		return uid
+	}
+	return string(pod.UID)
+}
+
 // PodOwnsIPs returns true if the IPs in status.podIPs belong to the pod. A
 // host-network pod reports the node IPs, and a Succeeded or Failed pod keeps
 // its IPs in the status after the runtime released them, so another pod may
@@ -55,6 +69,7 @@ func NewPodInfo(pod *v1.Pod, nsLabels map[string]string, nodeLabels map[string]s
 		},
 		ClusterId:   clusterID,
 		LastUpdated: time.Now().Unix(), // TODO: maybe get it from the managedFields metadata
+		UID:         PodUID(pod),
 		IPs:         ips,
 	}
 }

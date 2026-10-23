@@ -51,17 +51,16 @@ func newTestResolver() *NRIResolver {
 // expectLookup checks that the IP belongs to the pod of the sandbox.
 func expectLookup(t *testing.T, resolver *NRIResolver, ip string, want *nriapi.PodSandbox) {
 	t.Helper()
-	wantKey := want.GetNamespace() + "/" + want.GetName()
-	key, ok := resolver.LookupPod(ip)
-	if !ok || key != wantKey {
-		t.Errorf("LookupPod(%s) got %q, %v; want %q, true", ip, key, ok, wantKey)
+	uid, ok := resolver.LookupPod(ip)
+	if !ok || uid != want.GetUid() {
+		t.Errorf("LookupPod(%s) got %q, %v; want %q, true", ip, uid, ok, want.GetUid())
 	}
 }
 
 func expectNotFound(t *testing.T, resolver *NRIResolver, ip string) {
 	t.Helper()
-	if key, ok := resolver.LookupPod(ip); ok {
-		t.Errorf("LookupPod(%s) got %q, want not found", ip, key)
+	if uid, ok := resolver.LookupPod(ip); ok {
+		t.Errorf("LookupPod(%s) got %q, want not found", ip, uid)
 	}
 }
 
@@ -281,15 +280,15 @@ func TestNRIResolver_Concurrent(t *testing.T) {
 
 func TestNRIResolver_LookupPod(t *testing.T) {
 	resolver := newTestResolver()
-	resolver.podInfoByIP["10.0.0.1"] = &api.PodInfo{Namespace: &api.Namespace{Name: "ns1"}, Name: "pod1"}
+	resolver.podInfoByIP["10.0.0.1"] = &api.PodInfo{Namespace: &api.Namespace{Name: "ns1"}, Name: "pod1", UID: "uid1"}
 
-	key, ok := resolver.LookupPod("10.0.0.1")
-	if !ok || key != "ns1/pod1" {
-		t.Errorf("LookupPod() got %q, %v; want %q, true", key, ok, "ns1/pod1")
+	uid, ok := resolver.LookupPod("10.0.0.1")
+	if !ok || uid != "uid1" {
+		t.Errorf("LookupPod() got %q, %v; want %q, true", uid, ok, "uid1")
 	}
 
-	if key, ok = resolver.LookupPod("1.2.3.4"); ok {
-		t.Errorf("LookupPod() got %q, want not found", key)
+	if uid, ok = resolver.LookupPod("1.2.3.4"); ok {
+		t.Errorf("LookupPod() got %q, want not found", uid)
 	}
 }
 

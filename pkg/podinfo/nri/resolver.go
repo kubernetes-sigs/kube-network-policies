@@ -104,7 +104,7 @@ func (p *NRIResolver) LookupPod(ip string) (string, bool) {
 	if !found {
 		return "", false
 	}
-	return podInfo.Namespace.Name + "/" + podInfo.Name, true
+	return podInfo.UID, true
 }
 
 func (p *NRIResolver) Run(ctx context.Context) error {
@@ -250,6 +250,7 @@ func (p *NRIResolver) getPodInfo(pod *nriapi.PodSandbox, ips []string) *api.PodI
 			Name: p.nodeName,
 		},
 		LastUpdated: time.Now().Unix(),
+		UID:         pod.GetUid(),
 		IPs:         ips,
 	}
 	if p.nsLister != nil {

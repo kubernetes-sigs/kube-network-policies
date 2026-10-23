@@ -6,6 +6,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -16,6 +17,7 @@ func makePod(namespace, name, ip string, phase v1.PodPhase, hostNetwork bool) *v
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
+			UID:       types.UID(namespace + "-" + name + "-uid"),
 		},
 		Spec: v1.PodSpec{
 			HostNetwork: hostNetwork,
@@ -36,6 +38,7 @@ func makePodWithIPs(namespace, name string, ips []string, phase v1.PodPhase) *v1
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      name,
+			UID:       types.UID(namespace + "-" + name + "-uid"),
 		},
 		Status: v1.PodStatus{
 			Phase:  phase,
@@ -88,7 +91,7 @@ func TestInformerResolver_LookupPod(t *testing.T) {
 			pods:       []*v1.Pod{pod1},
 			lookupIP:   "10.0.0.1",
 			expectedOk: true,
-			expected:   "ns1/pod1",
+			expected:   "ns1-pod1-uid",
 		},
 		{
 			name:       "succeeded pod is not indexed",
@@ -102,21 +105,21 @@ func TestInformerResolver_LookupPod(t *testing.T) {
 			pods:       []*v1.Pod{pod6Failed, pod6New},
 			lookupIP:   "10.0.0.6",
 			expectedOk: true,
-			expected:   "ns1/pod6-new",
+			expected:   "ns1-pod6-new-uid",
 		},
 		{
 			name:       "terminating pod is found when alone",
 			pods:       []*v1.Pod{pod7Terminating},
 			lookupIP:   "10.0.0.7",
 			expectedOk: true,
-			expected:   "ns1/pod7",
+			expected:   "ns1-pod7-uid",
 		},
 		{
 			name:       "pending pod wins over terminating pod with the same ip",
 			pods:       []*v1.Pod{pod7Terminating, pod7New},
 			lookupIP:   "10.0.0.7",
 			expectedOk: true,
-			expected:   "ns1/pod7-new",
+			expected:   "ns1-pod7-new-uid",
 		},
 		{
 			name:       "ip not found",
@@ -130,7 +133,7 @@ func TestInformerResolver_LookupPod(t *testing.T) {
 			pods:       []*v1.Pod{pod3Running, pod3Pending},
 			lookupIP:   "10.0.0.3",
 			expectedOk: true,
-			expected:   "ns2/pod3",
+			expected:   "ns2-pod3-uid",
 		},
 		{
 			name:       "host network pod ip is not indexed",
@@ -144,14 +147,14 @@ func TestInformerResolver_LookupPod(t *testing.T) {
 			pods:       []*v1.Pod{pod5MultiIP},
 			lookupIP:   "10.0.0.5",
 			expectedOk: true,
-			expected:   "ns3/pod5",
+			expected:   "ns3-pod5-uid",
 		},
 		{
 			name:       "pod with multiple ips, found by second ip",
 			pods:       []*v1.Pod{pod5MultiIP},
 			lookupIP:   "192.168.1.5",
 			expectedOk: true,
-			expected:   "ns3/pod5",
+			expected:   "ns3-pod5-uid",
 		},
 	}
 
@@ -167,12 +170,12 @@ func TestInformerResolver_LookupPod(t *testing.T) {
 				informer.GetIndexer().Add(pod)
 			}
 
-			key, ok := resolver.LookupPod(tt.lookupIP)
+			uid, ok := resolver.LookupPod(tt.lookupIP)
 			if ok != tt.expectedOk {
 				t.Errorf("LookupPod() ok = %v, want %v", ok, tt.expectedOk)
 			}
-			if key != tt.expected {
-				t.Errorf("LookupPod() key = %q, want %q", key, tt.expected)
+			if uid != tt.expected {
+				t.Errorf("LookupPod() uid = %q, want %q", uid, tt.expected)
 			}
 		})
 	}
