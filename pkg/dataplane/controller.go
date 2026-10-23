@@ -229,9 +229,9 @@ func (c *Controller) Run(ctx context.Context) error {
 	// This also solves a bug with SCTP
 	// https://github.com/aojea/kube-netpol/issues/8
 	// https://bugzilla.netfilter.org/show_bug.cgi?id=1742
-	flags = nfqueue.NfQaCfgFlagGSO
+	flags = nfqueue.NfQaCfgFlagGSO | nfqueue.NfQaCfgFlagConntrack
 	if c.config.FailOpen {
-		flags += nfqueue.NfQaCfgFlagFailOpen
+		flags |= nfqueue.NfQaCfgFlagFailOpen
 	}
 
 	// Set configuration options for nfqueue
@@ -271,6 +271,14 @@ func (c *Controller) Run(ctx context.Context) error {
 			return 0
 		}
 		packet.ID = *a.PacketID
+		// Established connections without the accept label (pre-existing connections or
+		// connections whose label was cleared after a policy update) are sent to the queue
+		// on their next packet, which may be a reply. Network policies apply to connections
+		// rather than individual packets, so evaluate the connection as it was originally
+		// initiated. The kernel packet is not modified, only the parsed copy.
+		if isReply(a.CtInfo) {
+			packet = packet.Reverse()
+		}
 
 		defer func() {
 			processingTime := float64(time.Since(startTime).Microseconds())
@@ -406,6 +414,12 @@ func (c *Controller) firewallEnforcer(ctx context.Context) error {
 	}
 
 	for _, flow := range flows {
+		// Only evaluate connections that have the accept label set; connections
+		// without the label are already sent to the queue on their next packet.
+		if !hasLabelBit(flow.Labels, c.config.CTLabelAccept) {
+			continue
+		}
+
 		// only UDP, SCTP or TCP connections in ESTABLISHED state are evaluated
 		if flow.Forward.Protocol != unix.IPPROTO_UDP &&
 			flow.Forward.Protocol != unix.IPPROTO_SCTP &&
