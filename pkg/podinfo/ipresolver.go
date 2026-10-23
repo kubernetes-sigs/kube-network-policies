@@ -9,11 +9,22 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
-// IPResolver defines an interface for resolving an IP address to a pod's key ("namespace/name").
+// IPResolver defines an interface for resolving an IP address to the pod that owns it.
 type IPResolver interface {
-	// LookupPod abstracts the logic of finding a pod's key given its IP.
-	// It returns the key and true if found, otherwise an empty string and false.
+	// LookupPod returns the UID of the pod that owns the IP and true if
+	// found, otherwise false.
 	LookupPod(ip string) (string, bool)
+}
+
+// LocalResolver resolves the IPs of the pods on the node from the container
+// runtime. The runtime assigns the IP when it creates the sandbox and
+// releases it when it stops it, the apiserver shows it later and keeps it
+// longer, so the local resolver decides which local pod owns an IP. It also
+// knows the pod labels, so it provides the pod details when the apiserver
+// does not have the pod yet.
+type LocalResolver interface {
+	IPResolver
+	api.PodInfoProvider
 }
 
 // --- Informer-based Resolver ---
@@ -74,11 +85,7 @@ func (r *InformerResolver) LookupPod(ip string) (string, bool) {
 	best := slices.MaxFunc(pods, func(a, b *v1.Pod) int {
 		return cmp.Compare(ownershipRank(a), ownershipRank(b))
 	})
-	key, err := cache.MetaNamespaceKeyFunc(best)
-	if err != nil {
-		return "", false
-	}
-	return key, true
+	return api.PodUID(best), true
 }
 
 // ownershipRank scores how likely a pod is to own the IPs in its status.

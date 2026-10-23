@@ -217,7 +217,9 @@ type PodInfo struct {
 	LastUpdated    int64            `protobuf:"varint,6,opt,name=last_updated,json=lastUpdated,proto3" json:"last_updated,omitempty"`
 	ClusterId      string           `protobuf:"bytes,7,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
 	// IPs of the Pod
-	IPs           []string `protobuf:"bytes,8,rep,name=IPs,proto3" json:"IPs,omitempty"`
+	IPs []string `protobuf:"bytes,8,rep,name=IPs,proto3" json:"IPs,omitempty"`
+	// UID of the Pod, it tells the Pod apart from another Pod with the same name
+	UID           string `protobuf:"bytes,9,opt,name=UID,proto3" json:"UID,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -308,6 +310,13 @@ func (x *PodInfo) GetIPs() []string {
 	return nil
 }
 
+func (x *PodInfo) GetUID() string {
+	if x != nil {
+		return x.UID
+	}
+	return ""
+}
+
 var File_pkg_api_kubenetworkpolicies_proto protoreflect.FileDescriptor
 
 const file_pkg_api_kubenetworkpolicies_proto_rawDesc = "" +
@@ -328,7 +337,7 @@ const file_pkg_api_kubenetworkpolicies_proto_rawDesc = "" +
 	"\rContainerPort\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xd8\x03\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xea\x03\n" +
 	"\aPodInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12L\n" +
 	"\x06labels\x18\x02 \x03(\v24.sigs.k8s.io.kubenetworkpolicies.PodInfo.LabelsEntryR\x06labels\x12W\n" +
@@ -338,7 +347,8 @@ const file_pkg_api_kubenetworkpolicies_proto_rawDesc = "" +
 	"\flast_updated\x18\x06 \x01(\x03R\vlastUpdated\x12\x1d\n" +
 	"\n" +
 	"cluster_id\x18\a \x01(\tR\tclusterId\x12\x10\n" +
-	"\x03IPs\x18\b \x03(\tR\x03IPs\x1a9\n" +
+	"\x03IPs\x18\b \x03(\tR\x03IPs\x12\x10\n" +
+	"\x03UID\x18\t \x01(\tR\x03UID\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B+Z)sigs.k8s.io/kube-network-policies/pkg/apib\x06proto3"
