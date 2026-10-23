@@ -608,10 +608,14 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/191
 	addEssentialIPv6ICMPRules(nft, table, chain)
 
-	// Don't process traffic generated from the root user in the Node, it can block kubelet probes
+	// Don't process traffic initiated from the root user in the Node, it can block kubelet probes
 	// or system daemons that depend on the internal node traffic to not be blocked.
+	// Only match the original direction so node replies to pod-initiated connections are not bypassed,
+	// and set the accept conntrack label so replies and packets sent after socket close (e.g. TIME_WAIT
+	// or orphaned FINs) are accepted by the established rule below.
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/65
-	// meta skuid 0 accept
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/417
+	// meta skuid 0 ct direction original ct label set X counter accept
 	if !c.config.skipSkuidBypass {
 		nft.AddRule(&nftables.Rule{
 			Table: table,
@@ -619,6 +623,10 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 			Exprs: []expr.Any{
 				&expr.Meta{Key: expr.MetaKeySKUID, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeyDIRECTION},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0}},
+				&expr.Immediate{Register: 0x1, Data: generateLabelMask(c.config.CTLabelAccept)},
+				&expr.Ct{Register: 0x1, SourceRegister: true, Key: expr.CtKeyLABELS},
 				&expr.Counter{},
 				&expr.Verdict{Kind: expr.VerdictAccept},
 			},
