@@ -710,8 +710,6 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 	c.addSetAcceptLabelRule(nft, table, chain)
 
 	// INPUT chain: evaluate pod-to-host (egress toward the node itself) network policies.
-	// Only the first packet of new connections (ct state new) is queued.
-	// TODO: investigate why if we process not only new, e2e tests start failing.
 	inputChain := nft.AddChain(&nftables.Chain{
 		Name:    "input",
 		Table:   table,
@@ -734,8 +732,15 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 		},
 	})
 
+	if c.config.NetfilterBug1766Fix {
+		addDNSBypassRule(nft, table, inputChain)
+	}
+
+	addEssentialIPv6ICMPRules(nft, table, inputChain)
+	c.addEstablishedAcceptRule(nft, table, inputChain)
+
 	if !divertAll {
-		// ip saddr @podips-v4 ct state new queue
+		// ip saddr @podips-v4 queue
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: inputChain,
@@ -744,13 +749,10 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
 				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v4"},
-				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
 				queue,
 			},
 		})
-		// ip6 saddr @podips-v6 ct state new queue
+		// ip6 saddr @podips-v6 queue
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: inputChain,
@@ -759,25 +761,21 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
 				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
-				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
 				queue,
 			},
 		})
 	} else {
-		// ct state new queue
+		// queue
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: inputChain,
 			Exprs: []expr.Any{
-				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
 				queue,
 			},
 		})
 	}
+
+	c.addSetAcceptLabelRule(nft, table, inputChain)
 
 	if c.config.NetfilterBug1766Fix {
 		c.addDNSRacersWorkaroundRules(nft, table, divertAll)

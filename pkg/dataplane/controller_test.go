@@ -306,8 +306,16 @@ table inet kube-network-policies {
 	chain input {
 		type filter hook input priority srcnat + 1; policy accept;
 		iifname "lo" accept
-		ip saddr @podips-v4 ct state new queue flags bypass to 102
-		ip6 saddr @podips-v6 ct state new queue flags bypass to 102
+		udp dport 53 accept
+		icmpv6 type nd-router-solicit accept
+		icmpv6 type nd-router-advert accept
+		icmpv6 type nd-neighbor-solicit accept
+		icmpv6 type nd-neighbor-advert accept
+		icmpv6 type nd-redirect accept
+		ct label 28 ct state established,related counter packets 0 bytes 0 accept
+		ip saddr @podips-v4 queue flags bypass to 102
+		ip6 saddr @podips-v6 queue flags bypass to 102
+		ct label set 28
 	}
 
 	chain prerouting {
@@ -355,7 +363,15 @@ table inet kube-network-policies {
 	chain input {
 		type filter hook input priority srcnat + 1; policy accept;
 		iifname "lo" accept
-		ct state new queue to 102
+		udp dport 53 accept
+		icmpv6 type nd-router-solicit accept
+		icmpv6 type nd-router-advert accept
+		icmpv6 type nd-neighbor-solicit accept
+		icmpv6 type nd-neighbor-advert accept
+		icmpv6 type nd-redirect accept
+		ct label 28 ct state established,related counter packets 0 bytes 0 accept
+		queue to 102
+		ct label set 28
 	}
 	chain prerouting {
 		type filter hook prerouting priority dstnat + 5; policy accept;
@@ -401,7 +417,14 @@ table inet kube-network-policies {
 	chain input {
 		type filter hook input priority srcnat + 1; policy accept;
 		iifname "lo" accept
-		ct state new queue to 102
+		icmpv6 type nd-router-solicit accept
+		icmpv6 type nd-router-advert accept
+		icmpv6 type nd-neighbor-solicit accept
+		icmpv6 type nd-neighbor-advert accept
+		icmpv6 type nd-redirect accept
+		ct label 28 ct state established,related counter packets 0 bytes 0 accept
+		queue to 102
+		ct label set 28
 	}
 }
 `,
