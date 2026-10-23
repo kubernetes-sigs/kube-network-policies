@@ -6,6 +6,17 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+// PodOwnsIPs returns true if the IPs in status.podIPs belong to the pod. A
+// host-network pod reports the node IPs, and a Succeeded or Failed pod keeps
+// its IPs in the status after the runtime released them, so another pod may
+// own them now.
+func PodOwnsIPs(pod *v1.Pod) bool {
+	if pod.Spec.HostNetwork {
+		return false
+	}
+	return pod.Status.Phase != v1.PodSucceeded && pod.Status.Phase != v1.PodFailed
+}
+
 // NewPodInfo creates a PodInfo object from a Pod and its corresponding Namespace and Node labels.
 // This helper is useful for populators that have access to the full Kubernetes objects since
 // contain all the necessary information for Network Policies selectors

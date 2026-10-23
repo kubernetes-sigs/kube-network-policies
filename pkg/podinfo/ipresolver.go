@@ -1,8 +1,12 @@
 package podinfo
 
 import (
+	"cmp"
+	"slices"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/kube-network-policies/pkg/api"
 )
 
 // IPResolver defines an interface for resolving an IP address to a pod's key ("namespace/name").
@@ -30,7 +34,7 @@ func NewInformerResolver(podInformer cache.SharedIndexInformer) (*InformerResolv
 	err := podInformer.AddIndexers(cache.Indexers{
 		PodIPIndex: func(obj interface{}) ([]string, error) {
 			pod, ok := obj.(*v1.Pod)
-			if !ok || pod.Spec.HostNetwork {
+			if !ok || !api.PodOwnsIPs(pod) {
 				return []string{}, nil
 			}
 			ips := make([]string, 0, len(pod.Status.PodIPs))
@@ -55,19 +59,36 @@ func (r *InformerResolver) LookupPod(ip string) (string, bool) {
 	if err != nil || len(objs) == 0 {
 		return "", false
 	}
-	// Prefer a running pod if multiple pods share the same IP.
+	pods := make([]*v1.Pod, 0, len(objs))
 	for _, obj := range objs {
-		if pod, ok := obj.(*v1.Pod); ok && pod.Status.Phase == v1.PodRunning {
-			key, err := cache.MetaNamespaceKeyFunc(pod)
-			if err == nil {
-				return key, true
-			}
+		if pod, ok := obj.(*v1.Pod); ok {
+			pods = append(pods, pod)
 		}
 	}
-	// Fallback to the first pod found.
-	key, err := cache.MetaNamespaceKeyFunc(objs[0])
+	if len(pods) == 0 {
+		return "", false
+	}
+	// If multiple pods share the IP prefer the one that is not being deleted,
+	// then the Running one. A pod being deleted still reports Running with its
+	// IPs after its sandbox is gone, and by then another pod may own the IP.
+	best := slices.MaxFunc(pods, func(a, b *v1.Pod) int {
+		return cmp.Compare(ownershipRank(a), ownershipRank(b))
+	})
+	key, err := cache.MetaNamespaceKeyFunc(best)
 	if err != nil {
 		return "", false
 	}
 	return key, true
+}
+
+// ownershipRank scores how likely a pod is to own the IPs in its status.
+func ownershipRank(pod *v1.Pod) int {
+	rank := 0
+	if pod.DeletionTimestamp == nil {
+		rank += 2
+	}
+	if pod.Status.Phase == v1.PodRunning {
+		rank++
+	}
+	return rank
 }
