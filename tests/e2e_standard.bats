@@ -396,15 +396,15 @@ EOF
 
 
 # https://github.com/kubernetes-sigs/kube-network-policies/issues/415
-@test "denied connections are logged by default at verbosity 0" {
-  # Run the agent at verbosity 0, the denied packets are logged by default
-  # (--log-verdicts=deny) without the per-packet trace of --v=2
-  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=0/" < "$BATS_TEST_DIRNAME"/../install.yaml)
+@test "denied connections are logged with the default manifest" {
+  # Run the agent with the verbosity of the manifest, the denied packets are
+  # logged by default (--log-verdicts=deny) without the per-packet trace of --v=4
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" < "$BATS_TEST_DIRNAME"/../install.yaml)
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl -n kube-system rollout status ds/kube-network-policies --timeout=120s
   args=$(kubectl -n kube-system get ds kube-network-policies -o jsonpath='{.spec.template.spec.containers[0].args}')
   echo "Agent args: $args"
-  echo "$args" | grep -q -- '--v=0'
+  echo "$args" | grep -q -- '--v=2'
   ! echo "$args" | grep -q -- '--log-verdicts'
 
   kubectl apply -f - <<EOF

@@ -25,16 +25,16 @@ var tcpSYN = []byte{
 }
 
 // newTracingEvaluator returns an evaluator that, like the production ones,
-// writes one V(2) line per direction with the result of its evaluation.
+// writes one V(4) line per direction with the result of its evaluation.
 func newTracingEvaluator(name string, egress, ingress api.Verdict) *mockPolicyEvaluator {
 	return &mockPolicyEvaluator{
 		name: name,
 		evaluateEgress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
-			klog.FromContext(ctx).V(2).Info("Egress evaluation", "evaluator", name, "npolicies", 1, "action", "Pass")
+			klog.FromContext(ctx).V(4).Info("Egress evaluation", "evaluator", name, "npolicies", 1, "action", "Pass")
 			return egress, nil
 		},
 		evaluateIngress: func(ctx context.Context, p *network.Packet, srcPod, dstPod *api.PodInfo) (api.Verdict, error) {
-			klog.FromContext(ctx).V(2).Info("Ingress evaluation", "evaluator", name, "npolicies", 1, "action", "Pass")
+			klog.FromContext(ctx).V(4).Info("Ingress evaluation", "evaluator", name, "npolicies", 1, "action", "Pass")
 			return ingress, nil
 		},
 	}
@@ -78,7 +78,7 @@ func benchSink(b *testing.B, name string) io.Writer {
 
 // BenchmarkEvaluatePacket measures the verdict of one packet through a
 // pipeline with the shape of the npa-v1alpha2 binary: an admin tier, the
-// standard NetworkPolicy and a baseline tier. At verbosity 2 the pipeline is
+// standard NetworkPolicy and a baseline tier. At verbosity 4 the pipeline is
 // preceded by the LoggingPolicy, as in the binaries, and every component
 // writes its per-packet trace. The verdict log cases run at verbosity 0 with
 // the verdicts written by the VerdictLogger, the records it drops because
@@ -94,13 +94,13 @@ func BenchmarkEvaluatePacket(b *testing.B) {
 		baseline api.Verdict
 	}{
 		{name: "accept/v0", verbosity: 0, sink: "discard", baseline: api.VerdictNext},
-		{name: "accept/v2/discard", verbosity: 2, sink: "discard", baseline: api.VerdictNext},
-		{name: "accept/v2/pipe", verbosity: 2, sink: "pipe", baseline: api.VerdictNext},
+		{name: "accept/v4/discard", verbosity: 4, sink: "discard", baseline: api.VerdictNext},
+		{name: "accept/v4/pipe", verbosity: 4, sink: "pipe", baseline: api.VerdictNext},
 		{name: "accept/v0/verdictlog=deny/pipe", verbosity: 0, sink: "pipe", verdictLog: VerdictLogDeny, baseline: api.VerdictNext},
 		{name: "accept/v0/verdictlog=all/pipe", verbosity: 0, sink: "pipe", verdictLog: VerdictLogAll, baseline: api.VerdictNext},
 		{name: "deny/v0", verbosity: 0, sink: "discard", baseline: api.VerdictDeny},
-		{name: "deny/v2/discard", verbosity: 2, sink: "discard", baseline: api.VerdictDeny},
-		{name: "deny/v2/pipe", verbosity: 2, sink: "pipe", baseline: api.VerdictDeny},
+		{name: "deny/v4/discard", verbosity: 4, sink: "discard", baseline: api.VerdictDeny},
+		{name: "deny/v4/pipe", verbosity: 4, sink: "pipe", baseline: api.VerdictDeny},
 		{name: "deny/v0/verdictlog=deny/pipe", verbosity: 0, sink: "pipe", verdictLog: VerdictLogDeny, baseline: api.VerdictDeny},
 	}
 
@@ -113,7 +113,7 @@ func BenchmarkEvaluatePacket(b *testing.B) {
 			packet.ID = 1
 
 			evaluators := []api.PolicyEvaluator{}
-			if tc.verbosity >= 2 {
+			if tc.verbosity >= 4 {
 				evaluators = append(evaluators, NewLoggingPolicy())
 			}
 			evaluators = append(evaluators,

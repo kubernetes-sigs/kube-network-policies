@@ -14,7 +14,7 @@ There are two kinds of per-packet entries:
   that decided. It is written at any verbosity, controlled by `--log-verdicts`, and the
   denied packets are logged by default. This is the entry to use for auditing, alerting
   and most troubleshooting.
-- The **evaluation trace**, several entries per packet, written at `-v=2`. It shows each
+- The **evaluation trace**, several entries per packet, written at `-v=4`. It shows each
   step of the pipeline and is meant for debugging the policy evaluation itself.
 
 ## Enabling JSON logging
@@ -25,8 +25,10 @@ Pass the following flag to the controller binary (or set it in the DaemonSet arg
 --logging-format=json
 ```
 
-Add `-v=2` to also get the evaluation trace. The trace costs several log lines per
-connection written in the packet processing path, so keep it for debugging sessions.
+The manifests and the chart run the agent at `-v=2`, which logs the verdicts and the
+state changes of the agent but no per-packet trace. Add `-v=4` to also get the
+evaluation trace. The trace costs several log lines per connection written in the packet
+processing path, so keep it for debugging sessions.
 
 ## Verdict entries
 
@@ -75,15 +77,15 @@ delay the packets. When the destination falls behind, the verdicts that do not f
 the buffer are dropped and counted in the `kube_network_policies_verdict_log_dropped`
 metric.
 
-## Evaluation trace at `-v=2`
+## Evaluation trace at `-v=4`
 
-At `-v=2`, two things happen:
+At `-v=4`, two things happen:
 - The `LoggingPolicy` evaluator is activated and emits one log entry per packet and
   direction with its 5-tuple and the source/destination pod names.
 - The policy engine emits a trace entry for each packet indicating whether it was
   accepted or denied.
 
-Without `-v=2`, the `LoggingPolicy` evaluator is not added to the pipeline and these
+Without `-v=4`, the `LoggingPolicy` evaluator is not added to the pipeline and these
 entries are not produced.
 
 ### Packet evaluation entry
@@ -169,7 +171,7 @@ kubectl logs -n kube-system -l k8s-app=kube-network-policies --follow
 ```
 
 The verdict entries are enough for all of them at the default verbosity. The last
-section uses the evaluation trace and needs `-v=2`.
+section uses the evaluation trace and needs `-v=4`.
 
 ### Show all denied packets
 
@@ -227,7 +229,7 @@ kubectl logs ... | jq -r 'select(.verdict == "deny") | "\(.direction) \(.evaluat
 kubectl logs ... | jq -r 'select(.verdict == "deny") | .dst | split(":") | last' | sort -n | uniq -c | sort -rn
 ```
 
-### Follow the evaluation of a denied packet (`-v=2`)
+### Follow the evaluation of a denied packet (`-v=4`)
 
 Take the `id` of a verdict entry (e.g. `id=42`) and show every entry of that packet,
 the evaluation of each direction and the pipeline result:

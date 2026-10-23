@@ -167,8 +167,9 @@ func run() int {
 	// by the order in the array.
 	evaluators := []api.PolicyEvaluator{}
 
-	// Logging evaluator must go first if enabled.
-	if klog.V(2).Enabled() {
+	// Logging evaluator must go first if enabled, it writes the per-packet
+	// trace at verbosity 4.
+	if klog.V(4).Enabled() {
 		evaluators = append(evaluators, networkpolicy.NewLoggingPolicy())
 	}
 

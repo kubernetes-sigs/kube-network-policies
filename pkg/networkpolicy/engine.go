@@ -62,7 +62,7 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 		return false, err
 	}
 	if verdict == api.VerdictDeny {
-		logger.V(2).Info("Packet denied by egress policy")
+		logger.V(4).Info("Packet denied by egress policy")
 		e.logVerdict(packet, srcPod, dstPod, verdict, DirectionEgress, evaluator)
 		return false, nil
 	}
@@ -74,12 +74,12 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 		return false, err
 	}
 	if verdict == api.VerdictDeny {
-		logger.V(2).Info("Packet denied by ingress policy")
+		logger.V(4).Info("Packet denied by ingress policy")
 		e.logVerdict(packet, srcPod, dstPod, verdict, DirectionIngress, evaluator)
 		return false, nil
 	}
 
-	logger.V(2).Info("Packet accepted by policy")
+	logger.V(4).Info("Packet accepted by policy")
 	e.logVerdict(packet, srcPod, dstPod, verdict, DirectionIngress, evaluator)
 	return true, nil
 }

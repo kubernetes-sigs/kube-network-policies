@@ -81,7 +81,7 @@ spec:
         args:
         - /bin/netpol
         - --hostname-override=$(MY_NODE_NAME)
-        - --v=4
+        - --v=2
         - --nfqueue-id=89
         volumeMounts:
         - name: nri-plugin
