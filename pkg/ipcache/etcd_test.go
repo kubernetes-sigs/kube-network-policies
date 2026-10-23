@@ -114,3 +114,39 @@ func TestEtcdStore_Store(t *testing.T) {
 		t.Error("item not found after deleting another item")
 	}
 }
+
+func TestEtcdStore_DeleteIfOwner(t *testing.T) {
+	store := newTestEtcdStore(t)
+	ip := "192.168.1.10"
+	oldPod := &api.PodInfo{Name: "job-old", Namespace: &api.Namespace{Name: "ns"}, UID: "uid-old"}
+	newPod := &api.PodInfo{Name: "web", Namespace: &api.Namespace{Name: "ns"}, UID: "uid-new"}
+
+	// Unknown IP is a no-op.
+	if err := store.DeleteIfOwner(ip, "uid-old"); err != nil {
+		t.Fatalf("DeleteIfOwner() error = %v", err)
+	}
+
+	// The owner deletes its own entry.
+	if err := store.Upsert(ip, oldPod); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	if err := store.DeleteIfOwner(ip, "uid-old"); err != nil {
+		t.Fatalf("DeleteIfOwner() error = %v", err)
+	}
+	if _, found := store.GetPodInfoByIP(ip); found {
+		t.Fatal("entry still present after the owner deleted it")
+	}
+
+	// A late deletion of the old pod keeps the entry of the new owner.
+	if err := store.Upsert(ip, newPod); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	if err := store.DeleteIfOwner(ip, "uid-old"); err != nil {
+		t.Fatalf("DeleteIfOwner() error = %v", err)
+	}
+	got, found := store.GetPodInfoByIP(ip)
+	if !found || got.GetUID() != "uid-new" {
+		t.Fatalf("entry of the new owner lost: found=%v got=%v", found, got)
+	}
+
+}
