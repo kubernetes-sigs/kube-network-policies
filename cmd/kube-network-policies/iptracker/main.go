@@ -207,7 +207,7 @@ func run() int {
 
 	informersFactory.Start(ctx.Done())
 
-	cmd.Start(ctx, networkpolicy.NewPolicyEngine(podInfoProvider, evaluators), dpCfg, opts.MetricsBindAddress)
+	cmd.Start(ctx, networkpolicy.NewPolicyEngine(podInfoProvider, evaluators), dpCfg, opts)
 
 	<-ctx.Done()
 	logger.Info("Received termination signal, starting cleanup...")

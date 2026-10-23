@@ -51,7 +51,7 @@ func (o *Options) AddFlags(fs *flag.FlagSet) {
 }
 
 // Start starts the common application components.
-func Start(ctx context.Context, policyEngine *networkpolicy.PolicyEngine, dpConfig dataplane.Config, metricsBindAddress string) {
+func Start(ctx context.Context, policyEngine *networkpolicy.PolicyEngine, dpConfig dataplane.Config, opts *Options) {
 	logger := klog.FromContext(ctx)
 
 	printVersion()
@@ -59,7 +59,7 @@ func Start(ctx context.Context, policyEngine *networkpolicy.PolicyEngine, dpConf
 	// Start metrics server
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
-		err := http.ListenAndServe(metricsBindAddress, nil)
+		err := http.ListenAndServe(opts.MetricsBindAddress, nil)
 		if err != nil {
 			utilruntime.HandleError(fmt.Errorf("metrics server failed: %w", err))
 		}
