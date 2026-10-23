@@ -395,3 +395,52 @@ EOF
 }
 
 
+# https://github.com/kubernetes-sigs/kube-network-policies/issues/415
+@test "denied connections are logged by default at verbosity 0" {
+  # Run the agent at verbosity 0, the denied packets are logged by default
+  # (--log-verdicts=deny) without the per-packet trace of --v=2
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=0/" < "$BATS_TEST_DIRNAME"/../install.yaml)
+  printf '%s' "${_install}" | kubectl apply -f -
+  kubectl -n kube-system rollout status ds/kube-network-policies --timeout=120s
+  args=$(kubectl -n kube-system get ds kube-network-policies -o jsonpath='{.spec.template.spec.containers[0].args}')
+  echo "Agent args: $args"
+  echo "$args" | grep -q -- '--v=0'
+  ! echo "$args" | grep -q -- '--log-verdicts'
+
+  kubectl apply -f - <<EOF
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: web-deny-all
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  ingress: []
+EOF
+  # propagation delay
+  sleep 1
+
+  # query should be blocked
+  client="test-$RANDOM"
+  output=$(kubectl run "$client" --namespace=dev --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --restart=Never -i --command -- bash -c "curl -q -s --connect-timeout 5 --output /dev/null http://web.default && echo ok || echo fail")
+  echo "Connect to webserver should fail: $output"
+  test "$output" = "fail"
+
+  # the denial is logged by the agent on the node of the webserver, the pod that the policy selects
+  logs=$(kubectl -n kube-system logs -l k8s-app=kube-network-policies --tail=-1 | grep '"Packet verdict"' || true)
+  echo "Verdicts logged: $logs"
+  echo "$logs" | grep -q 'verdict="deny"'
+  echo "$logs" | grep -q "srcPod=\"dev/$client\""
+  echo "$logs" | grep -q 'dstPod="default/web"'
+  echo "$logs" | grep -q 'direction="ingress"'
+  echo "$logs" | grep -q 'evaluator="StandardNetworkPolicy"'
+  # the trace is not logged
+  ! kubectl -n kube-system logs -l k8s-app=kube-network-policies --tail=-1 | grep -q '"Evaluating packet"'
+
+  # cleanup
+  kubectl delete networkpolicy web-deny-all
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install.yaml)
+  printf '%s' "${_install}" | kubectl apply -f -
+  kubectl -n kube-system rollout status ds/kube-network-policies --timeout=120s
+}

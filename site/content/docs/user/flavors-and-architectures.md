@@ -61,6 +61,7 @@ When deploying `kube-network-policies` or `kube-ip-tracker`, you can pass the fo
 | `--netfilter-bug-1766-fix` | `true` | Processes DNS packets on `PREROUTING` to prevent a conntrack race bug in Linux kernels before v6.12. |
 | `--disable-nri` | `false` | Disables NRI integration. NRI avoids race conditions by retrieving pod container setup events early. |
 | `--strict-mode` | `true` | If true, updates to policies will immediately evaluate and affect established connections in addition to new ones. |
+| `--log-verdicts` | `deny` | Logs the verdict of the evaluated packets at any verbosity: `deny` logs the denied packets, `all` also the accepted ones and `none` disables it. The verdicts are written by a dedicated goroutine, so they do not delay the packets, and dropped when the log destination falls behind (see the `kube_network_policies_verdict_log_dropped` metric). |
 
 ### Standalone IP Tracker Flags (`kube-ip-tracker`)
 
