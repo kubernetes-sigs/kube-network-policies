@@ -25,6 +25,11 @@ func NewPodInfo(pod *v1.Pod, nsLabels map[string]string, nodeLabels map[string]s
 		return nil
 	}
 
+	ips := make([]string, 0, len(pod.Status.PodIPs))
+	for _, ip := range pod.Status.PodIPs {
+		ips = append(ips, ip.IP)
+	}
+
 	containerPorts := make([]*ContainerPort, 0)
 	for _, container := range pod.Spec.Containers {
 		for _, port := range container.Ports {
@@ -50,5 +55,6 @@ func NewPodInfo(pod *v1.Pod, nsLabels map[string]string, nodeLabels map[string]s
 		},
 		ClusterId:   clusterID,
 		LastUpdated: time.Now().Unix(), // TODO: maybe get it from the managedFields metadata
+		IPs:         ips,
 	}
 }

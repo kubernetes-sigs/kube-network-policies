@@ -51,4 +51,6 @@ message PodInfo {
   Node node = 5;
   int64 last_updated = 6;
   string cluster_id = 7;
+  // IPs of the Pod
+  repeated string IPs = 8;
 }
