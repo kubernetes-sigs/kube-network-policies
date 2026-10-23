@@ -294,6 +294,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
+		meta skuid 0 ct direction original ct label set 28 counter packets 0 bytes 0 accept
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		ip saddr @podips-v4 queue flags bypass to 102
@@ -347,6 +348,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
+		meta skuid 0 ct direction original ct label set 28 counter packets 0 bytes 0 accept
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		queue to 102
@@ -393,6 +395,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
+		meta skuid 0 ct direction original ct label set 28 counter packets 0 bytes 0 accept
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		queue to 102
@@ -1337,5 +1340,115 @@ func testController_ExistingConnections(t *testing.T) {
 	n, err = clientPost.Read(buf)
 	if err != nil || string(buf[:n]) != "world" {
 		t.Fatalf("clientPost read after re-allow = %q, %v; want %q", string(buf[:n]), err, "world")
+	}
+}
+
+func TestController_NodeInitiatedConnectionClose(t *testing.T) {
+	if !unpriviledUserns() {
+		t.Skip("Test requires unprivileged user namespaces")
+	}
+	execInUserns(t, testController_NodeInitiatedConnectionClose, syscall.CLONE_NEWNET)
+}
+
+func testController_NodeInitiatedConnectionClose(t *testing.T) {
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		t.Fatalf("failed to bring lo up: %v: %s", err, out)
+	}
+
+	var queuedPackets atomic.Int32
+	evaluator := &mockPolicyEvaluator{
+		name:      "deny-all-evaluator",
+		divertAll: true,
+		isReady:   true,
+		evaluateEgress: func(_ context.Context, _ *network.Packet, _, _ *api.PodInfo) (api.Verdict, error) {
+			queuedPackets.Add(1)
+			return api.VerdictDeny, nil
+		},
+	}
+
+	config := Config{
+		QueueID:     203,
+		FailOpen:    false,
+		StrictMode:  true,
+		NFTableName: "test-node-close",
+		// Keep default skipSkuidBypass: false so node-initiated traffic is allowed and labelled.
+	}
+	if err := config.Defaults(); err != nil {
+		t.Fatalf("Defaults() error = %v", err)
+	}
+
+	controller := newTestController(config, []api.PolicyEvaluator{evaluator})
+	controller.connRunner = runner.NewBoundedFrequencyRunner(
+		"test-conn-runner",
+		func() error { return nil },
+		1*time.Millisecond, 1*time.Millisecond, 10*time.Second)
+	go func() {
+		_ = controller.Run(t.Context())
+	}()
+
+	// Wait until the nftables rules are synced in the namespace.
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if out, err := exec.Command("nft", "list", "table", "inet", config.NFTableName).Output(); err == nil && len(out) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		srvConn, err := ln.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer srvConn.Close()
+		_ = srvConn.SetDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 16)
+		if _, err := srvConn.Read(buf); err != nil {
+			serverDone <- fmt.Errorf("server read request: %w", err)
+			return
+		}
+		if _, err := srvConn.Write([]byte("ok")); err != nil {
+			serverDone <- fmt.Errorf("server write response: %w", err)
+			return
+		}
+		// Wait for client's FIN (client closes first, putting client in FIN_WAIT_2 / TIME_WAIT).
+		if _, err := srvConn.Read(buf); err == nil {
+			serverDone <- fmt.Errorf("expected EOF after client close")
+			return
+		}
+		serverDone <- nil
+	}()
+
+	clientConn, err := net.DialTimeout("tcp", ln.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("client dial failed: %v", err)
+	}
+	_ = clientConn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := clientConn.Write([]byte("probe")); err != nil {
+		t.Fatalf("client write failed: %v", err)
+	}
+	buf := make([]byte, 16)
+	if _, err := clientConn.Read(buf); err != nil {
+		t.Fatalf("client read reply failed: %v", err)
+	}
+	// Client closes first (simulating kubelet closing a probe connection first).
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("client close failed: %v", err)
+	}
+
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server failed: %v", err)
+	}
+	// Give any trailing TIME_WAIT ACK time to traverse postrouting.
+	time.Sleep(50 * time.Millisecond)
+	if got := queuedPackets.Load(); got != 0 {
+		t.Fatalf("expected 0 packets queued to nfqueue for node-initiated connection, got %d", got)
 	}
 }

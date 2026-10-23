@@ -693,11 +693,38 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 		},
 	})
 
-	// Don't process traffic generated from the root user in the Node, it can block kubelet probes
+	// Don't process traffic initiated from the root user in the Node, it can block kubelet probes
 	// or system daemons that depend on the internal node traffic to not be blocked.
+	// Connections opened by the node (ct direction original) also get the accept conntrack label,
+	// so the packets the kernel sends once the socket is gone (e.g. TIME_WAIT or orphaned FINs),
+	// which have no owner uid, are accepted by the established rule below.
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/65
-	// meta skuid 0 accept
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/417
+	// meta skuid 0 ct direction original ct label set X counter accept
+	//
+	// Replies from root owned servers (apiserver, kubelet, ...) are accepted without touching the
+	// label. The label can not be set on connections that predate the agent, because the kernel
+	// only allocates the labels extension while "ct label" rules are loaded, so without this rule
+	// every packet of those connections would be queued for as long as they live. A reply can
+	// only exist if the original direction was already admitted, so nothing is bypassed here.
+	// The label is deliberately not set: a root server replying on a pod to node connection whose
+	// label firewallEnforcer just cleared must not re-label it.
+	// meta skuid 0 counter accept
 	if !c.config.skipSkuidBypass {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeySKUID, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeyDIRECTION},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0}},
+				&expr.Immediate{Register: 0x1, Data: generateLabelMask(c.config.CTLabelAccept)},
+				&expr.Ct{Register: 0x1, SourceRegister: true, Key: expr.CtKeyLABELS},
+				&expr.Counter{},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			},
+		})
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
