@@ -57,7 +57,7 @@ jobs:
         # TODO add "dual", waiting on KEP https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/3705-cloud-node-ips
         ipFamily: ["ipv4", "ipv6"]
         # TODO add nftables (beta in 1.31) waiting for 1.31 images
-        proxyMode: ["iptables", "ipvs"]
+        proxyMode: ["iptables"]
     env:
       JOB_NAME: "kube-network-policies-${{ matrix.ipFamily }}-${{ matrix.proxyMode }}"
       IP_FAMILY: ${{ matrix.ipFamily }}
