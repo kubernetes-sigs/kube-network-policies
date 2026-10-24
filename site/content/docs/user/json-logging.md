@@ -49,7 +49,7 @@ Emitted once per direction (Egress then Ingress) for each packet:
 Key fields:
 - `id`: packet ID; links this entry to the corresponding verdict entry
 - `direction`: `"Egress"` or `"Ingress"`
-- `srcPod` / `dstPod`: `"namespace/name"`, or `"external"` for traffic outside the cluster
+- `srcPod` / `dstPod`: `"namespace/name"`, or `"external"` when the IP does not resolve to a pod. That is traffic outside the cluster, but also a pod the agent does not know yet. The `kube_network_policies_unresolved_ip_count` metric counts those packets by `endpoint` (`source` or `destination`)
 - `packet`: the 5-tuple without the raw payload (payload is omitted in JSON mode)
 
 ### Verdict entry

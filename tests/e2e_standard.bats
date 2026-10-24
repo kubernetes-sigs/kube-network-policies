@@ -395,3 +395,203 @@ EOF
 }
 
 
+
+# agent_logged returns 0 if the kube-network-policies pod on the node logged the string
+agent_logged() {
+  local agent
+  agent=$(kubectl -n kube-system get pods -l k8s-app=kube-network-policies --field-selector "spec.nodeName=$1" -o name)
+  test -n "$agent" && kubectl -n kube-system logs "$agent" --tail=-1 | grep -q -- "$2"
+}
+
+# move_ipam_cursor_before makes host-local hand out the given IPv4 and IPv6
+# addresses on the next allocation on the node. kindnet uses host-local IPAM
+# and allocates the address after the last reserved one.
+move_ipam_cursor_before() {
+  local node="$1" a4="$2" a6="$3" ipam_dir="/run/cni-ipam-state/kindnet"
+  local prev4 prev6
+  prev4="${a4%.*}.$(( ${a4##*.} - 1 ))"
+  prev6="${a6%:*}:$(printf '%x' $(( 16#${a6##*:} - 1 )))"
+  echo "moving the IPAM cursors to $prev4 and $prev6"
+  docker exec "$node" flock "$ipam_dir/lock" sh -c "printf '%s' '$prev4' > '$ipam_dir/last_reserved_ip.0' && printf '%s' '$prev6' > '$ipam_dir/last_reserved_ip.1'"
+}
+
+# wait_ipam_released waits until host-local removed the reservation files of the IPs
+wait_ipam_released() {
+  local node="$1" a4="$2" a6="$3" ipam_dir="/run/cni-ipam-state/kindnet" i
+  for i in $(seq 1 20); do
+    if ! docker exec "$node" test -e "$ipam_dir/$a4" && ! docker exec "$node" test -e "$ipam_dir/$a6"; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+# https://github.com/kubernetes-sigs/kube-network-policies/issues/414
+# A finished pod keeps its IPs in the apiserver, a new pod that gets those IPs
+# must be evaluated with its own policies from its first packet. kindnet uses
+# host-local IPAM, so the reuse is forced by moving the allocation cursor back.
+@test "a pod reusing the IPs of a finished pod is denied from its first packet" {
+  local node="${CLUSTER_NAME}-worker"
+
+  # The test only means something if the agent on the node is connected to the runtime
+  if ! agent_logged "$node" "Synchronized state with the runtime"; then
+    skip "NRI is not enabled on $node"
+  fi
+
+  local web4 web6
+  web4=$(kubectl get pod web -o jsonpath='{.status.podIPs[0].ip}')
+  web6=$(kubectl get pod web -o jsonpath='{.status.podIPs[1].ip}')
+  echo "web server at $web4 and $web6"
+
+  # Pod A is selected by a policy that allows everything, so its IPs stay in
+  # the dataplane set after it finishes. Pod B is denied all egress.
+  kubectl apply -f - <<EOP
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-pod-a
+  namespace: dev
+spec:
+  podSelector:
+    matchLabels:
+      app: pod-a
+  policyTypes:
+  - Egress
+  egress:
+  - {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-pod-b
+  namespace: dev
+spec:
+  podSelector:
+    matchLabels:
+      app: pod-b
+  policyTypes:
+  - Egress
+EOP
+  sleep 1
+
+  kubectl -n dev run pod-a --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --labels="app=pod-a" --restart=Never \
+    --overrides="{\"spec\":{\"nodeName\":\"$node\"}}" --command -- sleep 1
+  kubectl -n dev wait --for=jsonpath='{.status.phase}'=Succeeded pod/pod-a --timeout=60s
+  local a4 a6
+  a4=$(kubectl -n dev get pod pod-a -o jsonpath='{.status.podIPs[0].ip}')
+  a6=$(kubectl -n dev get pod pod-a -o jsonpath='{.status.podIPs[1].ip}')
+  echo "pod-a finished with $a4 and $a6"
+
+  wait_ipam_released "$node" "$a4" "$a6"
+  move_ipam_cursor_before "$node" "$a4" "$a6"
+
+  # Pod B connects to the server from its first instant
+  kubectl -n dev run pod-b --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --labels="app=pod-b" --restart=Never \
+    --overrides="{\"spec\":{\"nodeName\":\"$node\"}}" --command -- bash -c "
+      for i in \$(seq 1 5); do
+        curl -s --connect-timeout 1 -o /dev/null http://$web4/ && echo ok4 || echo fail4
+        curl -g -s --connect-timeout 1 -o /dev/null http://[$web6]/ && echo ok6 || echo fail6
+      done"
+  kubectl -n dev wait --for=jsonpath='{.status.phase}'=Succeeded pod/pod-b --timeout=60s
+  local b4 b6
+  b4=$(kubectl -n dev get pod pod-b -o jsonpath='{.status.podIPs[0].ip}')
+  b6=$(kubectl -n dev get pod pod-b -o jsonpath='{.status.podIPs[1].ip}')
+  echo "pod-b got $b4 and $b6"
+  test "$b4" = "$a4"
+  test "$b6" = "$a6"
+
+  local output
+  output=$(kubectl -n dev logs pod-b)
+  echo "pod-b connections: $output"
+  test "$(grep -c '^ok' <<<"$output")" = "0"
+  test "$(grep -c '^fail' <<<"$output")" = "10"
+
+  # Positive control, the server is reachable from a pod without policies.
+  # The output is read from the logs, kubectl run -i may print it twice when
+  # the attach falls back to streaming the logs.
+  kubectl -n dev run pod-c --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --restart=Never \
+    --overrides="{\"spec\":{\"nodeName\":\"$node\"}}" --command -- bash -c "curl -s --connect-timeout 5 -o /dev/null http://$web4/ && echo ok || echo fail"
+  kubectl -n dev wait --for=jsonpath='{.status.phase}'=Succeeded pod/pod-c --timeout=60s
+  output=$(kubectl -n dev logs pod-c)
+  echo "connect to webserver should work: $output"
+  test "$output" = "ok"
+
+  kubectl -n dev delete networkpolicy allow-pod-a deny-pod-b
+}
+
+# The fix for issue 414 relies on the runtime: NRI releases the IPs when the
+# pod finishes, while the apiserver still shows them; a reconnect to the
+# runtime does not bring the finished pod back as the owner; and the late
+# removal of the finished pod, with the IPs that belong to another pod now,
+# does not change the verdict for that pod.
+@test "the owner of a reused IP survives a runtime reconnect and the removal of the finished pod" {
+  local node="${CLUSTER_NAME}-worker"
+
+  if ! agent_logged "$node" "Synchronized state with the runtime"; then
+    skip "NRI is not enabled on $node"
+  fi
+
+  local web4
+  web4=$(kubectl get pod web -o jsonpath='{.status.podIPs[0].ip}')
+
+  kubectl apply -f - <<EOP
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-pod-b
+  namespace: dev
+spec:
+  podSelector:
+    matchLabels:
+      app: pod-b
+  policyTypes:
+  - Egress
+EOP
+  sleep 1
+
+  kubectl -n dev run pod-a --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --labels="app=pod-a" --restart=Never \
+    --overrides="{\"spec\":{\"nodeName\":\"$node\"}}" --command -- sleep 1
+  kubectl -n dev wait --for=jsonpath='{.status.phase}'=Succeeded pod/pod-a --timeout=60s
+  local a4 a6
+  a4=$(kubectl -n dev get pod pod-a -o jsonpath='{.status.podIPs[0].ip}')
+  a6=$(kubectl -n dev get pod pod-a -o jsonpath='{.status.podIPs[1].ip}')
+  echo "pod-a finished, the apiserver still shows $a4 and $a6"
+  test -n "$a4" && test -n "$a6"
+
+  # The runtime released the IPs when the pod finished
+  busywait agent_logged "$node" "Stopping Pod dev/pod-a"
+  wait_ipam_released "$node" "$a4" "$a6"
+
+  # Reconnect to the runtime, the snapshot lists the stopped sandbox of pod-a
+  kubectl -n kube-system delete pod -l k8s-app=kube-network-policies --field-selector "spec.nodeName=$node" --wait=true
+  local i
+  for i in $(seq 1 30); do
+    kubectl -n kube-system get pods -l k8s-app=kube-network-policies --field-selector "spec.nodeName=$node" -o name | grep -q . && break
+    sleep 1
+  done
+  kubectl -n kube-system wait --for=condition=ready pods -l k8s-app=kube-network-policies --field-selector "spec.nodeName=$node" --timeout=60s
+  busywait agent_logged "$node" "Synchronized state with the runtime"
+
+  move_ipam_cursor_before "$node" "$a4" "$a6"
+  kubectl -n dev run pod-b --image=registry.k8s.io/e2e-test-images/agnhost:2.39 --labels="app=pod-b" --restart=Never \
+    --overrides="{\"spec\":{\"nodeName\":\"$node\"}}" --command -- sleep 3600
+  kubectl -n dev wait --for=condition=ready pod/pod-b --timeout=60s
+  local b4
+  b4=$(kubectl -n dev get pod pod-b -o jsonpath='{.status.podIPs[0].ip}')
+  echo "pod-b got $b4"
+  test "$b4" = "$a4"
+
+  # The finished pod is deleted, the kubelet removes its sandbox later and the
+  # event carries the IPs that belong to pod-b now
+  kubectl -n dev delete pod pod-a --wait=false
+  for i in $(seq 1 90); do agent_logged "$node" "Removing Pod dev/pod-a" && break; sleep 1; done
+  agent_logged "$node" "Removing Pod dev/pod-a"
+
+  local output
+  output=$(kubectl -n dev exec pod-b -- bash -c "curl -s --connect-timeout 2 -o /dev/null http://$web4/ && echo ok || echo fail")
+  echo "pod-b connection after the removal of pod-a: $output"
+  test "$output" = "fail"
+
+  kubectl -n dev delete networkpolicy deny-pod-b
+}

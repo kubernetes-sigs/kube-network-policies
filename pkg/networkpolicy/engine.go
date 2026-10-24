@@ -31,6 +31,7 @@ type PolicyEngine struct {
 
 // NewPolicyEngine creates a new engine with a predefined evaluation order.
 func NewPolicyEngine(podInfoProvider api.PodInfoProvider, evaluators []api.PolicyEvaluator) *PolicyEngine {
+	registerMetrics()
 	return &PolicyEngine{
 		podInfoProvider: podInfoProvider,
 		evaluators:      evaluators,
@@ -46,6 +47,12 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 	// across the pipeline and for efficiency.
 	srcPod, _ := e.podInfoProvider.GetPodInfoByIP(packet.SrcIP.String())
 	dstPod, _ := e.podInfoProvider.GetPodInfoByIP(packet.DstIP.String())
+	if srcPod == nil {
+		unresolvedIPCounter.WithLabelValues("source").Inc()
+	}
+	if dstPod == nil {
+		unresolvedIPCounter.WithLabelValues("destination").Inc()
+	}
 
 	// 1. Evaluate Egress
 	verdict, err := e.runEgressPipeline(ctx, packet, srcPod, dstPod)
