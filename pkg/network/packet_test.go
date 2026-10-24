@@ -309,3 +309,35 @@ var packetsTCPIPv4 = [][]byte{
 		0x66, 0xb2, 0x32, 0xe1,
 	},
 }
+
+func TestPacketReverse(t *testing.T) {
+	original := Packet{
+		ID:      7,
+		Family:  v1.IPv4Protocol,
+		SrcIP:   net.ParseIP("10.0.0.1"),
+		DstIP:   net.ParseIP("10.0.0.2"),
+		Proto:   v1.ProtocolTCP,
+		SrcPort: 12345,
+		DstPort: 80,
+		Payload: []byte{1, 2, 3},
+	}
+
+	reversed := original.Reverse()
+
+	if !reversed.SrcIP.Equal(original.DstIP) || !reversed.DstIP.Equal(original.SrcIP) {
+		t.Errorf("Reverse() IPs = %s -> %s, want %s -> %s", reversed.SrcIP, reversed.DstIP, original.DstIP, original.SrcIP)
+	}
+	if reversed.SrcPort != original.DstPort || reversed.DstPort != original.SrcPort {
+		t.Errorf("Reverse() ports = %d -> %d, want %d -> %d", reversed.SrcPort, reversed.DstPort, original.DstPort, original.SrcPort)
+	}
+	if reversed.ID != original.ID || reversed.Family != original.Family || reversed.Proto != original.Proto {
+		t.Errorf("Reverse() changed fields unrelated to direction: %+v", reversed)
+	}
+	// The receiver must not be modified.
+	if !original.SrcIP.Equal(net.ParseIP("10.0.0.1")) || original.SrcPort != 12345 {
+		t.Errorf("Reverse() modified the receiver: %+v", original)
+	}
+	if got := reversed.Reverse(); !got.SrcIP.Equal(original.SrcIP) || got.SrcPort != original.SrcPort {
+		t.Errorf("Reverse().Reverse() = %+v, want %+v", got, original)
+	}
+}

@@ -229,9 +229,9 @@ func (c *Controller) Run(ctx context.Context) error {
 	// This also solves a bug with SCTP
 	// https://github.com/aojea/kube-netpol/issues/8
 	// https://bugzilla.netfilter.org/show_bug.cgi?id=1742
-	flags = nfqueue.NfQaCfgFlagGSO
+	flags = nfqueue.NfQaCfgFlagGSO | nfqueue.NfQaCfgFlagConntrack
 	if c.config.FailOpen {
-		flags += nfqueue.NfQaCfgFlagFailOpen
+		flags |= nfqueue.NfQaCfgFlagFailOpen
 	}
 
 	// Set configuration options for nfqueue
@@ -271,6 +271,14 @@ func (c *Controller) Run(ctx context.Context) error {
 			return 0
 		}
 		packet.ID = *a.PacketID
+		// Established connections without the accept label (pre-existing connections or
+		// connections whose label was cleared after a policy update) are sent to the queue
+		// on their next packet, which may be a reply. Network policies apply to connections
+		// rather than individual packets, so evaluate the connection as it was originally
+		// initiated. The kernel packet is not modified, only the parsed copy.
+		if isReply(a.CtInfo) {
+			packet = packet.Reverse()
+		}
 
 		defer func() {
 			processingTime := float64(time.Since(startTime).Microseconds())
@@ -406,6 +414,12 @@ func (c *Controller) firewallEnforcer(ctx context.Context) error {
 	}
 
 	for _, flow := range flows {
+		// Only evaluate connections that have the accept label set; connections
+		// without the label are already sent to the queue on their next packet.
+		if !hasLabelBit(flow.Labels, c.config.CTLabelAccept) {
+			continue
+		}
+
 		// only UDP, SCTP or TCP connections in ESTABLISHED state are evaluated
 		if flow.Forward.Protocol != unix.IPPROTO_UDP &&
 			flow.Forward.Protocol != unix.IPPROTO_SCTP &&
@@ -585,104 +599,23 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 	// DNS is processed by addDNSRacersWorkaroundRules()
 	// TODO: remove once kernel fix is on most distros
 	if c.config.NetfilterBug1766Fix {
-		//  udp dport 53 accept
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
-				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: binaryutil.BigEndian.PutUint16(53)},
-				&expr.Verdict{Kind: expr.VerdictAccept},
-			},
-		})
+		addDNSBypassRule(nft, table, chain)
 	}
 
 	// IPv6 needs essential ICMP types for Neighbor Discovery to work
 	// Allow essential ICMPv6 types before queue processing, but let other types
 	// (like ping6) be processed by network policies
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/191
+	addEssentialIPv6ICMPRules(nft, table, chain)
 
-	// Allow Router Solicitation (RS) - Type 133
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
-			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{133}},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
-
-	// Allow Router Advertisement (RA) - Type 134
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
-			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{134}},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
-
-	// Allow Neighbor Solicitation (NS) - Type 135
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
-			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{135}},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
-
-	// Allow Neighbor Advertisement (NA) - Type 136
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
-			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{136}},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
-
-	// Allow Neighbor Redirect - Type 137
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
-			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{137}},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
-
-	// Don't process traffic generated from the root user in the Node, it can block kubelet probes
+	// Don't process traffic initiated from the root user in the Node, it can block kubelet probes
 	// or system daemons that depend on the internal node traffic to not be blocked.
+	// Only match the original direction so node replies to pod-initiated connections are not bypassed,
+	// and set the accept conntrack label so replies and packets sent after socket close (e.g. TIME_WAIT
+	// or orphaned FINs) are accepted by the established rule below.
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/65
-	// meta skuid 0 accept
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/417
+	// meta skuid 0 ct direction original ct label set X counter accept
 	if !c.config.skipSkuidBypass {
 		nft.AddRule(&nftables.Rule{
 			Table: table,
@@ -690,6 +623,10 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 			Exprs: []expr.Any{
 				&expr.Meta{Key: expr.MetaKeySKUID, SourceRegister: false, Register: 0x1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeyDIRECTION},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0}},
+				&expr.Immediate{Register: 0x1, Data: generateLabelMask(c.config.CTLabelAccept)},
+				&expr.Ct{Register: 0x1, SourceRegister: true, Key: expr.CtKeyLABELS},
 				&expr.Counter{},
 				&expr.Verdict{Kind: expr.VerdictAccept},
 			},
@@ -699,20 +636,7 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 	// The queue sets the conntrack mark for the packets it processes,
 	// so we can clear the mark here later to re-process connections if needed.
 	// ct label X state established,related accept
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Ct{Register: 0x1, Key: expr.CtKeyLABELS},
-			&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 16, Mask: generateLabelMask(c.config.CTLabelAccept), Xor: make([]byte, 16)},
-			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: make([]byte, 16)},
-			&expr.Ct{Register: 0x1, Key: expr.CtKeySTATE},
-			&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
-			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
-			&expr.Counter{},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
+	c.addEstablishedAcceptRule(nft, table, chain)
 
 	queue := &expr.Queue{Num: uint16(c.config.QueueID)}
 	if c.config.FailOpen {
@@ -783,18 +707,9 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 	// This entry will only match if the queue is bypassed and the packet is accepted in that case.
 	// The entry is needed because otherwise netlink operations to set the conntrack labels will fail with ENOSPC
 	// see https://patchwork.ozlabs.org/project/netfilter-devel/patch/20251020200805.298670-1-aojea@google.com/
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Immediate{Register: 0x1, Data: generateLabelMask(c.config.CTLabelAccept)},
-			&expr.Ct{Register: 0x1, SourceRegister: true, Key: expr.CtKeyLABELS},
-		},
-	})
+	c.addSetAcceptLabelRule(nft, table, chain)
 
 	// INPUT chain: evaluate pod-to-host (egress toward the node itself) network policies.
-	// Only the first packet of new connections (ct state new) is queued.
-	// TODO: investigate why if we process not only new, e2e tests start failing.
 	inputChain := nft.AddChain(&nftables.Chain{
 		Name:    "input",
 		Table:   table,
@@ -817,8 +732,15 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 		},
 	})
 
+	if c.config.NetfilterBug1766Fix {
+		addDNSBypassRule(nft, table, inputChain)
+	}
+
+	addEssentialIPv6ICMPRules(nft, table, inputChain)
+	c.addEstablishedAcceptRule(nft, table, inputChain)
+
 	if !divertAll {
-		// ip saddr @podips-v4 ct state new queue
+		// ip saddr @podips-v4 queue
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: inputChain,
@@ -827,13 +749,10 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV4}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
 				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v4"},
-				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
 				queue,
 			},
 		})
-		// ip6 saddr @podips-v6 ct state new queue
+		// ip6 saddr @podips-v6 queue
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: inputChain,
@@ -842,25 +761,21 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.NFPROTO_IPV6}},
 				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
 				&expr.Lookup{SourceRegister: 0x1, DestRegister: 0x0, SetName: "podips-v6"},
-				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
 				queue,
 			},
 		})
 	} else {
-		// ct state new queue
+		// queue
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: inputChain,
 			Exprs: []expr.Any{
-				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
 				queue,
 			},
 		})
 	}
+
+	c.addSetAcceptLabelRule(nft, table, inputChain)
 
 	if c.config.NetfilterBug1766Fix {
 		c.addDNSRacersWorkaroundRules(nft, table, divertAll)
@@ -885,6 +800,73 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 		return err
 	}
 	return nil
+}
+
+func addDNSBypassRule(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	// udp dport 53 accept
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_UDP}},
+			&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: binaryutil.BigEndian.PutUint16(53)},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+}
+
+func addEssentialIPv6ICMPRules(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	// Allow Router Solicitation (RS) - Type 133
+	// Allow Router Advertisement (RA) - Type 134
+	// Allow Neighbor Solicitation (NS) - Type 135
+	// Allow Neighbor Advertisement (NA) - Type 136
+	// Allow Neighbor Redirect - Type 137
+	for _, icmpType := range []uint8{133, 134, 135, 136, 137} {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.NFPROTO_IPV6}},
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{unix.IPPROTO_ICMPV6}},
+				&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []uint8{icmpType}},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			},
+		})
+	}
+}
+
+func (c *Controller) addEstablishedAcceptRule(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	// ct label X ct state established,related counter accept
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Ct{Register: 0x1, Key: expr.CtKeyLABELS},
+			&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 16, Mask: generateLabelMask(c.config.CTLabelAccept), Xor: make([]byte, 16)},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: make([]byte, 16)},
+			&expr.Ct{Register: 0x1, Key: expr.CtKeySTATE},
+			&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Counter{},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+}
+
+func (c *Controller) addSetAcceptLabelRule(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Immediate{Register: 0x1, Data: generateLabelMask(c.config.CTLabelAccept)},
+			&expr.Ct{Register: 0x1, SourceRegister: true, Key: expr.CtKeyLABELS},
+		},
+	})
 }
 
 // To avoid a kernel bug caused by UDP DNS request racing with conntrack
