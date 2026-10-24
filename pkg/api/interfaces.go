@@ -35,6 +35,19 @@ const (
 	VerdictNext
 )
 
+// String returns the verdict as a single lowercase word.
+func (v Verdict) String() string {
+	switch v {
+	case VerdictAccept:
+		return "accept"
+	case VerdictDeny:
+		return "deny"
+	case VerdictNext:
+		return "next"
+	}
+	return "unknown"
+}
+
 // PolicyEvaluator is the complete interface for a policy plugin.
 // It is responsible for both evaluating packets against its policies and
 // providing the necessary configuration to the dataplane.

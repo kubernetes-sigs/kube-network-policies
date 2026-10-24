@@ -44,7 +44,7 @@ graph TD
     BANP -->|Next/Pass| Default[5. Cluster Default: Allow]
 ```
 
-1. **Logging Evaluator:** If `-v=2` is enabled, this logs the packet details first.
+1. **Logging Evaluator:** If `-v=4` is enabled, this logs the packet details first.
 2. **Admin Network Policy (`AdminTier`):** Administrator-defined guardrails. If a rule matches and its action is `Accept` or `Deny`, the packet is immediately resolved and no further policies are checked. If the action is `Pass` (or no rule matches), it goes to the next stage.
 3. **Standard Network Policy:** Developer-defined namespace rules. If a policy selects the pod, the standard `NetworkPolicy` logic evaluates it (allowing or denying). If no policy selects the pod, it behaves as `Pass`.
 4. **Baseline Admin Network Policy (`BaselineTier`):** Default security postures defined by administrators. These rules are only evaluated if all preceding stages passed.

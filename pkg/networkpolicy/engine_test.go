@@ -5,8 +5,10 @@ package networkpolicy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/component-base/logs"
+	"k8s.io/klog/v2/textlogger"
 )
 
 // FuncProvider is a test helper that wraps a function to satisfy the
@@ -247,6 +250,259 @@ func TestPolicyEngine_EvaluatePacket_ContextCancellation(t *testing.T) {
 
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected context.DeadlineExceeded error, got %v", err)
+	}
+}
+
+// newDirectionalMockEvaluator returns an evaluator with a different verdict
+// per direction.
+func newDirectionalMockEvaluator(name string, egress, ingress api.Verdict) *mockPolicyEvaluator {
+	return &mockPolicyEvaluator{
+		name: name,
+		evaluateEgress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+			return egress, nil
+		},
+		evaluateIngress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+			return ingress, nil
+		},
+	}
+}
+
+func TestPolicyEngine_LogVerdict(t *testing.T) {
+	srcPod := &api.PodInfo{Name: "client", Namespace: &api.Namespace{Name: "default"}}
+	dstPod := &api.PodInfo{Name: "web", Namespace: &api.Namespace{Name: "default"}}
+	podInfoProvider := &FuncProvider{GetFunc: func(podIP string) (*api.PodInfo, bool) {
+		switch podIP {
+		case "10.0.0.1":
+			return srcPod, true
+		case "10.0.0.2":
+			return dstPod, true
+		}
+		return nil, false
+	}}
+	packet := &network.Packet{
+		ID:      42,
+		Family:  v1.IPv4Protocol,
+		SrcIP:   net.ParseIP("10.0.0.1"),
+		DstIP:   net.ParseIP("10.0.0.2"),
+		Proto:   v1.ProtocolTCP,
+		SrcPort: 12345,
+		DstPort: 80,
+		Payload: []byte{0xde, 0xad},
+	}
+	// want is the packet the record must describe, whatever the caller does
+	// with its packet after the verdict.
+	want := *packet
+
+	tests := []struct {
+		name       string
+		mode       VerdictLogMode
+		evaluators []api.PolicyEvaluator
+		// wantRecord is nil when no record must be logged
+		wantRecord *VerdictRecord
+	}{
+		{
+			name: "denied by the first evaluator at egress",
+			mode: VerdictLogDeny,
+			evaluators: []api.PolicyEvaluator{
+				newDirectionalMockEvaluator("admin", api.VerdictDeny, api.VerdictNext),
+				newDirectionalMockEvaluator("baseline", api.VerdictNext, api.VerdictNext),
+			},
+			wantRecord: &VerdictRecord{Verdict: api.VerdictDeny, Direction: DirectionEgress, Evaluator: "admin"},
+		},
+		{
+			name: "denied by the second evaluator at ingress",
+			mode: VerdictLogDeny,
+			evaluators: []api.PolicyEvaluator{
+				newDirectionalMockEvaluator("admin", api.VerdictNext, api.VerdictNext),
+				newDirectionalMockEvaluator("baseline", api.VerdictNext, api.VerdictDeny),
+			},
+			wantRecord: &VerdictRecord{Verdict: api.VerdictDeny, Direction: DirectionIngress, Evaluator: "baseline"},
+		},
+		{
+			name: "egress accept does not skip the ingress denial",
+			mode: VerdictLogDeny,
+			evaluators: []api.PolicyEvaluator{
+				newDirectionalMockEvaluator("admin", api.VerdictAccept, api.VerdictDeny),
+			},
+			wantRecord: &VerdictRecord{Verdict: api.VerdictDeny, Direction: DirectionIngress, Evaluator: "admin"},
+		},
+		{
+			name: "accepted by an evaluator at ingress",
+			mode: VerdictLogAll,
+			evaluators: []api.PolicyEvaluator{
+				newDirectionalMockEvaluator("admin", api.VerdictNext, api.VerdictAccept),
+			},
+			wantRecord: &VerdictRecord{Verdict: api.VerdictAccept, Direction: DirectionIngress, Evaluator: "admin"},
+		},
+		{
+			name: "accepted by default",
+			mode: VerdictLogAll,
+			evaluators: []api.PolicyEvaluator{
+				newDirectionalMockEvaluator("admin", api.VerdictNext, api.VerdictNext),
+			},
+			wantRecord: &VerdictRecord{Verdict: api.VerdictAccept},
+		},
+		{
+			name: "accepted packets are not logged in deny mode",
+			mode: VerdictLogDeny,
+			evaluators: []api.PolicyEvaluator{
+				newDirectionalMockEvaluator("admin", api.VerdictAccept, api.VerdictAccept),
+			},
+		},
+		{
+			name: "evaluation errors are not verdicts",
+			mode: VerdictLogAll,
+			evaluators: []api.PolicyEvaluator{
+				newMockEvaluator("broken", api.VerdictNext, errors.New("evaluation failed")),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := NewPolicyEngine(podInfoProvider, tt.evaluators)
+			verdictLogger := newVerdictLogger(textlogger.NewLogger(textlogger.NewConfig()), tt.mode, 1)
+			engine.SetVerdictLogger(verdictLogger)
+
+			allowed, err := engine.EvaluatePacket(context.Background(), packet)
+			if tt.wantRecord != nil && (err != nil || allowed != (tt.wantRecord.Verdict == api.VerdictAccept)) {
+				t.Fatalf("EvaluatePacket() = %v, %v, want %v", allowed, err, tt.wantRecord.Verdict == api.VerdictAccept)
+			}
+			// The caller owns the packet, the record must not change with it.
+			packet.SrcIP, packet.DstIP = packet.DstIP, packet.SrcIP
+			packet.SrcPort, packet.DstPort = packet.DstPort, packet.SrcPort
+			defer func() {
+				packet.SrcIP, packet.DstIP = packet.DstIP, packet.SrcIP
+				packet.SrcPort, packet.DstPort = packet.DstPort, packet.SrcPort
+			}()
+
+			var got *VerdictRecord
+			select {
+			case r := <-verdictLogger.records:
+				got = &r
+			default:
+			}
+			if tt.wantRecord == nil {
+				if got != nil {
+					t.Fatalf("unexpected record %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected a record")
+			}
+			if got.Verdict != tt.wantRecord.Verdict || got.Direction != tt.wantRecord.Direction || got.Evaluator != tt.wantRecord.Evaluator {
+				t.Errorf("record verdict = (%v, %q, %q), want (%v, %q, %q)",
+					got.Verdict, got.Direction, got.Evaluator,
+					tt.wantRecord.Verdict, tt.wantRecord.Direction, tt.wantRecord.Evaluator)
+			}
+			if got.SrcPod != srcPod || got.DstPod != dstPod {
+				t.Errorf("record pods = (%v, %v), want the pods resolved for the packet", got.SrcPod, got.DstPod)
+			}
+			if got.Packet.ID != want.ID || !got.Packet.SrcIP.Equal(want.SrcIP) || !got.Packet.DstIP.Equal(want.DstIP) ||
+				got.Packet.SrcPort != want.SrcPort || got.Packet.DstPort != want.DstPort || got.Packet.Proto != want.Proto {
+				t.Errorf("record packet = %+v, want %+v", got.Packet, want)
+			}
+			if got.Packet.Payload != nil {
+				t.Errorf("record keeps the payload %v", got.Packet.Payload)
+			}
+		})
+	}
+}
+
+func TestPolicyEngine_EvaluatePacket_WithoutVerdictLogger(t *testing.T) {
+	engine := NewPolicyEngine(&FuncProvider{}, []api.PolicyEvaluator{newMockEvaluator("denier", api.VerdictDeny, nil)})
+	allowed, err := engine.EvaluatePacket(context.Background(), &network.Packet{})
+	if err != nil || allowed {
+		t.Fatalf("EvaluatePacket() = %v, %v, want false, nil", allowed, err)
+	}
+}
+
+// stuckWriter is a log destination that stops accepting writes, as the
+// stderr of a container does when the runtime stops reading it. The first
+// Write blocks until release is closed and signals it through blocked.
+type stuckWriter struct {
+	once    sync.Once
+	blocked chan struct{}
+	release chan struct{}
+}
+
+func (w *stuckWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.blocked)
+		<-w.release
+	})
+	return len(p), nil
+}
+
+// The nfqueue callback that calls EvaluatePacket runs sequentially, so a
+// verdict that waits for the log destination delays every queued packet.
+// With the destination stuck, the evaluation must keep going and the verdicts
+// that do not fit in the buffer must be dropped.
+func TestPolicyEngine_EvaluatePacket_DoesNotBlockOnVerdictLog(t *testing.T) {
+	writer := &stuckWriter{blocked: make(chan struct{}), release: make(chan struct{})}
+	logger := textlogger.NewLogger(textlogger.NewConfig(textlogger.Output(writer)))
+	const bufferSize = 8
+	verdictLogger := newVerdictLogger(logger, VerdictLogDeny, bufferSize)
+	engine := NewPolicyEngine(&FuncProvider{}, []api.PolicyEvaluator{newMockEvaluator("denier", api.VerdictDeny, nil)})
+	engine.SetVerdictLogger(verdictLogger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		verdictLogger.Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	packet := &network.Packet{SrcIP: net.ParseIP("10.0.0.1"), DstIP: net.ParseIP("10.0.0.2")}
+	// The logger takes the first verdict and its write gets stuck.
+	if allowed, err := engine.EvaluatePacket(context.Background(), packet); err != nil || allowed {
+		t.Fatalf("EvaluatePacket() = %v, %v, want false, nil", allowed, err)
+	}
+	select {
+	case <-writer.blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the verdict logger did not write the first verdict")
+	}
+	droppedBefore := verdictLogDroppedValue(t)
+
+	// The next verdicts fill the buffer and the rest are dropped, none of
+	// them waits for the destination.
+	const extra = 5
+	var evalErr error
+	evaluated := make(chan struct{})
+	go func() {
+		defer close(evaluated)
+		for i := 0; i < bufferSize+extra; i++ {
+			allowed, err := engine.EvaluatePacket(context.Background(), packet)
+			if err != nil || allowed {
+				evalErr = fmt.Errorf("EvaluatePacket() = %v, %v, want false, nil", allowed, err)
+				return
+			}
+		}
+	}()
+	select {
+	case <-evaluated:
+	case <-time.After(5 * time.Second):
+		t.Fatal("EvaluatePacket blocked on the verdict log")
+	}
+	if evalErr != nil {
+		t.Fatal(evalErr)
+	}
+	if got := verdictLogDroppedValue(t) - droppedBefore; got != extra {
+		t.Errorf("dropped verdicts = %v, want %d", got, extra)
+	}
+
+	// Once the destination accepts writes again the buffered verdicts are
+	// written.
+	close(writer.release)
+	cancel()
+	<-done
+	if got := len(verdictLogger.records); got != 0 {
+		t.Errorf("%d verdicts left in the buffer after Run returned", got)
 	}
 }
 

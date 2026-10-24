@@ -66,11 +66,11 @@ func (a *AdminNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.Pac
 
 	dstPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(dstPod, allPolicies)
 	if len(dstPodAdminNetworkPolicies) == 0 {
-		logger.V(2).Info("Ingress AdminNetworkPolicies does not apply")
+		logger.V(4).Info("Ingress AdminNetworkPolicies does not apply")
 		return api.VerdictNext, nil
 	}
 	ingressAction := a.evaluateAdminIngress(dstPodAdminNetworkPolicies, srcPod, dstPod, p.DstPort, p.Proto)
-	logger.V(2).Info("Ingress AdminNetworkPolicies", "npolicies", len(dstPodAdminNetworkPolicies), "action", ingressAction)
+	logger.V(4).Info("Ingress AdminNetworkPolicies", "npolicies", len(dstPodAdminNetworkPolicies), "action", ingressAction)
 
 	switch ingressAction {
 	case npav1alpha1.AdminNetworkPolicyRuleActionAllow:
@@ -94,11 +94,11 @@ func (a *AdminNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Pack
 
 	srcPodAdminNetworkPolicies := getAdminNetworkPoliciesForPod(srcPod, allPolicies)
 	if len(srcPodAdminNetworkPolicies) == 0 {
-		logger.V(2).Info("Egress AdminNetworkPolicies does not apply")
+		logger.V(4).Info("Egress AdminNetworkPolicies does not apply")
 		return api.VerdictNext, nil
 	}
 	egressAction := a.evaluateAdminEgress(srcPodAdminNetworkPolicies, dstPod, p.DstIP, p.DstPort, p.Proto)
-	logger.V(2).Info("Egress AdminNetworkPolicies", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
+	logger.V(4).Info("Egress AdminNetworkPolicies", "npolicies", len(srcPodAdminNetworkPolicies), "action", egressAction)
 
 	switch egressAction {
 	case npav1alpha1.AdminNetworkPolicyRuleActionAllow:

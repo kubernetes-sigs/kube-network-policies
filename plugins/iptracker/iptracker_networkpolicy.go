@@ -80,7 +80,7 @@ func (s *IPTrackerNetworkPolicy) EvaluateIngress(ctx context.Context, p *network
 
 	policies := s.getNetworkPoliciesForPod(dstPod)
 	if len(policies) == 0 {
-		logger.V(2).Info("Ingress NetworkPolicies does not apply")
+		logger.V(4).Info("Ingress NetworkPolicies does not apply")
 		return api.VerdictNext, nil
 	}
 	if !networkpolicy.EvaluatePolicyDirection(ctx, policies, networkingv1.PolicyTypeIngress, dstPod, p.DstPort, srcPod, p.SrcIP, p.SrcPort, p.Proto) {
@@ -95,7 +95,7 @@ func (s *IPTrackerNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.
 
 	policies := s.getNetworkPoliciesForPod(srcPod)
 	if len(policies) == 0 {
-		logger.V(2).Info("Ingress NetworkPolicies does not apply")
+		logger.V(4).Info("Ingress NetworkPolicies does not apply")
 		return api.VerdictNext, nil
 	}
 
