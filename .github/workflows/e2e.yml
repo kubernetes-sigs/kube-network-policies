@@ -145,8 +145,12 @@ jobs:
         export KUBERNETES_CONFORMANCE_TEST='y'
         export E2E_REPORT_DIR=${PWD}/_artifacts
 
-        # Run tests
-        /usr/local/bin/ginkgo --nodes=25                \
+        # Each Netpol spec creates 9 pods. The two workers accept 220 pods
+        # (110 max-pods each) and the pods of the previous round are still
+        # terminating when the next one starts, so keep the parallelism low
+        # enough that two rounds fit: 12 * 9 * 2 = 216. Otherwise pods stay
+        # Unschedulable or in ContainerCreating until the 5m pod timeout.
+        /usr/local/bin/ginkgo --nodes=12                \
           --focus="Netpol"  \
           /usr/local/bin/e2e.test                       \
           --                                            \
