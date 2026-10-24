@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -298,7 +299,7 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 		mode       VerdictLogMode
 		evaluators []api.PolicyEvaluator
 		// wantRecord is nil when no record must be logged
-		wantRecord *VerdictRecord
+		wantRecord *verdictRecord
 	}{
 		{
 			name: "denied by the first evaluator at egress",
@@ -307,7 +308,7 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 				newDirectionalMockEvaluator("admin", api.VerdictDeny, api.VerdictNext),
 				newDirectionalMockEvaluator("baseline", api.VerdictNext, api.VerdictNext),
 			},
-			wantRecord: &VerdictRecord{Verdict: api.VerdictDeny, Direction: DirectionEgress, Evaluator: "admin"},
+			wantRecord: &verdictRecord{verdict: api.VerdictDeny, direction: DirectionEgress, evaluator: "admin"},
 		},
 		{
 			name: "denied by the second evaluator at ingress",
@@ -316,7 +317,7 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 				newDirectionalMockEvaluator("admin", api.VerdictNext, api.VerdictNext),
 				newDirectionalMockEvaluator("baseline", api.VerdictNext, api.VerdictDeny),
 			},
-			wantRecord: &VerdictRecord{Verdict: api.VerdictDeny, Direction: DirectionIngress, Evaluator: "baseline"},
+			wantRecord: &verdictRecord{verdict: api.VerdictDeny, direction: DirectionIngress, evaluator: "baseline"},
 		},
 		{
 			name: "egress accept does not skip the ingress denial",
@@ -324,7 +325,7 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 			evaluators: []api.PolicyEvaluator{
 				newDirectionalMockEvaluator("admin", api.VerdictAccept, api.VerdictDeny),
 			},
-			wantRecord: &VerdictRecord{Verdict: api.VerdictDeny, Direction: DirectionIngress, Evaluator: "admin"},
+			wantRecord: &verdictRecord{verdict: api.VerdictDeny, direction: DirectionIngress, evaluator: "admin"},
 		},
 		{
 			name: "accepted by an evaluator at ingress",
@@ -332,7 +333,7 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 			evaluators: []api.PolicyEvaluator{
 				newDirectionalMockEvaluator("admin", api.VerdictNext, api.VerdictAccept),
 			},
-			wantRecord: &VerdictRecord{Verdict: api.VerdictAccept, Direction: DirectionIngress, Evaluator: "admin"},
+			wantRecord: &verdictRecord{verdict: api.VerdictAccept, direction: DirectionIngress, evaluator: "admin"},
 		},
 		{
 			name: "accepted by default",
@@ -340,7 +341,7 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 			evaluators: []api.PolicyEvaluator{
 				newDirectionalMockEvaluator("admin", api.VerdictNext, api.VerdictNext),
 			},
-			wantRecord: &VerdictRecord{Verdict: api.VerdictAccept},
+			wantRecord: &verdictRecord{verdict: api.VerdictAccept},
 		},
 		{
 			name: "accepted packets are not logged in deny mode",
@@ -364,8 +365,8 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 			engine.SetVerdictLogger(verdictLogger)
 
 			allowed, err := engine.EvaluatePacket(context.Background(), packet)
-			if tt.wantRecord != nil && (err != nil || allowed != (tt.wantRecord.Verdict == api.VerdictAccept)) {
-				t.Fatalf("EvaluatePacket() = %v, %v, want %v", allowed, err, tt.wantRecord.Verdict == api.VerdictAccept)
+			if tt.wantRecord != nil && (err != nil || allowed != (tt.wantRecord.verdict == api.VerdictAccept)) {
+				t.Fatalf("EvaluatePacket() = %v, %v, want %v", allowed, err, tt.wantRecord.verdict == api.VerdictAccept)
 			}
 			// The caller owns the packet, the record must not change with it.
 			packet.SrcIP, packet.DstIP = packet.DstIP, packet.SrcIP
@@ -375,7 +376,7 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 				packet.SrcPort, packet.DstPort = packet.DstPort, packet.SrcPort
 			}()
 
-			var got *VerdictRecord
+			var got *verdictRecord
 			select {
 			case r := <-verdictLogger.records:
 				got = &r
@@ -390,20 +391,18 @@ func TestPolicyEngine_LogVerdict(t *testing.T) {
 			if got == nil {
 				t.Fatal("expected a record")
 			}
-			if got.Verdict != tt.wantRecord.Verdict || got.Direction != tt.wantRecord.Direction || got.Evaluator != tt.wantRecord.Evaluator {
+			if got.verdict != tt.wantRecord.verdict || got.direction != tt.wantRecord.direction || got.evaluator != tt.wantRecord.evaluator {
 				t.Errorf("record verdict = (%v, %q, %q), want (%v, %q, %q)",
-					got.Verdict, got.Direction, got.Evaluator,
-					tt.wantRecord.Verdict, tt.wantRecord.Direction, tt.wantRecord.Evaluator)
+					got.verdict, got.direction, got.evaluator,
+					tt.wantRecord.verdict, tt.wantRecord.direction, tt.wantRecord.evaluator)
 			}
-			if got.SrcPod != srcPod || got.DstPod != dstPod {
-				t.Errorf("record pods = (%v, %v), want the pods resolved for the packet", got.SrcPod, got.DstPod)
+			if got.srcPod != srcPod || got.dstPod != dstPod {
+				t.Errorf("record pods = (%v, %v), want the pods resolved for the packet", got.srcPod, got.dstPod)
 			}
-			if got.Packet.ID != want.ID || !got.Packet.SrcIP.Equal(want.SrcIP) || !got.Packet.DstIP.Equal(want.DstIP) ||
-				got.Packet.SrcPort != want.SrcPort || got.Packet.DstPort != want.DstPort || got.Packet.Proto != want.Proto {
-				t.Errorf("record packet = %+v, want %+v", got.Packet, want)
-			}
-			if got.Packet.Payload != nil {
-				t.Errorf("record keeps the payload %v", got.Packet.Payload)
+			wantSrc := netip.MustParseAddrPort(net.JoinHostPort(want.SrcIP.String(), strconv.Itoa(want.SrcPort)))
+			wantDst := netip.MustParseAddrPort(net.JoinHostPort(want.DstIP.String(), strconv.Itoa(want.DstPort)))
+			if got.id != want.ID || got.family != want.Family || got.proto != want.Proto || got.src != wantSrc || got.dst != wantDst {
+				t.Errorf("record packet = %+v, want %+v", *got, want)
 			}
 		})
 	}

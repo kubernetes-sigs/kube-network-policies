@@ -90,17 +90,13 @@ func (e *PolicyEngine) logVerdict(packet *network.Packet, srcPod, dstPod *api.Po
 	if e.verdictLogger == nil {
 		return
 	}
-	record := VerdictRecord{
-		Packet:  *packet,
-		SrcPod:  srcPod,
-		DstPod:  dstPod,
-		Verdict: verdict,
-	}
+	name := ""
 	if evaluator != nil {
-		record.Direction = direction
-		record.Evaluator = evaluator.Name()
+		name = evaluator.Name()
+	} else {
+		direction = ""
 	}
-	e.verdictLogger.Log(record)
+	e.verdictLogger.Log(packet, srcPod, dstPod, verdict, direction, name)
 }
 
 // runEgressPipeline executes the sequence of egress evaluators and returns

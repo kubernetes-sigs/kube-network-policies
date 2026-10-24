@@ -5,9 +5,9 @@ package networkpolicy
 import (
 	"context"
 	"fmt"
-	"net"
-	"strconv"
+	"net/netip"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	"sigs.k8s.io/kube-network-policies/pkg/api"
@@ -60,29 +60,28 @@ const (
 	DirectionIngress Direction = "ingress"
 )
 
-// VerdictRecord is the outcome of the evaluation of one packet.
-type VerdictRecord struct {
-	// Packet is a copy of the evaluated packet, not a pointer to it. The
-	// caller of the engine owns the packet and the record is read by the
-	// writer goroutine after the verdict, so a shared packet would make the
-	// log depend on the caller never touching it again (swapping the tuple,
-	// reusing the struct). The copy costs a memcpy per logged packet and
-	// about 120 bytes per buffered record, and keeps the record correct
-	// whatever the caller does next. The copy is shallow: SrcIP and DstIP
-	// share their bytes with the packet, which no caller modifies in place.
-	Packet network.Packet
-	// SrcPod and DstPod are nil when the IP does not belong to a known Pod.
-	SrcPod *api.PodInfo
-	DstPod *api.PodInfo
-	// Verdict is VerdictAccept or VerdictDeny.
-	Verdict api.Verdict
-	// Direction is the pipeline that produced the verdict and Evaluator the
+// verdictRecord is what the writer needs from the evaluation of one packet.
+// It shares no memory with the packet: the caller of the engine owns the
+// packet and may reuse it after the verdict, and the record is read later by
+// the writer goroutine.
+type verdictRecord struct {
+	id     uint32
+	family v1.IPFamily
+	proto  v1.Protocol
+	src    netip.AddrPort
+	dst    netip.AddrPort
+	// srcPod and dstPod are nil when the IP does not belong to a known Pod.
+	srcPod *api.PodInfo
+	dstPod *api.PodInfo
+	// verdict is VerdictAccept or VerdictDeny.
+	verdict api.Verdict
+	// direction is the pipeline that produced the verdict and evaluator the
 	// name of the evaluator that produced it. A denied packet was denied by
 	// that evaluator. An accepted packet was accepted by both pipelines, so
 	// they refer to the ingress one, and they are empty when it accepted the
 	// packet because no evaluator had a verdict for it.
-	Direction Direction
-	Evaluator string
+	direction Direction
+	evaluator string
 }
 
 // verdictLogBufferSize is the number of records kept while the log
@@ -99,7 +98,7 @@ const verdictLogBufferSize = 4096
 type VerdictLogger struct {
 	mode    VerdictLogMode
 	logger  klog.Logger
-	records chan VerdictRecord
+	records chan verdictRecord
 }
 
 // NewVerdictLogger creates a VerdictLogger that writes the verdicts selected
@@ -113,23 +112,40 @@ func newVerdictLogger(logger klog.Logger, mode VerdictLogMode, bufferSize int) *
 	return &VerdictLogger{
 		mode:    mode,
 		logger:  logger,
-		records: make(chan VerdictRecord, bufferSize),
+		records: make(chan verdictRecord, bufferSize),
 	}
 }
 
-// Log hands over a record to be written, it never blocks.
-func (l *VerdictLogger) Log(r VerdictRecord) {
-	if !l.mode.logs(r.Verdict) {
+// Log hands over the verdict of packet to be written, it never blocks.
+// srcPod and dstPod are nil when the IP does not belong to a known Pod,
+// direction and evaluator are empty when no evaluator produced the verdict.
+func (l *VerdictLogger) Log(packet *network.Packet, srcPod, dstPod *api.PodInfo, verdict api.Verdict, direction Direction, evaluator string) {
+	if !l.mode.logs(verdict) {
 		return
 	}
-	// The payload is not logged and it aliases the receive buffer of the
-	// nfqueue, do not keep it alive until the record is written.
-	r.Packet.Payload = nil
+	r := verdictRecord{
+		id:        packet.ID,
+		family:    packet.Family,
+		proto:     packet.Proto,
+		src:       addrPort(packet.SrcIP, packet.SrcPort),
+		dst:       addrPort(packet.DstIP, packet.DstPort),
+		srcPod:    srcPod,
+		dstPod:    dstPod,
+		verdict:   verdict,
+		direction: direction,
+		evaluator: evaluator,
+	}
 	select {
 	case l.records <- r:
 	default:
 		verdictLogDropped.Inc()
 	}
+}
+
+// addrPort copies ip and port into a value that does not alias ip.
+func addrPort(ip []byte, port int) netip.AddrPort {
+	addr, _ := netip.AddrFromSlice(ip)
+	return netip.AddrPortFrom(addr.Unmap(), uint16(port))
 }
 
 // Run writes the records until ctx is done, then it writes the records
@@ -152,18 +168,18 @@ func (l *VerdictLogger) Run(ctx context.Context) {
 	}
 }
 
-func (l *VerdictLogger) write(r VerdictRecord) {
+func (l *VerdictLogger) write(r verdictRecord) {
 	l.logger.Info("Packet verdict",
-		"id", r.Packet.ID,
-		"verdict", r.Verdict.String(),
-		"family", r.Packet.Family,
-		"protocol", r.Packet.Proto,
-		"src", net.JoinHostPort(r.Packet.SrcIP.String(), strconv.Itoa(r.Packet.SrcPort)),
-		"dst", net.JoinHostPort(r.Packet.DstIP.String(), strconv.Itoa(r.Packet.DstPort)),
-		"srcPod", podKey(r.SrcPod),
-		"dstPod", podKey(r.DstPod),
-		"direction", r.Direction,
-		"evaluator", r.Evaluator,
+		"id", r.id,
+		"verdict", r.verdict.String(),
+		"family", r.family,
+		"protocol", r.proto,
+		"src", r.src.String(),
+		"dst", r.dst.String(),
+		"srcPod", podKey(r.srcPod),
+		"dstPod", podKey(r.dstPod),
+		"direction", r.direction,
+		"evaluator", r.evaluator,
 	)
 }
 

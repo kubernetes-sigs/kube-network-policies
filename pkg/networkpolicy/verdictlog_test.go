@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -70,25 +71,26 @@ func TestVerdictLogMode_logs(t *testing.T) {
 	}
 }
 
-// testVerdictRecord is the denial of a TCP connection from a Pod to an
-// external IP.
-func testVerdictRecord(verdict api.Verdict) VerdictRecord {
-	return VerdictRecord{
-		Packet: network.Packet{
-			ID:      7,
-			Family:  v1.IPv4Protocol,
-			SrcIP:   net.ParseIP("192.168.1.201"),
-			DstIP:   net.ParseIP("192.168.1.1"),
-			Proto:   v1.ProtocolTCP,
-			SrcPort: 46818,
-			DstPort: 5001,
-			Payload: []byte{0x01, 0x02},
-		},
-		SrcPod:    &api.PodInfo{Name: "client", Namespace: &api.Namespace{Name: "default"}},
-		Verdict:   verdict,
-		Direction: DirectionIngress,
-		Evaluator: "StandardNetworkPolicy",
+// testPacket is a TCP connection from a Pod to an external IP.
+func testPacket() *network.Packet {
+	return &network.Packet{
+		ID:      7,
+		Family:  v1.IPv4Protocol,
+		SrcIP:   net.ParseIP("192.168.1.201"),
+		DstIP:   net.ParseIP("192.168.1.1"),
+		Proto:   v1.ProtocolTCP,
+		SrcPort: 46818,
+		DstPort: 5001,
+		Payload: []byte{0x01, 0x02},
 	}
+}
+
+var testSrcPod = &api.PodInfo{Name: "client", Namespace: &api.Namespace{Name: "default"}}
+
+// logTestVerdict logs the verdict of testPacket, produced by the ingress
+// pipeline, on l.
+func logTestVerdict(l *VerdictLogger, verdict api.Verdict) {
+	l.Log(testPacket(), testSrcPod, nil, verdict, DirectionIngress, "StandardNetworkPolicy")
 }
 
 func TestVerdictLogger_Log(t *testing.T) {
@@ -106,14 +108,25 @@ func TestVerdictLogger_Log(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			l := newVerdictLogger(textlogger.NewLogger(textlogger.NewConfig()), tt.mode, 1)
-			l.Log(testVerdictRecord(tt.verdict))
+			logTestVerdict(l, tt.verdict)
 			select {
 			case r := <-l.records:
 				if !tt.want {
 					t.Fatalf("unexpected record %+v", r)
 				}
-				if r.Packet.Payload != nil {
-					t.Errorf("the payload must not be kept, got %v", r.Packet.Payload)
+				want := verdictRecord{
+					id:        7,
+					family:    v1.IPv4Protocol,
+					proto:     v1.ProtocolTCP,
+					src:       netip.MustParseAddrPort("192.168.1.201:46818"),
+					dst:       netip.MustParseAddrPort("192.168.1.1:5001"),
+					srcPod:    testSrcPod,
+					verdict:   tt.verdict,
+					direction: DirectionIngress,
+					evaluator: "StandardNetworkPolicy",
+				}
+				if r != want {
+					t.Errorf("record = %+v, want %+v", r, want)
 				}
 			default:
 				if tt.want {
@@ -129,7 +142,7 @@ func TestVerdictLogger_LogDoesNotBlock(t *testing.T) {
 	droppedBefore := verdictLogDroppedValue(t)
 	// Nobody is running the logger, the third record does not fit.
 	for i := 0; i < 3; i++ {
-		l.Log(testVerdictRecord(api.VerdictDeny))
+		logTestVerdict(l, api.VerdictDeny)
 	}
 	if got := len(l.records); got != 2 {
 		t.Errorf("buffered records = %d, want 2", got)
@@ -168,11 +181,8 @@ func TestVerdictLogger_Run(t *testing.T) {
 		l.Run(ctx)
 	}()
 
-	l.Log(testVerdictRecord(api.VerdictDeny))
-	accepted := testVerdictRecord(api.VerdictAccept)
-	accepted.Direction = ""
-	accepted.Evaluator = ""
-	l.Log(accepted)
+	logTestVerdict(l, api.VerdictDeny)
+	l.Log(testPacket(), testSrcPod, nil, api.VerdictAccept, "", "")
 	cancel()
 	<-done
 
@@ -209,7 +219,7 @@ func TestVerdictLogger_RunWritesBufferedRecordsOnShutdown(t *testing.T) {
 	logger := textlogger.NewLogger(textlogger.NewConfig(textlogger.Output(&buf)))
 	l := newVerdictLogger(logger, VerdictLogDeny, 8)
 	for i := 0; i < 3; i++ {
-		l.Log(testVerdictRecord(api.VerdictDeny))
+		logTestVerdict(l, api.VerdictDeny)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

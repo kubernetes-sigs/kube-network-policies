@@ -42,7 +42,7 @@ One entry is emitted per packet after the pipeline completes:
 ```json
 {
   "ts": 1720777151838.4001,
-  "caller": "networkpolicy/verdictlog.go:150",
+  "caller": "networkpolicy/verdictlog.go:172",
   "msg": "Packet verdict",
   "id": 9,
   "verdict": "deny",
@@ -143,7 +143,7 @@ also carries the evaluator that decided.
 In the default text format, the verdict entry is a single line with the same keys:
 
 ```
-I0712 09:53:52.257809       1 verdictlog.go:150] "Packet verdict" id=9 verdict="deny" family="IPv4" protocol="TCP" src="10.0.1.3:40243" dst="10.0.2.2:8080" srcPod="default/frontend" dstPod="default/backend" direction="ingress" evaluator="StandardNetworkPolicy"
+I0712 09:53:52.257809       1 verdictlog.go:172] "Packet verdict" id=9 verdict="deny" family="IPv4" protocol="TCP" src="10.0.1.3:40243" dst="10.0.2.2:8080" srcPod="default/frontend" dstPod="default/backend" direction="ingress" evaluator="StandardNetworkPolicy"
 ```
 
 and the trace entries are logged with a raw hex dump of the payload:
