@@ -27,7 +27,7 @@ The `Verdict` returned by each evaluator can be one of the following:
 
 When a packet is evaluated, it is processed sequentially by a pipeline of policy evaluators. The order is crucial, especially for Admin Network Policies:
 
-1. **Logging Evaluator** (if `-v=2` is enabled): Emits a structured log of the packet being evaluated.
+1. **Logging Evaluator** (if `-v=4` is enabled): Emits a structured log of the packet being evaluated.
 2. **Admin Network Policy (ANP)** (`ClusterNetworkPolicy` at `AdminTier`): Enforces administrator-defined policies that take precedence over user-defined rules.
 3. **Standard Network Policy** (`StandardNetworkPolicy`): Enforces normal Kubernetes `NetworkPolicies` defined by namespace owners.
 4. **Baseline Admin Network Policy (BANP)** (`ClusterNetworkPolicy` at `BaselineTier`): Enforces baseline default rules that only take effect if no prior policy accepted or denied the traffic.
@@ -68,5 +68,5 @@ When deployed alongside another CNI with network policy support, the cluster wil
 This coexistence enables several operational advantages:
 - **Incremental Migration:** You can introduce `kube-network-policies` to an existing cluster to gradually transition policies without turning off the current implementation.
 - **Separation of Concerns:** Administrators can use `kube-network-policies` specifically to enforce cluster-wide Admin Network Policies (ANPs) and Baseline Admin Network Policies (BANPs) at the host layer, while leaving application developers to manage standard namespaces policies through the primary CNI.
-- **Non-Disruptive Auditing:** You can run the agent alongside your main CNI with logging enabled (`-v=2`) to audit traffic decisions and collect rich userspace JSON logs without altering the primary CNI's data path.
+- **Non-Disruptive Auditing:** You can run the agent alongside your main CNI with `--log-verdicts=all` to audit traffic decisions and collect rich userspace JSON logs without altering the primary CNI's data path.
 

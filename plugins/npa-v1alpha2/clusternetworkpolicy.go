@@ -74,7 +74,7 @@ func (c *ClusterNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.P
 	}
 
 	action := c.evaluateClusterIngress(policies, srcPod, dstPod, p.DstPort, p.Proto)
-	logger.V(2).Info("Ingress CNP evaluation", "tier", c.tier, "npolicies", len(policies), "action", action)
+	logger.V(4).Info("Ingress CNP evaluation", "tier", c.tier, "npolicies", len(policies), "action", action)
 
 	return actionToVerdict(action), nil
 }
@@ -85,12 +85,12 @@ func (c *ClusterNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Pa
 
 	policies, err := c.getPoliciesForPod(srcPod)
 	if err != nil || len(policies) == 0 {
-		logger.V(2).Info("Skipping Egress CNP evaluation", "npolicies", len(policies), "err", err)
+		logger.V(4).Info("Skipping Egress CNP evaluation", "npolicies", len(policies), "err", err)
 		return api.VerdictNext, err
 	}
 
 	action := c.evaluateClusterEgress(policies, dstPod, p.DstIP, p.DstPort, p.Proto)
-	logger.V(2).Info("Egress CNP evaluation", "tier", c.tier, "npolicies", len(policies), "action", action)
+	logger.V(4).Info("Egress CNP evaluation", "tier", c.tier, "npolicies", len(policies), "action", action)
 
 	return actionToVerdict(action), nil
 }

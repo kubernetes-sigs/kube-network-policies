@@ -56,18 +56,10 @@ func (l *LoggingPolicy) EvaluateEgress(ctx context.Context, p *network.Packet, s
 func logPacket(ctx context.Context, direction string, p *network.Packet, srcPod, dstPod *api.PodInfo) {
 	logger := klog.FromContext(ctx)
 
-	srcPodStr, dstPodStr := "external", "external"
-	if srcPod != nil {
-		srcPodStr = srcPod.Namespace.Name + "/" + srcPod.Name
-	}
-	if dstPod != nil {
-		dstPodStr = dstPod.Namespace.Name + "/" + dstPod.Name
-	}
-
 	logger.Info("Evaluating packet",
 		"direction", direction,
-		"srcPod", srcPodStr,
-		"dstPod", dstPodStr,
+		"srcPod", podKey(srcPod),
+		"dstPod", podKey(dstPod),
 		"packet", p,
 	)
 }

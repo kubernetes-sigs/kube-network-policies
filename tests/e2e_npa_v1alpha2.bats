@@ -18,13 +18,13 @@ setup_file() {
   kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha2 --name "$CLUSTER_NAME"
 
   # Install kube-network-policies
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha2#" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha2#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 }
 
 teardown_file() {
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha2#" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha2#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
   printf '%s' "${_install}" | kubectl delete -f -
 
   kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_clusternetworkpolicies.yaml

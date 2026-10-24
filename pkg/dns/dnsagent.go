@@ -91,7 +91,7 @@ func (n *DomainCache) Run(ctx context.Context) error {
 
 		verdict := nfqueue.NfAccept
 		startTime := time.Now()
-		logger.V(2).Info("Processing sync for packet", "id", *a.PacketID)
+		logger.V(4).Info("Processing sync for packet", "id", *a.PacketID)
 
 		packet, err := network.ParsePacket(*a.Payload)
 		if err != nil {
@@ -99,7 +99,7 @@ func (n *DomainCache) Run(ctx context.Context) error {
 			return 0
 		}
 		defer func() {
-			logger.V(2).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime))
+			logger.V(4).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime))
 		}()
 
 		// Just print out the payload of the nflog packet

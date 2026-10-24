@@ -187,7 +187,7 @@ func (s *StandardNetworkPolicy) EvaluateIngress(ctx context.Context, p *network.
 
 	policies := s.getNetworkPoliciesForPod(dstPod)
 	if len(policies) == 0 {
-		logger.V(2).Info("Ingress NetworkPolicies does not apply")
+		logger.V(4).Info("Ingress NetworkPolicies does not apply")
 		return api.VerdictNext, nil
 	}
 
@@ -202,7 +202,7 @@ func (s *StandardNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.P
 
 	policies := s.getNetworkPoliciesForPod(srcPod)
 	if len(policies) == 0 {
-		logger.V(2).Info("Egress NetworkPolicies does not apply")
+		logger.V(4).Info("Egress NetworkPolicies does not apply")
 		return api.VerdictNext, nil
 	}
 
@@ -248,7 +248,7 @@ func EvaluatePolicyDirection(
 	ctx context.Context, networkPolicies []*networkingv1.NetworkPolicy, networkPolictType networkingv1.PolicyType,
 	srcPod *api.PodInfo, srcPort int, dstPod *api.PodInfo, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
 
-	tlogger := klog.FromContext(ctx).V(2)
+	tlogger := klog.FromContext(ctx).V(4)
 
 	// no network policies implies allow all by default
 	if len(networkPolicies) == 0 {
@@ -315,7 +315,7 @@ func EvaluatePolicyDirection(
 }
 
 func evaluateIngress(ctx context.Context, netpolNamespace string, ingressRules []networkingv1.NetworkPolicyIngressRule, srcPod *api.PodInfo, srcPort int, dstPod *api.PodInfo, dstIP net.IP, proto v1.Protocol) bool {
-	tlogger := klog.FromContext(ctx).V(2)
+	tlogger := klog.FromContext(ctx).V(4)
 	if tlogger.Enabled() && srcPod != nil {
 		tlogger = tlogger.WithValues("pod", srcPod.Namespace.Name+"/"+srcPod.Name)
 	}
@@ -380,7 +380,7 @@ func evaluateIngress(ctx context.Context, netpolNamespace string, ingressRules [
 }
 
 func evaluateEgress(ctx context.Context, netpolNamespace string, egressRules []networkingv1.NetworkPolicyEgressRule, srcPod *api.PodInfo, dstPod *api.PodInfo, dstIP net.IP, dstPort int, proto v1.Protocol) bool {
-	tlogger := klog.FromContext(ctx).V(2)
+	tlogger := klog.FromContext(ctx).V(4)
 	if tlogger.Enabled() && srcPod != nil {
 		tlogger = tlogger.WithValues("pod", srcPod.Namespace.Name+"/"+srcPod.Name)
 	}

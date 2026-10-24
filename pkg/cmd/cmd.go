@@ -26,11 +26,14 @@ type Options struct {
 	NetfilterBug1766Fix bool
 	DisableNRI          bool
 	StrictMode          bool
+	LogVerdicts         networkpolicy.VerdictLogMode
 }
 
 // NewOptions creates a new Options object with default values.
 func NewOptions() *Options {
-	return &Options{}
+	return &Options{
+		LogVerdicts: networkpolicy.VerdictLogDeny,
+	}
 }
 
 // AddFlags adds the common flags to the provided flag set.
@@ -43,6 +46,7 @@ func (o *Options) AddFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&o.NetfilterBug1766Fix, "netfilter-bug-1766-fix", true, "If set, process DNS packets on the PREROUTING hooks to avoid the race condition on the conntrack subsystem, not needed for kernels 6.12+ (see https://bugzilla.netfilter.org/show_bug.cgi?id=1766)")
 	fs.BoolVar(&o.DisableNRI, "disable-nri", false, "If set, disable NRI, that is used to get the Pod IP information directly from the runtime to avoid the race explained in https://issues.k8s.io/85966")
 	fs.BoolVar(&o.StrictMode, "strict-mode", true, "If set, changes to network policies also affect established connections")
+	fs.Var(&o.LogVerdicts, "log-verdicts", "Log the verdict of the evaluated packets at any verbosity: 'deny' logs the denied packets, 'all' also the accepted ones and 'none' disables it. The verdicts are written out of the packet processing path and dropped when the log destination falls behind")
 
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: kube-network-policies [options]\n\n")
@@ -51,15 +55,22 @@ func (o *Options) AddFlags(fs *flag.FlagSet) {
 }
 
 // Start starts the common application components.
-func Start(ctx context.Context, policyEngine *networkpolicy.PolicyEngine, dpConfig dataplane.Config, metricsBindAddress string) {
+func Start(ctx context.Context, policyEngine *networkpolicy.PolicyEngine, dpConfig dataplane.Config, opts *Options) {
 	logger := klog.FromContext(ctx)
 
 	printVersion()
 
+	// Log the verdicts out of the packet processing path.
+	if opts.LogVerdicts != networkpolicy.VerdictLogNone {
+		verdictLogger := networkpolicy.NewVerdictLogger(logger, opts.LogVerdicts)
+		policyEngine.SetVerdictLogger(verdictLogger)
+		go verdictLogger.Run(ctx)
+	}
+
 	// Start metrics server
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
-		err := http.ListenAndServe(metricsBindAddress, nil)
+		err := http.ListenAndServe(opts.MetricsBindAddress, nil)
 		if err != nil {
 			utilruntime.HandleError(fmt.Errorf("metrics server failed: %w", err))
 		}

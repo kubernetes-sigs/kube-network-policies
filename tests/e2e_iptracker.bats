@@ -17,13 +17,13 @@ setup_file() {
   kind load docker-image "$REGISTRY/kube-ip-tracker:$TAG" --name "$CLUSTER_NAME"
 
   # Install kube-network-policies
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-iptracker#" < "$BATS_TEST_DIRNAME"/../install-iptracker.yaml | sed "s#$REGISTRY/kube-ip-tracker.*#$REGISTRY/kube-ip-tracker:$TAG#")
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-iptracker#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install-iptracker.yaml | sed "s#$REGISTRY/kube-ip-tracker.*#$REGISTRY/kube-ip-tracker:$TAG#")
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 }
 
 teardown_file() {
-  _install=$(sed "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-iptracker#" < "$BATS_TEST_DIRNAME"/../install-iptracker.yaml | sed "s#$REGISTRY/kube-ip-tracker.*#$REGISTRY/kube-ip-tracker:$TAG#")
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-iptracker#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install-iptracker.yaml | sed "s#$REGISTRY/kube-ip-tracker.*#$REGISTRY/kube-ip-tracker:$TAG#")
   printf '%s' "${_install}" | kubectl delete -f -
 }
 
