@@ -236,6 +236,42 @@ func (s *EtcdStore) Delete(ip string) error {
 	return err
 }
 
+// DeleteIfOwner deletes the entry of the IP only if it belongs to the Pod
+// with that UID. A Pod removed late, by a Job TTL for example, must not
+// delete the entry of the Pod that got its IP afterwards.
+func (s *EtcdStore) DeleteIfOwner(ip string, uid string) error {
+	klog.V(7).Infof("DeleteIfOwner(%s, %s)", ip, uid)
+	key, err := ipToKey(ip)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutOperation)
+	defer cancel()
+
+	resp, err := s.client.Get(ctx, key)
+	if err != nil {
+		return err
+	}
+	if len(resp.Kvs) == 0 {
+		return nil
+	}
+	var stored api.PodInfo
+	if err := proto.Unmarshal(resp.Kvs[0].Value, &stored); err != nil {
+		return fmt.Errorf("failed to unmarshal the entry of IP %s: %w", ip, err)
+	}
+	if stored.GetUID() != uid {
+		klog.V(2).Infof("Keeping IP=%s, it belongs to Pod=%s/%s", ip, stored.GetNamespace().GetName(), stored.GetName())
+		return nil
+	}
+	// If the entry changed since it was read a newer Pod wrote it, keep it.
+	_, err = s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(key), "=", resp.Kvs[0].ModRevision)).
+		Then(clientv3.OpDelete(key)).
+		Commit()
+	return err
+}
+
 func (s *EtcdStore) List() ([]*api.PodInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutList)
 	defer cancel()

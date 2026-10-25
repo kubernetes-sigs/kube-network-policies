@@ -5,6 +5,7 @@ package nri
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -21,15 +22,19 @@ import (
 
 var _ podinfo.IPResolver = &NRIResolver{}
 var _ api.PodInfoProvider = &NRIResolver{}
+var _ stub.StopPodInterface = &NRIResolver{}
 
-// NRIResolver is a standalone component that listens to NRI events
-// and maintains a cache of PodInfo objects.
+// NRIResolver listens to NRI events and tracks which pod sandbox owns each
+// IP on the node. A sandbox owns its IPs from RunPodSandbox until
+// StopPodSandbox or RemovePodSandbox.
 type NRIResolver struct {
-	nodeName    string
-	stub        stub.Stub
+	nodeName string
+	stub     stub.Stub
+	nsLister corelisters.NamespaceLister
+
 	mu          sync.Mutex
 	podInfoByIP map[string]*api.PodInfo
-	nsLister    corelisters.NamespaceLister
+	sandboxes   map[string]*api.PodInfo
 }
 
 // NewNRIResolver creates a new resolver that looks up pods via the NRI plugin.
@@ -41,6 +46,7 @@ func NewNRIResolver(ctx context.Context, nodeName string, namespaceInformer core
 	p := &NRIResolver{
 		nodeName:    nodeName,
 		podInfoByIP: make(map[string]*api.PodInfo),
+		sandboxes:   make(map[string]*api.PodInfo),
 	}
 	if namespaceInformer != nil {
 		p.nsLister = namespaceInformer.Lister()
@@ -98,7 +104,7 @@ func (p *NRIResolver) LookupPod(ip string) (string, bool) {
 	if !found {
 		return "", false
 	}
-	return podInfo.Namespace.Name + "/" + podInfo.Name, true
+	return podInfo.UID, true
 }
 
 func (p *NRIResolver) Run(ctx context.Context) error {
@@ -113,22 +119,48 @@ func (p *NRIResolver) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {
 	return podInfo, found
 }
 
+// Synchronize rebuilds the state from the runtime snapshot. The runtime
+// does not deliver sandbox events while a plugin synchronizes.
 func (p *NRIResolver) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, containers []*nriapi.Container) ([]*nriapi.ContainerUpdate, error) {
 	klog.Infof("Synchronized state with the runtime (%d pods, %d containers)...",
 		len(pods), len(containers))
 
+	podInfoByIP := make(map[string]*api.PodInfo)
+	sandboxes := make(map[string]*api.PodInfo, len(pods))
 	for _, pod := range pods {
 		ips := getPodIPs(pod)
 		podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
-		klog.V(4).Infof("pod=%s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
-		podInfo := p.getPodInfo(pod)
+		nsPath := getNetworkNamespace(pod)
+		klog.V(4).Infof("pod=%s netns=%s ips=%v", podKey, nsPath, ips)
+		if len(ips) == 0 {
+			continue
+		}
+		// The snapshot includes stopped sandboxes, and containerd 2.1+ still
+		// reports the IPs they had, but a stopped sandbox has no network
+		// namespace and does not own any IP.
+		if nsPath == "" {
+			klog.V(4).Infof("Ignoring stopped pod %s sandbox=%s ips=%v", podKey, pod.GetId(), ips)
+			continue
+		}
+		// The runtime reports a network namespace path the agent can not see
+		// when the host /var/run/netns is not mounted in its container. The
+		// pod is ignored, like a stopped one, and the administrator is warned
+		// about the misconfiguration.
+		if _, err := os.Stat(nsPath); err != nil {
+			klog.Infof("Ignoring pod %s sandbox=%s ips=%v, network namespace %q not found, is /var/run/netns mounted?", podKey, pod.GetId(), ips, nsPath)
+			continue
+		}
+		podInfo := p.getPodInfo(pod, ips)
+		sandboxes[pod.GetId()] = podInfo
 		for _, ip := range ips {
-			p.mu.Lock()
-			p.podInfoByIP[ip] = podInfo
-			p.mu.Unlock()
+			podInfoByIP[ip] = podInfo
 		}
 	}
 
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.podInfoByIP = podInfoByIP
+	p.sandboxes = sandboxes
 	return nil, nil
 }
 
@@ -136,42 +168,77 @@ func (p *NRIResolver) Shutdown(_ context.Context) {
 	klog.Info("Runtime shutting down...")
 }
 
+// RunPodSandbox is called after the runtime set up the network of the
+// sandbox, so the sandbox owns its IPs from now on.
 func (p *NRIResolver) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
 	ips := getPodIPs(pod)
 	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
-	klog.V(4).Infof("Starting Pod %s netns=%s ips=%v", podKey, getNetworkNamespace(pod), ips)
-	podInfo := p.getPodInfo(pod)
+	klog.V(4).Infof("Starting Pod %s sandbox=%s netns=%s ips=%v", podKey, pod.GetId(), getNetworkNamespace(pod), ips)
+	podInfo := p.getPodInfo(pod, ips)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// A sandbox runs once, but if the runtime reports it again the IPs of
+	// the first run must not outlive it.
+	p.release(pod.GetId())
+	p.sandboxes[pod.GetId()] = podInfo
 	for _, ip := range ips {
-		p.mu.Lock()
 		p.podInfoByIP[ip] = podInfo
-		p.mu.Unlock()
 	}
 	return nil
 }
 
+// StopPodSandbox is called when the runtime tears down the network of the
+// sandbox, the IPs are released and can be assigned to another sandbox.
+func (p *NRIResolver) StopPodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
+	klog.V(4).Infof("Stopping Pod %s/%s sandbox=%s", pod.GetNamespace(), pod.GetName(), pod.GetId())
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.release(pod.GetId())
+	return nil
+}
+
+// RemovePodSandbox releases the sandbox in case StopPodSandbox was missed.
+// The event may not carry the IPs, see containerd/containerd#11331, but the
+// sandbox ID is enough to release them.
 func (p *NRIResolver) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
-	// because of this bug in https://github.com/containerd/containerd/pull/11331
-	// PodIPs may not be present, but since the pod is going to be deleted
-	// we just remove it from the cache
-	ips := getPodIPs(pod)
-	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
-	klog.V(4).Infof("Removing Pod %s ips=%v", podKey, ips)
-	for _, ip := range ips {
-		p.mu.Lock()
-		delete(p.podInfoByIP, ip)
-		p.mu.Unlock()
-	}
+	klog.V(4).Infof("Removing Pod %s/%s sandbox=%s", pod.GetNamespace(), pod.GetName(), pod.GetId())
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.release(pod.GetId())
 	return nil
 }
 
+// release forgets the sandbox and the IPs it still owns. An IP taken over by
+// a newer sandbox is left alone. It must be called with p.mu held.
+func (p *NRIResolver) release(id string) {
+	podInfo, ok := p.sandboxes[id]
+	if !ok {
+		return
+	}
+	delete(p.sandboxes, id)
+	for _, ip := range podInfo.IPs {
+		if p.podInfoByIP[ip] == podInfo {
+			delete(p.podInfoByIP, ip)
+		}
+	}
+}
+
+// onClose is called when the connection to the runtime is lost. The state
+// is dropped, it goes stale without events, and Synchronize rebuilds it
+// when the plugin reconnects. Until then the apiserver information is used.
 func (p *NRIResolver) onClose() {
-	klog.Infof("Connection to the runtime lost, exiting...")
+	klog.Infof("Connection to the runtime lost, dropping the local pod state")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.podInfoByIP = make(map[string]*api.PodInfo)
+	p.sandboxes = make(map[string]*api.PodInfo)
 }
 
 // getPodInfo returns an PodInfo object obtained with the local information
 // so it solves the race problem caused by waiting for the kubelet to propagate
 // the local information to the apiserver and the agent receiving it
-func (p *NRIResolver) getPodInfo(pod *nriapi.PodSandbox) *api.PodInfo {
+func (p *NRIResolver) getPodInfo(pod *nriapi.PodSandbox, ips []string) *api.PodInfo {
 	podInfo := &api.PodInfo{
 		Name: pod.GetName(),
 		// TODO: remove the specifics from containerd
@@ -183,6 +250,8 @@ func (p *NRIResolver) getPodInfo(pod *nriapi.PodSandbox) *api.PodInfo {
 			Name: p.nodeName,
 		},
 		LastUpdated: time.Now().Unix(),
+		UID:         pod.GetUid(),
+		IPs:         ips,
 	}
 	if p.nsLister != nil {
 		ns, err := p.nsLister.Get(pod.GetNamespace())
