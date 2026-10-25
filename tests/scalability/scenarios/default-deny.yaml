@@ -1,0 +1,12 @@
+# Scenario: default-deny. Isolates every Pod in the namespace in both
+# directions; every other scenario layers allow rules on top of this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: ${NAMESPACE}
+  labels:
+    scale.knp.x-k8s.io/managed: "true"
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
