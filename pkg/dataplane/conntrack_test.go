@@ -195,3 +195,19 @@ func TestClearLabelBit(t *testing.T) {
 		})
 	}
 }
+
+func TestHasLabelBit(t *testing.T) {
+	label := generateLabelMask(100)
+	if !hasLabelBit(label, 100) {
+		t.Errorf("expected bit 100 to be set")
+	}
+	if hasLabelBit(label, 10) {
+		t.Errorf("expected bit 10 to be unset")
+	}
+	if hasLabelBit(label, -1) || hasLabelBit(label, 128) {
+		t.Errorf("expected out-of-range bits to return false")
+	}
+	if hasLabelBit(nil, 0) || hasLabelBit([]byte{1, 2, 3}, 0) {
+		t.Errorf("expected invalid label length to return false")
+	}
+}

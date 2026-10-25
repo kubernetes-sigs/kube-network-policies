@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -293,6 +294,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
+		meta skuid 0 ct direction original ct label set 28 counter packets 0 bytes 0 accept
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		ip saddr @podips-v4 queue flags bypass to 102
@@ -346,6 +348,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
+		meta skuid 0 ct direction original ct label set 28 counter packets 0 bytes 0 accept
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		queue to 102
@@ -392,6 +395,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-solicit accept
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
+		meta skuid 0 ct direction original ct label set 28 counter packets 0 bytes 0 accept
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		queue to 102
@@ -1072,5 +1076,379 @@ func testNetworkPolicies_RejectedSyncKeepsTable(t *testing.T) {
 	}
 	if _, _, err := server.ReadFrom(buf); err != nil {
 		t.Fatalf("the packet queued during the rejected syncs was not delivered: %v", err)
+	}
+}
+
+func TestController_ExistingConnections(t *testing.T) {
+	if !unpriviledUserns() {
+		t.Skip("Test requires unprivileged user namespaces")
+	}
+	execInUserns(t, testController_ExistingConnections, syscall.CLONE_NEWNET)
+}
+
+func testController_ExistingConnections(t *testing.T) {
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		t.Fatalf("failed to bring lo up: %v: %s", err, out)
+	}
+
+	// Ensure conntrack is active in the netns before our agent starts, just like
+	// on a Kubernetes node where kube-proxy/CNI already uses conntrack (without ct labels).
+	if out, err := exec.Command("nft", "add table inet pre_existing; add chain inet pre_existing c { type filter hook output priority 0; ct state new counter; }").CombinedOutput(); err != nil {
+		t.Fatalf("failed to enable conntrack in netns: %v: %s", err, out)
+	}
+
+	const (
+		probePort   = 54321
+		allowedPort = 12345
+		deniedPort  = 12346
+	)
+
+	listenOnPort := func(t *testing.T, port int) net.Listener {
+		t.Helper()
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Fatalf("failed to listen on %s: %v", addr, err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		return ln
+	}
+
+	startConn := func(t *testing.T, ln net.Listener) (net.Conn, net.Conn) {
+		t.Helper()
+		accepted := make(chan net.Conn, 1)
+		go func() {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}()
+
+		clientConn, err := net.DialTimeout("tcp", ln.Addr().String(), 5*time.Second)
+		if err != nil {
+			t.Fatalf("failed to dial %s: %v", ln.Addr(), err)
+		}
+		t.Cleanup(func() { clientConn.Close() })
+
+		select {
+		case serverConn := <-accepted:
+			t.Cleanup(func() { serverConn.Close() })
+			return clientConn, serverConn
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for server accept on %s", ln.Addr())
+			return nil, nil
+		}
+	}
+
+	allowedLn := listenOnPort(t, allowedPort)
+	deniedLn := listenOnPort(t, deniedPort)
+
+	// Establish connections BEFORE the controller starts and before its nftables rules exist:
+	// 1. connServerFirst: server will push data first after controller starts (e.g. API server watch).
+	// 2. connClientFirst: client will send request and read reply after controller starts (e.g. DB pool).
+	// 3. connLateIsolated: pod is initially not in @podips-v4, then becomes isolated later.
+	// 4. connDenied: connection whose original direction is denied by policy.
+	clientServerFirst, serverServerFirst := startConn(t, allowedLn)
+	clientClientFirst, serverClientFirst := startConn(t, allowedLn)
+	clientLateIsolated, serverLateIsolated := startConn(t, allowedLn)
+	clientDenied, serverDenied := startConn(t, deniedLn)
+
+	// Policy allows connections initiated toward allowedPort (client -> server:12345),
+	// and denies everything else (including replies server:12345 -> client:ephemeral
+	// if they were mistakenly evaluated in the reply packet's direction, as well as
+	// connections initiated toward deniedPort).
+	var denyAll atomic.Bool
+	var isolatePod atomic.Bool
+	evaluator := &mockPolicyEvaluator{
+		name:      "test-policy-evaluator",
+		divertAll: false,
+		// Initially only 127.0.0.2 is in @podips-v4 so we can probe controller
+		// readiness while 127.0.0.1 remains unisolated.
+		ips:     []netip.Addr{netip.MustParseAddr("127.0.0.2")},
+		isReady: true,
+		evaluateEgress: func(_ context.Context, p *network.Packet, _, _ *api.PodInfo) (api.Verdict, error) {
+			if denyAll.Load() {
+				return api.VerdictDeny, nil
+			}
+			if p.DstPort == allowedPort {
+				return api.VerdictAccept, nil
+			}
+			return api.VerdictDeny, nil
+		},
+	}
+
+	config := Config{
+		QueueID:         202,
+		FailOpen:        false,
+		StrictMode:      true,
+		NFTableName:     "test-existing-conns",
+		skipSkuidBypass: true,
+	}
+	if err := config.Defaults(); err != nil {
+		t.Fatalf("Defaults() error = %v", err)
+	}
+
+	controller := newTestController(config, []api.PolicyEvaluator{evaluator})
+	controller.connRunner = runner.NewBoundedFrequencyRunner(
+		"test-conn-runner",
+		func() error {
+			if isolatePod.Load() {
+				return controller.firewallEnforcer(context.Background())
+			}
+			return nil
+		},
+		1*time.Millisecond, 1*time.Millisecond, 10*time.Second)
+
+	go func() {
+		_ = controller.Run(t.Context())
+	}()
+
+	waitForController(t, fmt.Sprintf("127.0.0.2:%d", probePort))
+
+	// While 127.0.0.1 is not yet isolated, traffic on connLateIsolated flows
+	// through the active nftables table without matching @podips-v4.
+	if err := clientLateIsolated.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverLateIsolated.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serverLateIsolated.Write([]byte("before-isolation")); err != nil {
+		t.Fatalf("serverLateIsolated write failed: %v", err)
+	}
+	buf := make([]byte, 64)
+	n, err := clientLateIsolated.Read(buf)
+	if err != nil || string(buf[:n]) != "before-isolation" {
+		t.Fatalf("clientLateIsolated read = %q, %v; want %q", string(buf[:n]), err, "before-isolation")
+	}
+
+	// Now isolate 127.0.0.1 and resync rules + run firewallEnforcer.
+	evaluator.ips = []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")}
+	isolatePod.Store(true)
+	if err := controller.syncNFTablesRules(context.Background()); err != nil {
+		t.Fatalf("syncNFTablesRules() error = %v", err)
+	}
+	waitForController(t, fmt.Sprintf("127.0.0.1:%d", probePort))
+
+	// firewallEnforcer must not fail with ENOSPC on pre-existing connections.
+	if err := controller.firewallEnforcer(context.Background()); err != nil {
+		t.Fatalf("firewallEnforcer() error = %v", err)
+	}
+
+	// 1. Server sends data first on a pre-existing connection (watch event in reply direction).
+	if err := clientServerFirst.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverServerFirst.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serverServerFirst.Write([]byte("watch-event")); err != nil {
+		t.Fatalf("serverServerFirst write failed: %v", err)
+	}
+	n, err = clientServerFirst.Read(buf)
+	if err != nil || string(buf[:n]) != "watch-event" {
+		t.Fatalf("clientServerFirst read reply = %q, %v; want %q", string(buf[:n]), err, "watch-event")
+	}
+
+	// 2. Client sends request on a pre-existing connection, then server replies.
+	if err := clientClientFirst.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverClientFirst.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientClientFirst.Write([]byte("ping")); err != nil {
+		t.Fatalf("clientClientFirst write failed: %v", err)
+	}
+	n, err = serverClientFirst.Read(buf)
+	if err != nil || string(buf[:n]) != "ping" {
+		t.Fatalf("serverClientFirst read = %q, %v; want %q", string(buf[:n]), err, "ping")
+	}
+	if _, err := serverClientFirst.Write([]byte("pong")); err != nil {
+		t.Fatalf("serverClientFirst write failed: %v", err)
+	}
+	n, err = clientClientFirst.Read(buf)
+	if err != nil || string(buf[:n]) != "pong" {
+		t.Fatalf("clientClientFirst read reply = %q, %v; want %q", string(buf[:n]), err, "pong")
+	}
+
+	// 3. Connection on pod that became isolated after startup keeps receiving replies.
+	if _, err := serverLateIsolated.Write([]byte("after-isolation")); err != nil {
+		t.Fatalf("serverLateIsolated write after isolation failed: %v", err)
+	}
+	n, err = clientLateIsolated.Read(buf)
+	if err != nil || string(buf[:n]) != "after-isolation" {
+		t.Fatalf("clientLateIsolated read after isolation = %q, %v; want %q", string(buf[:n]), err, "after-isolation")
+	}
+
+	// 4. Disallowed pre-existing connection is blocked in both original and reply directions.
+	if err := clientDenied.SetDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverDenied.SetDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serverDenied.Write([]byte("denied-reply")); err != nil {
+		t.Fatalf("serverDenied write failed: %v", err)
+	}
+	if _, err := clientDenied.Read(buf); err == nil {
+		t.Fatalf("expected read on denied pre-existing connection (reply direction) to time out, but succeeded")
+	}
+	if err := clientDenied.SetDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverDenied.SetDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientDenied.Write([]byte("denied-orig")); err != nil {
+		t.Fatalf("clientDenied write failed: %v", err)
+	}
+	if _, err := serverDenied.Read(buf); err == nil {
+		t.Fatalf("expected read on denied pre-existing connection (original direction) to time out, but succeeded")
+	}
+
+	// 5. Connections created once the ct label extension is active have their
+	// accept label cleared by firewallEnforcer when denied and re-evaluated by nfqueue when allowed.
+	clientPost, serverPost := startConn(t, allowedLn)
+	if err := clientPost.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverPost.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientPost.Write([]byte("hello")); err != nil {
+		t.Fatalf("clientPost write failed: %v", err)
+	}
+	n, err = serverPost.Read(buf)
+	if err != nil || string(buf[:n]) != "hello" {
+		t.Fatalf("serverPost read = %q, %v; want %q", string(buf[:n]), err, "hello")
+	}
+
+	// Deny all ports, run firewallEnforcer to clear the accept label, then re-allow
+	// allowedPort so the next reply packet is re-evaluated in nfqueue using the original direction.
+	denyAll.Store(true)
+	if err := controller.firewallEnforcer(context.Background()); err != nil {
+		t.Fatalf("firewallEnforcer() on deny error = %v", err)
+	}
+
+	denyAll.Store(false)
+
+	if _, err := serverPost.Write([]byte("world")); err != nil {
+		t.Fatalf("serverPost write failed: %v", err)
+	}
+	n, err = clientPost.Read(buf)
+	if err != nil || string(buf[:n]) != "world" {
+		t.Fatalf("clientPost read after re-allow = %q, %v; want %q", string(buf[:n]), err, "world")
+	}
+}
+
+func TestController_NodeInitiatedConnectionClose(t *testing.T) {
+	if !unpriviledUserns() {
+		t.Skip("Test requires unprivileged user namespaces")
+	}
+	execInUserns(t, testController_NodeInitiatedConnectionClose, syscall.CLONE_NEWNET)
+}
+
+func testController_NodeInitiatedConnectionClose(t *testing.T) {
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		t.Fatalf("failed to bring lo up: %v: %s", err, out)
+	}
+
+	var queuedPackets atomic.Int32
+	evaluator := &mockPolicyEvaluator{
+		name:      "deny-all-evaluator",
+		divertAll: true,
+		isReady:   true,
+		evaluateEgress: func(_ context.Context, _ *network.Packet, _, _ *api.PodInfo) (api.Verdict, error) {
+			queuedPackets.Add(1)
+			return api.VerdictDeny, nil
+		},
+	}
+
+	config := Config{
+		QueueID:     203,
+		FailOpen:    false,
+		StrictMode:  true,
+		NFTableName: "test-node-close",
+		// Keep default skipSkuidBypass: false so node-initiated traffic is allowed and labelled.
+	}
+	if err := config.Defaults(); err != nil {
+		t.Fatalf("Defaults() error = %v", err)
+	}
+
+	controller := newTestController(config, []api.PolicyEvaluator{evaluator})
+	controller.connRunner = runner.NewBoundedFrequencyRunner(
+		"test-conn-runner",
+		func() error { return nil },
+		1*time.Millisecond, 1*time.Millisecond, 10*time.Second)
+	go func() {
+		_ = controller.Run(t.Context())
+	}()
+
+	// Wait until the nftables rules are synced in the namespace.
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if out, err := exec.Command("nft", "list", "table", "inet", config.NFTableName).Output(); err == nil && len(out) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		srvConn, err := ln.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer srvConn.Close()
+		_ = srvConn.SetDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 16)
+		if _, err := srvConn.Read(buf); err != nil {
+			serverDone <- fmt.Errorf("server read request: %w", err)
+			return
+		}
+		if _, err := srvConn.Write([]byte("ok")); err != nil {
+			serverDone <- fmt.Errorf("server write response: %w", err)
+			return
+		}
+		// Wait for client's FIN (client closes first, putting client in FIN_WAIT_2 / TIME_WAIT).
+		if _, err := srvConn.Read(buf); err == nil {
+			serverDone <- fmt.Errorf("expected EOF after client close")
+			return
+		}
+		serverDone <- nil
+	}()
+
+	clientConn, err := net.DialTimeout("tcp", ln.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("client dial failed: %v", err)
+	}
+	_ = clientConn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := clientConn.Write([]byte("probe")); err != nil {
+		t.Fatalf("client write failed: %v", err)
+	}
+	buf := make([]byte, 16)
+	if _, err := clientConn.Read(buf); err != nil {
+		t.Fatalf("client read reply failed: %v", err)
+	}
+	// Client closes first (simulating kubelet closing a probe connection first).
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("client close failed: %v", err)
+	}
+
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server failed: %v", err)
+	}
+	// Give any trailing TIME_WAIT ACK time to traverse postrouting.
+	time.Sleep(50 * time.Millisecond)
+	if got := queuedPackets.Load(); got != 0 {
+		t.Fatalf("expected 0 packets queued to nfqueue for node-initiated connection, got %d", got)
 	}
 }
