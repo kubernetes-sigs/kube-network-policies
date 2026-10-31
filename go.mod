@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/armon/go-radix v1.0.0
-	github.com/containerd/nri v0.12.3
+	github.com/containerd/nri v0.12.5
 	github.com/florianl/go-nfqueue/v2 v2.1.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
@@ -107,7 +107,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/term v0.47.0 // indirect
