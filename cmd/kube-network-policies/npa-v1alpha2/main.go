@@ -135,33 +135,40 @@ func run() int {
 	cnpInformer := npaInformerFactory.Policy().V1alpha2().ClusterNetworkPolicies()
 
 	// Create the Pod IP resolvers.
-	// First, given an IP address they return the Pod name/namespace.
+	// Given an IP address they return the UID of the Pod that owns it.
 	informerResolver, err := podinfo.NewInformerResolver(podInformer.Informer())
 	if err != nil {
 		klog.Fatalf("Failed to create informer resolver: %v", err)
 	}
-	resolvers := []podinfo.IPResolver{informerResolver}
 
 	// Create an NRI Pod IP resolver if enabled, since NRI connects to the container runtime
 	// the Pod and IP information is provided at the time the Pod Sandbox is created and before
 	// the containers start running, so policies can be enforced without race conditions.
+	// It decides which local Pod owns an IP, the apiserver view of the IPs is late and
+	// outlives the Pod, so it is passed apart from the other resolvers.
+	var localResolver podinfo.LocalResolver
 	if !opts.DisableNRI {
-		nriIPResolver, err := nri.NewNRIResolver(ctx, nodeName, nil)
+		nriIPResolver, err := nri.NewNRIResolver(ctx, nodeName, nsInformer)
 		if err != nil {
 			klog.Infof("failed to create NRI plugin, using apiserver information only: %v", err)
+		} else {
+			localResolver = nriIPResolver
 		}
-		resolvers = append(resolvers, nriIPResolver)
 	}
 
 	// Create the pod info provider to obtain the Pod information
 	// necessary for the network policy evaluation, it uses the resolvers
-	// to obtain the key (Pod name and namespace) and use the informers to obtain
+	// to obtain the Pod UID and use the informers to obtain
 	// the labels that are necessary to match the network policies.
-	podInfoProvider := podinfo.NewInformerProvider(
+	podInfoProvider, err := podinfo.NewInformerProvider(
 		podInformer,
 		nsInformer,
 		nodeInformer,
-		resolvers)
+		localResolver,
+		[]podinfo.IPResolver{informerResolver})
+	if err != nil {
+		klog.Fatalf("Failed to create pod info provider: %v", err)
+	}
 
 	// Create the evaluators for the Pipeline to process the packets
 	// and take a network policy action. The evaluators are processed

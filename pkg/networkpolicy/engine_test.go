@@ -15,6 +15,7 @@ import (
 
 	"sigs.k8s.io/kube-network-policies/pkg/api"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
+	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -680,6 +681,129 @@ func TestSinglePipelineWithRealEvaluators(t *testing.T) {
 
 			if allow != tt.wantAllow {
 				t.Errorf("Final verdict mismatch: got allow=%v, want allow=%v", allow, tt.wantAllow)
+			}
+		})
+	}
+}
+
+// fakeNRIResolver stands for the NRI resolver, it knows which pod owns an IP
+// from the moment the runtime creates the sandbox.
+type fakeNRIResolver struct {
+	owners map[string]*v1.Pod
+}
+
+func (f *fakeNRIResolver) LookupPod(ip string) (string, bool) {
+	pod, ok := f.owners[ip]
+	if !ok {
+		return "", false
+	}
+	return api.PodUID(pod), true
+}
+
+func (f *fakeNRIResolver) GetPodInfoByIP(ip string) (*api.PodInfo, bool) {
+	pod, ok := f.owners[ip]
+	if !ok {
+		return nil, false
+	}
+	return api.NewPodInfo(pod, nil, nil, ""), true
+}
+
+// TestPolicyEngine_PodIPReuse checks the verdicts when a new pod gets the IP
+// of a finished pod that still shows it in the apiserver, and the kubelet has
+// not reported the IP of the new pod yet.
+func TestPolicyEngine_PodIPReuse(t *testing.T) {
+	const reusedIP = "10.0.1.10"
+	const serverIP = "10.0.1.20"
+
+	// The finished pod is not selected by any policy and keeps the IP in its status.
+	finished := makeTestPod("job-old", "ns-a", map[string]string{"app": "job"}, reusedIP)
+	finished.UID = "uid-job"
+	finished.Status.Phase = v1.PodSucceeded
+	// The new pod owns the IP but the kubelet has not reported it.
+	web := makeTestPod("web", "ns-a", map[string]string{"app": "web"}, "")
+	web.UID = "uid-web"
+	web.Status.Phase = v1.PodPending
+	web.Status.PodIPs = nil
+	server := makeTestPod("server", "ns-a", map[string]string{"app": "server"}, serverIP)
+	server.UID = "uid-server"
+	server.Status.Phase = v1.PodRunning
+
+	denyWebEgress := makeNP("deny-web-egress", "ns-a", labels.Set{"app": "web"}, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil, nil)
+	allowServerIngressFromWeb := makeNP("allow-server-ingress-from-web", "ns-a", labels.Set{"app": "server"}, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}, nil,
+		[]networkingv1.NetworkPolicyIngressRule{{From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}}}}})
+
+	tests := []struct {
+		name      string
+		nri       bool
+		nps       []*networkingv1.NetworkPolicy
+		wantAllow bool
+	}{
+		{
+			name:      "with NRI the first packet of the new pod is denied by its egress policy",
+			nri:       true,
+			nps:       []*networkingv1.NetworkPolicy{denyWebEgress},
+			wantAllow: false,
+		},
+		{
+			// Without NRI nobody owns the IP until the kubelet reports it, the
+			// packet is evaluated as external and no egress policy applies.
+			name:      "without NRI the first packet of the new pod is accepted",
+			nri:       false,
+			nps:       []*networkingv1.NetworkPolicy{denyWebEgress},
+			wantAllow: true,
+		},
+		{
+			name:      "with NRI the new pod is allowed as a peer of the server ingress policy",
+			nri:       true,
+			nps:       []*networkingv1.NetworkPolicy{allowServerIngressFromWeb},
+			wantAllow: true,
+		},
+		{
+			name:      "without NRI the new pod is not a peer of the server ingress policy",
+			nri:       false,
+			nps:       []*networkingv1.NetworkPolicy{allowServerIngressFromWeb},
+			wantAllow: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kubeClient := fake.NewSimpleClientset()
+			informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
+			netpolInformer := informerFactory.Networking().V1().NetworkPolicies()
+			namespaceInformer := informerFactory.Core().V1().Namespaces()
+			podInformer := informerFactory.Core().V1().Pods()
+
+			informerResolver, err := podinfo.NewInformerResolver(podInformer.Informer())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var local podinfo.LocalResolver
+			if tt.nri {
+				local = &fakeNRIResolver{owners: map[string]*v1.Pod{reusedIP: web, serverIP: server}}
+			}
+			podInfoProvider, err := podinfo.NewInformerProvider(podInformer, namespaceInformer, nil, local, []podinfo.IPResolver{informerResolver})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, pod := range []*v1.Pod{finished, web, server} {
+				_ = podInformer.Informer().GetIndexer().Add(pod)
+			}
+			_ = namespaceInformer.Informer().GetIndexer().Add(makeTestNamespace("ns-a", nil))
+			npEvaluator := NewStandardNetworkPolicy("test", namespaceInformer, podInformer, netpolInformer)
+			for _, np := range tt.nps {
+				_ = netpolInformer.Informer().GetStore().Add(np)
+			}
+			engine := NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{npEvaluator})
+
+			packet := &network.Packet{SrcIP: net.ParseIP(reusedIP), DstIP: net.ParseIP(serverIP), DstPort: 80, Proto: v1.ProtocolTCP}
+			allow, err := engine.EvaluatePacket(context.Background(), packet)
+			if err != nil {
+				t.Fatalf("EvaluatePacket() error = %v", err)
+			}
+			if allow != tt.wantAllow {
+				t.Errorf("EvaluatePacket() allow = %v, want %v", allow, tt.wantAllow)
 			}
 		})
 	}
