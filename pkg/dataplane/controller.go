@@ -696,6 +696,32 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 		})
 	}
 
+	// Packets the kernel generates to answer a packet of an existing connection, the ICMP
+	// errors and the TCP resets of "reject" (kube-proxy uses them for Services without
+	// endpoints) and ICMP errors sent while forwarding (TTL exceeded, fragmentation needed),
+	// are attached to the conntrack entry of the packet they answer in the related state
+	// and reply direction. They have no socket, so "meta skuid 0" does not match them, and
+	// when the answered packet was rejected before reaching this chain the entry has no
+	// label either. nfqueue refuses to queue a packet whose unconfirmed conntrack entry is
+	// shared with the packet that caused it (nf_ct_drop_unconfirmed) and frees it without
+	// a verdict, so the client never gets the error and retries until it times out. They
+	// can not open a connection, so accept them without evaluating them.
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/425
+	// ct state related ct direction reply counter accept
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Ct{Register: 0x1, Key: expr.CtKeySTATE},
+			&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitRELATED), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+			&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeyDIRECTION},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x1}},
+			&expr.Counter{},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
 	// The queue sets the conntrack mark for the packets it processes,
 	// so we can clear the mark here later to re-process connections if needed.
 	// ct label X state established,related accept

@@ -294,6 +294,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
 		meta skuid 0 counter packets 0 bytes 0 accept
+		ct state related ct direction reply counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		ip saddr @podips-v4 queue flags bypass to 102
 		ip daddr @podips-v4 queue flags bypass to 102
@@ -347,6 +348,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
 		meta skuid 0 counter packets 0 bytes 0 accept
+		ct state related ct direction reply counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		queue to 102
 		ct label set 28
@@ -393,6 +395,7 @@ table inet kube-network-policies {
 		icmpv6 type nd-neighbor-advert accept
 		icmpv6 type nd-redirect accept
 		meta skuid 0 counter packets 0 bytes 0 accept
+		ct state related ct direction reply counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
 		queue to 102
 		ct label set 28
