@@ -49,6 +49,16 @@ func (p Packet) MarshalLog() any {
 	}
 }
 
+// Reverse returns a copy of the packet with source and destination swapped.
+// It is used to evaluate a packet in the reply direction of a connection as if
+// it was the original packet that initiated the connection. The receiver is
+// not modified.
+func (p Packet) Reverse() Packet {
+	p.SrcIP, p.DstIP = p.DstIP, p.SrcIP
+	p.SrcPort, p.DstPort = p.DstPort, p.SrcPort
+	return p
+}
+
 // https://en.wikipedia.org/wiki/Internet_Protocol_version_4#Packet_structure
 // https://en.wikipedia.org/wiki/IPv6_packet
 // https://github.com/golang/net/blob/master/ipv4/header.go

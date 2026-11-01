@@ -229,9 +229,9 @@ func (c *Controller) Run(ctx context.Context) error {
 	// This also solves a bug with SCTP
 	// https://github.com/aojea/kube-netpol/issues/8
 	// https://bugzilla.netfilter.org/show_bug.cgi?id=1742
-	flags = nfqueue.NfQaCfgFlagGSO
+	flags = nfqueue.NfQaCfgFlagGSO | nfqueue.NfQaCfgFlagConntrack
 	if c.config.FailOpen {
-		flags += nfqueue.NfQaCfgFlagFailOpen
+		flags |= nfqueue.NfQaCfgFlagFailOpen
 	}
 
 	// Set configuration options for nfqueue
@@ -271,6 +271,14 @@ func (c *Controller) Run(ctx context.Context) error {
 			return 0
 		}
 		packet.ID = *a.PacketID
+		// Established connections without the accept label (pre-existing connections or
+		// connections whose label was cleared after a policy update) are sent to the queue
+		// on their next packet, which may be a reply. Network policies apply to connections
+		// rather than individual packets, so evaluate the connection as it was originally
+		// initiated. The kernel packet is not modified, only the parsed copy.
+		if isReply(a.CtInfo) {
+			packet = packet.Reverse()
+		}
 
 		defer func() {
 			processingTime := float64(time.Since(startTime).Microseconds())
@@ -406,6 +414,12 @@ func (c *Controller) firewallEnforcer(ctx context.Context) error {
 	}
 
 	for _, flow := range flows {
+		// Only evaluate connections that have the accept label set; connections
+		// without the label are already sent to the queue on their next packet.
+		if !hasLabelBit(flow.Labels, c.config.CTLabelAccept) {
+			continue
+		}
+
 		// only UDP, SCTP or TCP connections in ESTABLISHED state are evaluated
 		if flow.Forward.Protocol != unix.IPPROTO_UDP &&
 			flow.Forward.Protocol != unix.IPPROTO_SCTP &&
@@ -679,11 +693,38 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 		},
 	})
 
-	// Don't process traffic generated from the root user in the Node, it can block kubelet probes
+	// Don't process traffic initiated from the root user in the Node, it can block kubelet probes
 	// or system daemons that depend on the internal node traffic to not be blocked.
+	// Connections opened by the node (ct direction original) also get the accept conntrack label,
+	// so the packets the kernel sends once the socket is gone (e.g. TIME_WAIT or orphaned FINs),
+	// which have no owner uid, are accepted by the established rule below.
 	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/65
-	// meta skuid 0 accept
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/417
+	// meta skuid 0 ct direction original ct label set X counter accept
+	//
+	// Replies from root owned servers (apiserver, kubelet, ...) are accepted without touching the
+	// label. The label can not be set on connections that predate the agent, because the kernel
+	// only allocates the labels extension while "ct label" rules are loaded, so without this rule
+	// every packet of those connections would be queued for as long as they live. A reply can
+	// only exist if the original direction was already admitted, so nothing is bypassed here.
+	// The label is deliberately not set: a root server replying on a pod to node connection whose
+	// label firewallEnforcer just cleared must not re-label it.
+	// meta skuid 0 counter accept
 	if !c.config.skipSkuidBypass {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeySKUID, SourceRegister: false, Register: 0x1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+				&expr.Ct{Register: 0x1, SourceRegister: false, Key: expr.CtKeyDIRECTION},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{0x0}},
+				&expr.Immediate{Register: 0x1, Data: generateLabelMask(c.config.CTLabelAccept)},
+				&expr.Ct{Register: 0x1, SourceRegister: true, Key: expr.CtKeyLABELS},
+				&expr.Counter{},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			},
+		})
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
