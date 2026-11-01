@@ -108,6 +108,11 @@ func main() {
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldPod := oldObj.(*v1.Pod)
 			newPod := newObj.(*v1.Pod)
+			// A terminal pod does not own its IPs anymore, release them.
+			if api.PodOwnsIPs(oldPod) && !api.PodOwnsIPs(newPod) {
+				deletePodFromCache(cacheServer, oldPod)
+				return
+			}
 			// check if pod IPs or labels changed
 			if !reflect.DeepEqual(oldPod.Status.PodIPs, newPod.Status.PodIPs) || !reflect.DeepEqual(oldPod.Labels, newPod.Labels) {
 				updatePodInCache(cacheServer, nsInformer.GetStore(), nodeInformer.GetStore(), newPod)
@@ -167,10 +172,16 @@ func main() {
 	klog.Infoln("Shutting down.")
 }
 
+// podStore is the part of the ipcache server that the pod handlers use.
+type podStore interface {
+	Upsert(ip string, info *api.PodInfo) error
+	DeleteIfOwner(ip string, uid string) error
+}
+
 // updatePodInCache gets the required info from a pod and its namespace and upserts it into the cache.
-func updatePodInCache(server *ipcache.EtcdStore, nsStore cache.Store, nodeStore cache.Store, pod *v1.Pod) {
-	// Skip host-network pods or pods that don't have an IP address yet.
-	if pod.Spec.HostNetwork || len(pod.Status.PodIPs) == 0 {
+func updatePodInCache(server podStore, nsStore cache.Store, nodeStore cache.Store, pod *v1.Pod) {
+	// Skip host-network pods, terminal pods or pods that don't have an IP address yet.
+	if !api.PodOwnsIPs(pod) || len(pod.Status.PodIPs) == 0 {
 		return
 	}
 
@@ -202,11 +213,16 @@ func updatePodInCache(server *ipcache.EtcdStore, nsStore cache.Store, nodeStore 
 	}
 }
 
-// deletePodFromCache removes all IPs associated with a given pod from the cache.
-func deletePodFromCache(server *ipcache.EtcdStore, pod *v1.Pod) {
+// deletePodFromCache removes the IPs of the pod from the cache, unless
+// another pod owns them now.
+func deletePodFromCache(server podStore, pod *v1.Pod) {
+	if pod.Spec.HostNetwork {
+		return
+	}
+	uid := api.PodUID(pod)
 	for _, podIP := range pod.Status.PodIPs {
 		klog.V(2).Infof("Deleting: IP=%s Pod=%s/%s", podIP.IP, pod.Namespace, pod.Name)
-		err := server.Delete(podIP.IP)
+		err := server.DeleteIfOwner(podIP.IP, uid)
 		if err != nil {
 			klog.Errorf("Failed to delete IP %s for pod %s/%s: %v", podIP.IP, pod.Namespace, pod.Name, err)
 		}
