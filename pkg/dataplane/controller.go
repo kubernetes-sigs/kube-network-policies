@@ -244,15 +244,6 @@ func (c *Controller) Run(ctx context.Context) error {
 		WriteTimeout: 100 * time.Millisecond,
 	}
 
-	nf, err := nfqueue.Open(&config)
-	if err != nil {
-		logger.Info("could not open nfqueue socket", "error", err)
-		return err
-	}
-	defer nf.Close()
-
-	c.nfq = nf
-
 	// Parse the packet and check if it should be accepted
 	// Packets should be evaludated independently in each direction
 	fn := func(a nfqueue.Attribute) int {
@@ -308,7 +299,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 
 	// Register your function to listen on nflog group 100
-	err = nf.RegisterWithErrorFunc(ctx, fn, func(err error) int {
+	errfn := func(err error) int {
 		if opError, ok := err.(*nfqnetlink.OpError); ok {
 			if opError.Timeout() || opError.Temporary() {
 				return 0
@@ -316,17 +307,51 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 		logger.Info("Could not receive message", "error", err)
 		return 0
-	})
+	}
+	nf, err := c.openQueue(ctx, &config, fn, errfn)
 	if err != nil {
 		logger.Info("could not open nfqueue socket", "error", err)
 		return err
 	}
+	defer nf.Close()
 
 	<-ctx.Done()
 
 	c.Shutdown(context.Background())
 
 	return nil
+}
+
+// openQueue opens the nfqueue socket and binds the queue, retrying on failure.
+//
+// The library binds the queue and then sends the queue parameters in separate
+// request/ack exchanges. The nftables rules may already be installed, and the
+// packets that the kernel queues between the bind and the next ack arrive
+// before the ack and the library reports a mismatched netlink sequence.
+// Closing the socket unbinds the queue, so the packets bypass it again and a
+// new attempt can succeed.
+func (c *Controller) openQueue(ctx context.Context, config *nfqueue.Config, fn nfqueue.HookFunc, errfn nfqueue.ErrorFunc) (*nfqueue.Nfqueue, error) {
+	logger := klog.FromContext(ctx)
+	var err error
+	for attempt := 1; attempt <= 5; attempt++ {
+		var nf *nfqueue.Nfqueue
+		nf, err = nfqueue.Open(config)
+		if err != nil {
+			return nil, err
+		}
+		c.nfq = nf
+		if err = nf.RegisterWithErrorFunc(ctx, fn, errfn); err == nil {
+			return nf, nil
+		}
+		nf.Close()
+		logger.V(2).Info("failed to bind nfqueue, retrying", "attempt", attempt, "error", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt) * 10 * time.Millisecond):
+		}
+	}
+	return nil, err
 }
 
 // Shutdown handles graceful shutdown of the controller.
