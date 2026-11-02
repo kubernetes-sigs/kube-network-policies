@@ -1,6 +1,6 @@
 module sigs.k8s.io/kube-network-policies
 
-go 1.26.0
+go 1.26.6
 
 require (
 	github.com/armon/go-radix v1.0.0
@@ -26,9 +26,8 @@ require (
 	k8s.io/component-base v0.37.2
 	k8s.io/component-helpers v0.37.2
 	k8s.io/klog/v2 v2.140.0
-	k8s.io/utils v0.0.0-20260626114624-be93311217bd
-	// Temporarily reference latest network-policy-api in anticipation of Beta.
-	sigs.k8s.io/network-policy-api v0.1.8-0.20260217173220-6bb86defe1a7
+	k8s.io/utils v0.0.0-20261023123148-ca04ba58ecab
+	sigs.k8s.io/network-policy-api v0.2.1
 )
 
 require (
@@ -63,7 +62,7 @@ require (
 	github.com/go-openapi/swag/yamlutils v0.27.1 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/gnostic-models v0.7.0 // indirect
+	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0 // indirect
