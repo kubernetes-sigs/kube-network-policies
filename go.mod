@@ -1,6 +1,6 @@
 module sigs.k8s.io/kube-network-policies
 
-go 1.26.6
+go 1.27.0
 
 require (
 	github.com/armon/go-radix v1.0.0
