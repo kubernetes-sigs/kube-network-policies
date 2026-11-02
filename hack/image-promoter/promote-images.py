@@ -17,8 +17,11 @@ def get_staging_tag(tag, format_str):
     env = os.environ.copy()
     env["TZ"] = "UTC"
     
-    commit_hash = run_cmd(["git", "rev-parse", "--short=7", tag], env=env)
-    date_str = run_cmd(["git", "show", "-s", "--format=%cd", "--date=format-local:%Y%m%d", tag], env=env)
+    # Dereference annotated tags to the tagged commit; the staging tag is built
+    # from the commit, and "git show" on a tag object prints the tag header too.
+    commit = f"{tag}^{{commit}}"
+    commit_hash = run_cmd(["git", "rev-parse", "--short=7", commit], env=env)
+    date_str = run_cmd(["git", "show", "-s", "--format=%cd", "--date=format-local:%Y%m%d", commit], env=env)
     
     return format_str.format(date=date_str, commit_hash=commit_hash)
 
@@ -272,7 +275,7 @@ def main():
             resolved_promotions[manifest_name].append((digest, promoted_tag))
             evidence_lines.append(f"$ crane digest {staging_registry}/{staging_image}:{staging_ref} {digest}")
             
-    commit_info = run_cmd(["git", "show", "--quiet", "--format=commit %H (tag: %d)%n%n%s%n%b", tag])
+    commit_info = run_cmd(["git", "show", "--quiet", "--format=commit %H (tag: %d)%n%n%s%n%b", f"{tag}^{{commit}}"])
     pr_body = "\n".join(evidence_lines) + "\n\n" + commit_info
     
     print("\nResolved promotions and digests:")
