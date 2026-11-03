@@ -12,17 +12,13 @@ REGISTRY?=gcr.io/k8s-staging-networking
 TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
 PLATFORMS?=linux/amd64,linux/arm64,linux/s390x
 
-.PHONY: all build build-standard build-npa-v1alpha1 build-npa-v1alpha2 build-npa-v1beta1 build-iptracker build-kube-ip-tracker-standard
+.PHONY: all build build-standard build-npa-v1alpha2 build-npa-v1beta1 build-iptracker build-kube-ip-tracker-standard
 
-build: build-standard build-npa-v1alpha1 build-npa-v1alpha2 build-npa-v1beta1 build-iptracker build-kube-ip-tracker-standard
+build: build-standard build-npa-v1alpha2 build-npa-v1beta1 build-iptracker build-kube-ip-tracker-standard
 
 build-standard:
 	@echo "Building standard binary..."
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-network-policies-standard ./cmd/kube-network-policies/standard
-
-build-npa-v1alpha1:
-	@echo "Building npa-v1alpha1 binary..."
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-network-policies-npa-v1alpha1 ./cmd/kube-network-policies/npa-v1alpha1
 
 build-npa-v1alpha2:
 	@echo "Building npa-v1alpha2 binary..."
@@ -66,12 +62,6 @@ image-build-standard: build-standard
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)" \
 		--load
 
-image-build-npa-v1alpha1: build-npa-v1alpha1
-	docker buildx build . \
-		--build-arg TARGET_BUILD=npa-v1alpha1 \
-		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha1" \
-		--load
-
 image-build-npa-v1alpha2: build-npa-v1alpha2
 	docker buildx build . \
 		--build-arg TARGET_BUILD=npa-v1alpha2 \
@@ -102,13 +92,6 @@ image-push-standard: build-standard
 		--build-arg TARGET_BUILD=standard \
 		--platform="${PLATFORMS}" \
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)" \
-		--push
-
-image-push-npa-v1alpha1: build-npa-v1alpha1
-	docker buildx build . \
-		--build-arg TARGET_BUILD=npa-v1alpha1 \
-		--platform="${PLATFORMS}" \
-		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-npa-v1alpha1" \
 		--push
 
 image-push-npa-v1alpha2: build-npa-v1alpha2
@@ -143,10 +126,10 @@ image-push-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 .PHONY: images-build images-push release
 
 # Build all image variants and load them into the local Docker daemon
-images-build: ensure-buildx image-build-standard image-build-npa-v1alpha1 image-build-npa-v1alpha2 image-build-npa-v1beta1 image-build-iptracker image-build-kube-ip-tracker-standard
+images-build: ensure-buildx image-build-standard image-build-npa-v1alpha2 image-build-npa-v1beta1 image-build-iptracker image-build-kube-ip-tracker-standard
 
 # Build and push all multi-platform image variants to the registry
-images-push: ensure-buildx image-push-standard image-push-npa-v1alpha1 image-push-npa-v1alpha2 image-push-npa-v1beta1 image-push-iptracker image-push-kube-ip-tracker-standard
+images-push: ensure-buildx image-push-standard image-push-npa-v1alpha2 image-push-npa-v1beta1 image-push-iptracker image-push-kube-ip-tracker-standard
 
 # The main release target, which pushes all images
 release: images-push
