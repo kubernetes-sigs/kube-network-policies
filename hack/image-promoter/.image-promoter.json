@@ -43,15 +43,6 @@
       ]
     },
     {
-      "file": "install-anp.yaml",
-      "replacements": [
-        {
-          "pattern": "(image:\\s*registry\\.k8s\\.io/networking/kube-network-policies:).*$",
-          "value": "\\g<1>{tag}"
-        }
-      ]
-    },
-    {
       "file": "install-iptracker.yaml",
       "replacements": [
         {

@@ -9,7 +9,7 @@ weight: 1150
 ## Key Features
 
 - **Userspace Packet Filtering:** Uses NFQUEUE and nftables to selectively redirect and evaluate network traffic in userspace.
-- **Multiple Policy Engines:** Fully supports standard Kubernetes `NetworkPolicy`, `AdminNetworkPolicy` (ANP), and `BaselineAdminNetworkPolicy` (BANP).
+- **Multiple Policy Engines:** Fully supports standard Kubernetes `NetworkPolicy` and `ClusterNetworkPolicy` (CNP).
 - **High Efficiency Selective Capture:** Avoids intercepting all traffic by dynamically identifying and capturing only packets belonging to pods targeted by active policies.
 - **Structured JSON Logging:** Offers rich diagnostics, allowing deep troubleshooting of network policy decisions using tools like `jq`.
 - **Flexible Extensibility:** Built on a pipeline of `PolicyEvaluator` plugins, making it simple to add custom validation logic.

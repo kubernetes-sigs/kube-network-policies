@@ -1,5 +1,5 @@
 ---
-title: "Admin Network Policy (ANP)"
+title: "Cluster Network Policy (CNP)"
 weight: 3
 ---
 
@@ -8,23 +8,23 @@ Standard Kubernetes `NetworkPolicies` are namespace-scoped, which allows develop
 - Enforce developer isolation by default.
 - Set global baseline defaults that developers can override.
 
-To solve this, `kube-network-policies` integrates with the official [Kubernetes Network Policy API](https://network-policy-api.sigs.k8s.io/) CRDs to support Admin Network Policy (ANP) and Baseline Admin Network Policy (BANP).
+To solve this, `kube-network-policies` integrates with the official [Kubernetes Network Policy API](https://network-policy-api.sigs.k8s.io/) `ClusterNetworkPolicy` (CNP) resource, which expresses these cluster-wide rules at an `Admin` tier and a `Baseline` tier.
 
 ---
 
 ## API Versions Supported
 
-### v1alpha1
-- **CRDs:** `AdminNetworkPolicy` and `BaselineAdminNetworkPolicy` (`policy.networking.k8s.io/v1alpha1`)
-- **Plugin:** `plugins/npa-v1alpha1`
-- **Binary Variant:** `kube-network-policies-npa-v1alpha1`
+### v1beta1
+- **CRD:** `ClusterNetworkPolicy` (`policy.networking.k8s.io/v1beta1`) — storage version
+- **Plugin:** `plugins/npa-v1beta1`
+- **Binary Variant:** `kube-network-policies-npa-v1beta1`
 
 ### v1alpha2
-- **CRD:** `ClusterNetworkPolicy` (`policy.networking.k8s.io/v1alpha2`)
+- **CRD:** `ClusterNetworkPolicy` (`policy.networking.k8s.io/v1alpha2`) — serving version
 - **Plugin:** `plugins/npa-v1alpha2`
 - **Binary Variant:** `kube-network-policies-npa-v1alpha2` (deployed via `install-cnp.yaml`)
 
-Under the hood, both versions are evaluated similarly in the policy pipeline, but v1alpha2 uses a unified `ClusterNetworkPolicy` resource to represent rules at different **Tiers**.
+Both versions share an identical schema and are evaluated the same way in the policy pipeline, using a unified `ClusterNetworkPolicy` resource to represent rules at different **Tiers**.
 
 ---
 
@@ -65,7 +65,7 @@ To guarantee correctness, every packet must be evaluated by the userspace agent 
 
 ## DNS & Domain Name Resolution
 
-Both ANP and CNP allow creating rules that match against external **Domain Names** (e.g. `*.google.com`) instead of hardcoded IP addresses. Since the packet filtering engine works at the IP layers (IPv4/IPv6), the agent needs a way to match IPs to their domain names.
+CNP allows creating rules that match against external **Domain Names** (e.g. `*.google.com`) instead of hardcoded IP addresses. Since the packet filtering engine works at the IP layers (IPv4/IPv6), the agent needs a way to match IPs to their domain names.
 
 `kube-network-policies` implements this with an in-memory **DNS Domain Cache**:
 
@@ -87,4 +87,4 @@ sequenceDiagram
 1. **Packet Redirection:** The agent sets up an `nftables` rule to capture all DNS UDP responses (source port 53) and redirects them to a secondary `nfqueue` (specifically, `nfqueue-id + 1`).
 2. **Parsing DNS Answers:** The background `DomainCache` controller parses the captured DNS answer packet, reads the A and AAAA resource records, and stores the resolved IPs and the associated domain name in a radix tree.
 3. **TTL Handling:** Cached IP-to-domain associations expire automatically based on the TTL in the DNS answer (subject to a minimum timeout of 30 seconds and a maximum timeout of 300 seconds).
-4. **Policy Evaluation:** When a pod attempts to send traffic to an IP, the ANP/CNP egress evaluator queries the `DomainCache` to see if the destination IP matches any allowed domain names before making a verdict.
+4. **Policy Evaluation:** When a pod attempts to send traffic to an IP, the CNP egress evaluator queries the `DomainCache` to see if the destination IP matches any allowed domain names before making a verdict.

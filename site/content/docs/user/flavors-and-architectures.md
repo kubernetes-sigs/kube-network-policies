@@ -26,19 +26,25 @@ Depending on your cluster size, requirements, and policy choices, you can select
 * **Resource Cost:** Higher on large clusters since every node maintains an active informer cache for all pods and namespaces.
 * **Deployment Manifest:** `install.yaml`
 
-### 2. `npa-v1alpha2` (Admin Network Policy)
-* **Target Image:** `registry.k8s.io/networking/kube-network-policies:<tag>-npa-v1alpha2`
-* **Description:** Extends the standard agent to add support for the newer Kubernetes `ClusterNetworkPolicy` APIs (v1alpha2 spec). It evaluates Admin Network Policies and Baseline Admin Network Policies using a userspace pipeline. It also runs a built-in DNS/Domain cache to resolve egress domain-name rules.
-* **Resource Cost:** Similar to standard, but intercepts all traffic (`divertAll = true`) because baseline policies can apply globally across the cluster.
+### 2. `npa-v1beta1` (ClusterNetworkPolicy)
+* **Target Image:** `registry.k8s.io/networking/kube-network-policies:<tag>-npa-v1beta1`
+* **Description:** Extends the standard agent to support the Kubernetes `ClusterNetworkPolicy` API (`v1beta1`, the storage version). It evaluates `ClusterNetworkPolicy` rules at the `Admin` and `Baseline` tiers using a userspace pipeline, and runs a built-in DNS/Domain cache to resolve egress domain-name rules.
+* **Resource Cost:** Similar to standard, but intercepts all traffic (`divertAll = true`) because baseline-tier policies can apply globally across the cluster.
 * **Deployment Manifest:** `install-cnp.yaml`
 
-### 3. `iptracker`
+### 3. `npa-v1alpha2` (ClusterNetworkPolicy — serving version)
+* **Target Image:** `registry.k8s.io/networking/kube-network-policies:<tag>-npa-v1alpha2`
+* **Description:** Same as `npa-v1beta1`, but built against the `v1alpha2` serving version of `ClusterNetworkPolicy` for backward compatibility.
+* **Resource Cost:** Same as `npa-v1beta1`.
+* **Deployment Manifest:** `install-cnp.yaml`
+
+### 4. `iptracker`
 * **Target Image:** `registry.k8s.io/networking/kube-network-policies:<tag>-iptracker`
 * **Description:** Optimized for large-scale clusters. Instead of having every node run heavy API informers for all pods, namespaces, and nodes, it connects over gRPC to a centralized helper daemon (`kube-ip-tracker`) to retrieve IP-to-pod mappings.
 * **Resource Cost:** Very low memory footprint per node.
 * **Deployment Manifest:** `install-iptracker.yaml`
 
-### 4. `kube-ip-tracker` (Standalone Daemon)
+### 5. `kube-ip-tracker` (Standalone Daemon)
 * **Target Image:** `registry.k8s.io/networking/kube-ip-tracker:<tag>`
 * **Description:** A standalone control-plane helper daemon that runs centrally in your cluster. It watches pods, namespaces, and nodes, aggregates their labels, and runs an embedded etcd store to serve IP-to-PodInfo mappings to the node agents running in `iptracker` mode.
 * **Deployment Manifest:** Included as a Deployment in `install-iptracker.yaml`
