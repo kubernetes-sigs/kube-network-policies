@@ -17,7 +17,8 @@ import (
 	"sigs.k8s.io/kube-network-policies/pkg/networkpolicy"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo"
 	"sigs.k8s.io/kube-network-policies/pkg/podinfo/nri"
-	pluginsnpav1alpha1 "sigs.k8s.io/kube-network-policies/plugins/npa-v1alpha1"
+	pluginsnpav1beta1 "sigs.k8s.io/kube-network-policies/plugins/npa-v1beta1"
+	npav1beta1 "sigs.k8s.io/network-policy-api/apis/v1beta1"
 	npaclient "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
 	npainformers "sigs.k8s.io/network-policy-api/pkg/client/informers/externalversions"
 
@@ -83,6 +84,7 @@ func run() int {
 		FailOpen:            opts.FailOpen,
 		QueueID:             opts.QueueID,
 		NetfilterBug1766Fix: opts.NetfilterBug1766Fix,
+		StrictMode:          opts.StrictMode,
 	}
 
 	var config *rest.Config
@@ -130,8 +132,7 @@ func run() int {
 		klog.Fatalf("Failed to create Network client: %v", err)
 	}
 	npaInformerFactory := npainformers.NewSharedInformerFactory(npaClient, 0)
-	anpInformer := npaInformerFactory.Policy().V1alpha1().AdminNetworkPolicies()
-	banpInformer := npaInformerFactory.Policy().V1alpha1().BaselineAdminNetworkPolicies()
+	cnpInformer := npaInformerFactory.Policy().V1beta1().ClusterNetworkPolicies()
 
 	// Create the Pod IP resolvers.
 	// Given an IP address they return the UID of the Pod that owns it.
@@ -192,9 +193,11 @@ func run() int {
 		}
 	}()
 
-	evaluators = append(evaluators, pluginsnpav1alpha1.NewAdminNetworkPolicy(
-		anpInformer,
+	evaluators = append(evaluators, pluginsnpav1beta1.NewClusterNetworkPolicy(
+		npav1beta1.AdminTier,
+		cnpInformer,
 		domainResolver,
+		nodeInformer.Lister(),
 	))
 
 	// Standard Network Policy goes after AdminNetworkPolicy and before BaselineAdminNetworkPolicy
@@ -205,8 +208,11 @@ func run() int {
 		networkPolicyInfomer,
 	))
 
-	evaluators = append(evaluators, pluginsnpav1alpha1.NewBaselineAdminNetworkPolicy(
-		banpInformer,
+	evaluators = append(evaluators, pluginsnpav1beta1.NewClusterNetworkPolicy(
+		npav1beta1.BaselineTier,
+		cnpInformer,
+		domainResolver,
+		nodeInformer.Lister(),
 	))
 
 	informersFactory.Start(ctx.Done())

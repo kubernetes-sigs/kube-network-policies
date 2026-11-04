@@ -16,15 +16,14 @@ For traditional Kubernetes Network Policies:
 kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/kube-network-policies/main/install.yaml
 ```
 
-For Admin Network Policies (ANP) and Baseline Admin Network Policies (BANP):
+For Cluster Network Policies (CNP):
 
 ```sh
-# Install CRDs
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/v0.1.5/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
+# Install the ClusterNetworkPolicy CRD
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_clusternetworkpolicies.yaml
 
-# Deploy the ANP daemonset
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/kube-network-policies/main/install-anp.yaml
+# Deploy the ClusterNetworkPolicy daemonset
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/kube-network-policies/main/install-cnp.yaml
 ```
 
 For Helm:

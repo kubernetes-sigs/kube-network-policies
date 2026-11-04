@@ -8,23 +8,23 @@ setup_file() {
   # Build the image for the specific binary and architecture
   (
     cd "$BATS_TEST_DIRNAME"/..
-    TAG="$TAG" make image-build-npa-v1alpha2
+    TAG="$TAG" make image-build-npa-v1beta1
   )
 
   # Apply CRDs required ClusterNetworkPolicy, use experimental for FQDN support
   kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_clusternetworkpolicies.yaml
 
   # Load the Docker image into the kind cluster
-  kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1alpha2 --name "$CLUSTER_NAME"
+  kind load docker-image "$REGISTRY/$IMAGE_NAME:$TAG"-npa-v1beta1 --name "$CLUSTER_NAME"
 
   # Install kube-network-policies
-  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha2#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1beta1#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
   printf '%s' "${_install}" | kubectl apply -f -
   kubectl wait --for=condition=ready pods --namespace=kube-system -l k8s-app=kube-network-policies
 }
 
 teardown_file() {
-  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1alpha2#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
+  _install=$(sed -e "s#$REGISTRY/$IMAGE_NAME.*#$REGISTRY/$IMAGE_NAME:$TAG-npa-v1beta1#" -e "s/--v=2/--v=4/" < "$BATS_TEST_DIRNAME"/../install-cnp.yaml)
   printf '%s' "${_install}" | kubectl delete -f -
 
   kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_clusternetworkpolicies.yaml
@@ -47,7 +47,7 @@ teardown() {
   # https://network-policy-api.sigs.k8s.io/npeps/npep-133-fqdn-egress-selector/#maintaining-an-allowlist-of-domains
 
   kubectl apply -f - <<EOF
-apiVersion: policy.networking.k8s.io/v1alpha2
+apiVersion: policy.networking.k8s.io/v1beta1
 kind: ClusterNetworkPolicy
 metadata:
   name: allow-internal-egress
@@ -67,7 +67,7 @@ spec:
       - "172.16.0.0/12"
       - "192.168.0.0/16"
 ---
-apiVersion: policy.networking.k8s.io/v1alpha2
+apiVersion: policy.networking.k8s.io/v1beta1
 kind: ClusterNetworkPolicy
 metadata:
   name: allow-domains-egress

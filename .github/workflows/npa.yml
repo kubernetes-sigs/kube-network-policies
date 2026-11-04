@@ -35,19 +35,19 @@ jobs:
         go-version-file: .go-version
         cache: false
 
-    - name: Build-alpha2
+    - name: Build-beta1
       run: |
-        REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-network-policies" TAG="test" make image-build-npa-v1alpha2
+        REGISTRY="registry.k8s.io/networking" IMAGE_NAME="kube-network-policies" TAG="test" make image-build-npa-v1beta1
         mkdir _output
-        docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha2 > _output/kube-network-policies-image-v1alpha2.tar
+        docker save registry.k8s.io/networking/kube-network-policies:test-npa-v1beta1 > _output/kube-network-policies-image-v1beta1.tar
 
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v5
       with:
-        name: test-image-v1alpha2
-        path: _output/kube-network-policies-image-v1alpha2.tar
+        name: test-image-v1beta1
+        path: _output/kube-network-policies-image-v1beta1.tar
 
-  e2e_npa_v1alpha2:
-    name: e2e_npa_v1alpha2
+  e2e_npa_v1beta1:
+    name: e2e_npa_v1beta1
     runs-on: ubuntu-22.04
     timeout-minutes: 100
     needs:
@@ -58,7 +58,7 @@ jobs:
         # TODO add "dual", waiting on KEP https://github.com/kubernetes/enhancements/tree/master/keps/sig-network/3705-cloud-node-ips
         ipFamily: ["ipv4", "ipv6"]
     env:
-      JOB_NAME: "kube-network-policies-${{ matrix.ipFamily }}"
+      JOB_NAME: "kube-network-policies-v1beta1-${{ matrix.ipFamily }}"
       IP_FAMILY: ${{ matrix.ipFamily }}
     steps:
     - name: Check out code
@@ -108,7 +108,7 @@ jobs:
 
     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v6
       with:
-        name: test-image-v1alpha2
+        name: test-image-v1beta1
 
     - name: Install kube-network-policies
       run: |
@@ -116,9 +116,9 @@ jobs:
         kubectl -n kube-system set image ds kindnet kindnet-cni=docker.io/kindest/kindnetd:v20230809-80a64d96
         /usr/local/bin/kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/main/config/crd/experimental/policy.networking.k8s.io_clusternetworkpolicies.yaml
         # preload kube-network-policies image
-        docker load --input kube-network-policies-image-v1alpha2.tar
-        /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha2 --name ${{ env.KIND_CLUSTER_NAME}}
-        sed -i s#registry.k8s.io/networking/kube-network-policies.*#registry.k8s.io/networking/kube-network-policies:test-npa-v1alpha2# install-cnp.yaml
+        docker load --input kube-network-policies-image-v1beta1.tar
+        /usr/local/bin/kind load docker-image registry.k8s.io/networking/kube-network-policies:test-npa-v1beta1 --name ${{ env.KIND_CLUSTER_NAME}}
+        sed -i s#registry.k8s.io/networking/kube-network-policies.*#registry.k8s.io/networking/kube-network-policies:test-npa-v1beta1# install-cnp.yaml
         /usr/local/bin/kubectl apply -f ./install-cnp.yaml
 
     - name: Get Cluster status
@@ -155,5 +155,5 @@ jobs:
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v5
       with:
-        name: kind-logs-v1alpha2-${{ env.JOB_NAME }}-${{ github.run_id }}
+        name: kind-logs-v1beta1-${{ env.JOB_NAME }}-${{ github.run_id }}
         path: ./_artifacts/logs

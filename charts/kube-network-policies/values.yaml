@@ -6,8 +6,6 @@ image:
 nameOverride: ""
 fullnameOverride: ""
 
-adminNetworkPolicy: true
-
 serviceAccount:
   annotations: {}
   name: kube-network-policies
