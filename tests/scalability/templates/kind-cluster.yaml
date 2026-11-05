@@ -1,0 +1,30 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  ipFamily: ipv4
+  podSubnet: ${KIND_POD_SUBNET}
+  serviceSubnet: ${KIND_SERVICE_SUBNET}
+  disableDefaultCNI: ${KIND_DISABLE_DEFAULT_CNI}
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: ClusterConfiguration
+    apiServer:
+      extraArgs:
+        # The API server is not the system under test; lift the kubeadm
+        # defaults so the load generator and the DUT agents are not throttled.
+        max-requests-inflight: "3000"
+        max-mutating-requests-inflight: "1000"
+    controllerManager:
+      extraArgs:
+        kube-api-qps: "500"
+        kube-api-burst: "1000"
+    scheduler:
+      extraArgs:
+        kube-api-qps: "500"
+        kube-api-burst: "1000"
+  extraPortMappings:
+  - containerPort: ${PROMETHEUS_NODEPORT}
+    hostPort: ${PROMETHEUS_NODEPORT}
+    protocol: TCP

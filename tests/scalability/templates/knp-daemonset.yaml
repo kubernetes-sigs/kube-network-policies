@@ -1,0 +1,114 @@
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-network-policies
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [networkpolicies]
+    verbs: [list, watch]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-network-policies
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-network-policies
+subjects:
+- kind: ServiceAccount
+  name: kube-network-policies
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-network-policies
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-network-policies
+  namespace: kube-system
+  labels:
+    tier: node
+    app: kube-network-policies
+    k8s-app: kube-network-policies
+spec:
+  selector:
+    matchLabels:
+      app: kube-network-policies
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: kube-network-policies
+        k8s-app: kube-network-policies
+        scale.knp.x-k8s.io/dut: ${DUT}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/os: linux
+      # The agent must not be scheduled onto kwok fake nodes: kwok would
+      # report the Pod Running and pollute every per-agent metric.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: [kwok]
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      serviceAccountName: kube-network-policies
+      containers:
+      - name: kube-network-policies
+        image: ${KNP_IMAGE}
+        args:
+        - /bin/netpol
+        - --hostname-override=$(MY_NODE_NAME)
+        - --v=${KNP_VERBOSITY}
+        - --nfqueue-id=${KNP_NFQUEUE_ID}
+        - --metrics-bind-address=:${KNP_METRICS_PORT}
+        - --disable-nri=${KNP_DISABLE_NRI}
+        - --fail-open=${KNP_FAIL_OPEN}
+        - --strict-mode=${KNP_STRICT_MODE}
+${KNP_EXTRA_ARGS}
+        ports:
+        - name: metrics
+          containerPort: ${KNP_METRICS_PORT}
+          hostPort: ${KNP_METRICS_PORT}
+        volumeMounts:
+        - name: nri-plugin
+          mountPath: /var/run/nri
+        - name: netns
+          mountPath: /var/run/netns
+          mountPropagation: HostToContainer
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "50Mi"
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN"]
+        env:
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumes:
+      - name: nri-plugin
+        hostPath:
+          path: /var/run/nri
+      - name: netns
+        hostPath:
+          path: /var/run/netns
