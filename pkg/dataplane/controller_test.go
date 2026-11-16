@@ -1160,6 +1160,21 @@ func testController_ExistingConnections(t *testing.T) {
 	clientLateIsolated, serverLateIsolated := startConn(t, allowedLn)
 	clientDenied, serverDenied := startConn(t, deniedLn)
 
+	// The evaluator sees every queued packet in the original direction of
+	// its connection, record them by the client port with the connection
+	// state the dataplane attached to them.
+	type evaluation struct {
+		dstPort     int
+		established bool
+	}
+	var evaluatedMu sync.Mutex
+	evaluated := map[int][]evaluation{}
+	evaluationsOf := func(conn net.Conn) []evaluation {
+		evaluatedMu.Lock()
+		defer evaluatedMu.Unlock()
+		return append([]evaluation(nil), evaluated[conn.LocalAddr().(*net.TCPAddr).Port]...)
+	}
+
 	// Policy allows connections initiated toward allowedPort (client -> server:12345),
 	// and denies everything else (including replies server:12345 -> client:ephemeral
 	// if they were mistakenly evaluated in the reply packet's direction, as well as
@@ -1174,6 +1189,9 @@ func testController_ExistingConnections(t *testing.T) {
 		ips:     []netip.Addr{netip.MustParseAddr("127.0.0.2")},
 		isReady: true,
 		evaluateEgress: func(_ context.Context, p *network.Packet, _, _ *api.PodInfo) (api.Verdict, error) {
+			evaluatedMu.Lock()
+			evaluated[p.SrcPort] = append(evaluated[p.SrcPort], evaluation{dstPort: p.DstPort, established: p.Established})
+			evaluatedMu.Unlock()
 			if denyAll.Load() {
 				return api.VerdictDeny, nil
 			}
@@ -1314,6 +1332,22 @@ func testController_ExistingConnections(t *testing.T) {
 		t.Fatalf("expected read on denied pre-existing connection (original direction) to time out, but succeeded")
 	}
 
+	// The packets of the pre-existing connections belong to established
+	// connections, the dataplane tells the policy engine so a domainNames
+	// peer can keep matching them after the DNS answer expired.
+	// https://github.com/kubernetes-sigs/kube-network-policies/issues/439
+	for name, conn := range map[string]net.Conn{"clientServerFirst": clientServerFirst, "clientClientFirst": clientClientFirst, "clientDenied": clientDenied} {
+		evaluations := evaluationsOf(conn)
+		if len(evaluations) == 0 {
+			t.Fatalf("no packet of the pre-existing connection %s was evaluated", name)
+		}
+		for _, e := range evaluations {
+			if !e.established {
+				t.Errorf("packet of the pre-existing connection %s evaluated with Established=false, want true", name)
+			}
+		}
+	}
+
 	// 5. Connections created once the ct label extension is active have their
 	// accept label cleared by firewallEnforcer when denied and re-evaluated by nfqueue when allowed.
 	clientPost, serverPost := startConn(t, allowedLn)
@@ -1346,6 +1380,19 @@ func testController_ExistingConnections(t *testing.T) {
 	n, err = clientPost.Read(buf)
 	if err != nil || string(buf[:n]) != "world" {
 		t.Fatalf("clientPost read after re-allow = %q, %v; want %q", string(buf[:n]), err, "world")
+	}
+
+	// The SYN opened the connection and the reply after the label was cleared
+	// belongs to the established connection.
+	evaluations := evaluationsOf(clientPost)
+	if len(evaluations) < 2 {
+		t.Fatalf("clientPost evaluations = %+v, want the SYN and the re-evaluated reply", evaluations)
+	}
+	if evaluations[0].established {
+		t.Errorf("the SYN of clientPost was evaluated with Established=true, want false")
+	}
+	if last := evaluations[len(evaluations)-1]; !last.established {
+		t.Errorf("the reply of clientPost after the label was cleared was evaluated with Established=false, want true")
 	}
 }
 

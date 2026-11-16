@@ -39,15 +39,15 @@ func (f *FuncProvider) GetPodInfoByIP(podIP string) (*api.PodInfo, bool) {
 // FuncDomainResolver is a test helper that wraps a function to satisfy the
 // DomainResolver interface.
 type FuncDomainResolver struct {
-	ContainsIPFunc func(domain string, ip net.IP) bool
+	ContainsIPFunc func(domain string, ip net.IP, established bool) bool
 }
 
 // ContainsIP calls the wrapped function.
-func (f *FuncDomainResolver) ContainsIP(domain string, ip net.IP) bool {
+func (f *FuncDomainResolver) ContainsIP(domain string, ip net.IP, established bool) bool {
 	if f.ContainsIPFunc == nil {
 		return false // Default behavior if no function is provided
 	}
-	return f.ContainsIPFunc(domain, ip)
+	return f.ContainsIPFunc(domain, ip, established)
 }
 
 func makePod(name, ns string, ip string) *v1.Pod {
@@ -630,6 +630,97 @@ func Test_matchPort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := matchPort(tt.policyPort, tt.port); got != tt.want {
 				t.Errorf("matchPort() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A domainNames peer keeps matching an established connection after the DNS
+// answer that admitted its IP expired, new connections need a live answer.
+// https://github.com/kubernetes-sigs/kube-network-policies/issues/439
+func Test_ClusterNetworkPolicy_DomainNamesEstablished(t *testing.T) {
+	podA := makePod("a", "ns-foo", "192.168.1.11")
+	nsFoo := makeNamespace("ns-foo")
+	externalIP := net.ParseIP("172.18.0.3")
+
+	allowDomainDenyRest := makeClusterNetworkPolicy("allow-domain", npav1alpha2.AdminTier, 20, func(p *npav1alpha2.ClusterNetworkPolicy) {
+		p.Spec.Subject = npav1alpha2.ClusterNetworkPolicySubject{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "ns-foo"}}}
+		p.Spec.Egress = []npav1alpha2.ClusterNetworkPolicyEgressRule{
+			{
+				Name:   "echo-by-domain",
+				Action: npav1alpha2.ClusterNetworkPolicyRuleActionAccept,
+				To:     []npav1alpha2.ClusterNetworkPolicyEgressPeer{{DomainNames: []npav1alpha2.DomainName{"echo.repro.test"}}},
+			},
+			{
+				Name:   "deny-rest",
+				Action: npav1alpha2.ClusterNetworkPolicyRuleActionDeny,
+				To:     []npav1alpha2.ClusterNetworkPolicyEgressPeer{{Networks: []npav1alpha2.CIDR{"0.0.0.0/0"}}},
+			},
+		}
+	})
+
+	// The answer for echo.repro.test expired: the cache only matches the IP
+	// for established connections.
+	var lookups []bool
+	expiredResolver := &FuncDomainResolver{
+		ContainsIPFunc: func(domain string, ip net.IP, established bool) bool {
+			lookups = append(lookups, established)
+			return domain == "echo.repro.test" && ip.Equal(externalIP) && established
+		},
+	}
+
+	kubeClient := fake.NewSimpleClientset()
+	informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
+	nodeInformer := informerFactory.Core().V1().Nodes()
+
+	npaClient := npaclientfake.NewSimpleClientset()
+	npaInformerFactory := npainformers.NewSharedInformerFactory(npaClient, 0)
+	cnpInformer := npaInformerFactory.Policy().V1alpha2().ClusterNetworkPolicies()
+	if err := cnpInformer.Informer().GetStore().Add(allowDomainDenyRest); err != nil {
+		t.Fatal(err)
+	}
+
+	podInfoProvider := &FuncProvider{GetFunc: func(podIP string) (*api.PodInfo, bool) {
+		if podIP == "192.168.1.11" {
+			return api.NewPodInfo(podA, nsFoo.Labels, nil, ""), true
+		}
+		return nil, false
+	}}
+	evaluator := NewClusterNetworkPolicy(npav1alpha2.AdminTier, cnpInformer, expiredResolver, nodeInformer.Lister())
+	engine := networkpolicy.NewPolicyEngine(podInfoProvider, []api.PolicyEvaluator{evaluator})
+
+	tests := []struct {
+		name        string
+		established bool
+		want        bool
+	}{
+		{name: "new connection after the TTL is denied", established: false, want: false},
+		{name: "established connection after the TTL stays allowed", established: true, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lookups = nil
+			packet := network.Packet{
+				SrcIP:       net.ParseIP("192.168.1.11"),
+				DstIP:       externalIP,
+				Proto:       v1.ProtocolTCP,
+				DstPort:     7777,
+				Established: tt.established,
+			}
+			got, err := engine.EvaluatePacket(context.TODO(), &packet)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("EvaluatePacket(established=%v) = %v, want %v", tt.established, got, tt.want)
+			}
+			if len(lookups) == 0 {
+				t.Fatalf("the domain resolver was not consulted")
+			}
+			for _, established := range lookups {
+				if established != tt.established {
+					t.Errorf("resolver consulted with established=%v for a packet with Established=%v", established, tt.established)
+				}
 			}
 		})
 	}

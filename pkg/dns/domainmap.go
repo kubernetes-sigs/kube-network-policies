@@ -12,10 +12,22 @@ import (
 	"k8s.io/utils/clock"
 )
 
-type ipEntries map[string]time.Time // ip : expire time
+// ipEntry is what the cache knows about one IP address a domain resolved to.
+type ipEntry struct {
+	// expires is the end of the TTL of the DNS answer. New connections match
+	// the entry until then.
+	expires time.Time
+	// retainUntil is staleRetention after the last time a connection matched
+	// the entry. Established connections keep matching the entry after it
+	// expired and gc keeps it until then, so an entry stays as long as the
+	// firewall enforcer finds connections that depend on it.
+	retainUntil time.Time
+}
+
+type ipEntries map[string]*ipEntry // ip : entry
 
 type domainMap struct {
-	mu    sync.RWMutex
+	mu    sync.Mutex
 	clock clock.Clock
 	tree  *radix.Tree
 }
@@ -54,53 +66,71 @@ func (i *domainMap) add(domain string, ips []net.IP, ttl int) {
 		entries = v.(ipEntries)
 	}
 	for _, ip := range ips {
-		entries[ip.String()] = expireTime
+		if e, ok := entries[ip.String()]; ok {
+			// e.retainUntil remains unchanged
+			e.expires = expireTime
+			continue
+		}
+		entries[ip.String()] = &ipEntry{expires: expireTime}
 	}
 	i.tree.Insert(domain, entries)
 }
 
-// contains returns true if the given domain contains the specified IP
-func (i *domainMap) containsIP(domain string, ip net.IP) bool {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
+// containsIP returns true if the given domain resolved to the specified IP.
+// A new connection matches an entry within the TTL of its answer. An
+// established connection also matches an expired entry, the expiry of a DNS
+// record stops new connections to the IP and keeps the existing ones. A match
+// refreshes the entry so gc keeps it while connections use it.
+func (i *domainMap) containsIP(domain string, ip net.IP, established bool) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	now := i.clock.Now()
+	key := ip.String()
+	match := func(entries ipEntries) bool {
+		e, ok := entries[key]
+		if !ok {
+			return false
+		}
+		if !established && !e.expires.After(now) {
+			return false
+		}
+		e.retainUntil = now.Add(staleRetention)
+		return true
+	}
 
 	// reverse the domain since the radix tree match on prefixes
 	domain = reverseDomain(domain)
 	// wildcard
-	var foundInWildcard bool
 	if strings.HasSuffix(domain, "*") {
+		var foundInWildcard bool
 		i.tree.WalkPrefix(strings.TrimSuffix(domain, "*"), func(d string, v interface{}) bool {
 			entries, ok := v.(ipEntries)
 			if !ok {
 				return false
 			}
-			if v, ok := entries[ip.String()]; ok && v.After(i.clock.Now()) {
+			if match(entries) {
 				foundInWildcard = true
 				return true
 			}
 			return false
 		})
 		return foundInWildcard
-	} else {
-		// exact match
-		v, ok := i.tree.Get(domain)
-		if !ok {
-			return false
-		}
-
-		entries, ok := v.(ipEntries)
-		if !ok {
-			return false
-		}
-
-		// check if the entry is still valid
-		if v, ok := entries[ip.String()]; ok && v.After(i.clock.Now()) {
-			return true
-		}
+	}
+	// exact match
+	v, ok := i.tree.Get(domain)
+	if !ok {
 		return false
 	}
+	entries, ok := v.(ipEntries)
+	if !ok {
+		return false
+	}
+	return match(entries)
 }
 
+// gc removes the entries that expired and that no connection matched for
+// staleRetention.
 func (i *domainMap) gc() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -112,9 +142,9 @@ func (i *domainMap) gc() {
 			return false
 		}
 		newEntries := make(ipEntries)
-		for ip, expiredTime := range entries {
-			if expiredTime.After(now) {
-				newEntries[ip] = expiredTime
+		for ip, e := range entries {
+			if e.expires.After(now) || e.retainUntil.After(now) {
+				newEntries[ip] = e
 			}
 		}
 		if len(newEntries) > 0 {

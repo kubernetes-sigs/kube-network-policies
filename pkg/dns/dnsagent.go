@@ -16,6 +16,7 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	nfqnetlink "github.com/mdlayher/netlink"
+	"sigs.k8s.io/kube-network-policies/pkg/dataplane"
 	"sigs.k8s.io/kube-network-policies/pkg/network"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -32,6 +33,15 @@ const (
 	// https://github.com/kubernetes/dns/blob/c0fa2d1128d42c9b13e08a6a7e3ee8c635b9acd5/cmd/node-cache/Corefile#L3
 	expireTimeout = 30 * time.Second
 	maxTTL        = 300 * time.Second // expire entries that are older than 300 seconds independently of the TTL
+	// staleRetention is how long an expired entry stays in the cache after the
+	// last connection matched it. New connections only match an entry within
+	// the TTL of its answer, but the connections established while the answer
+	// was valid stay allowed after it expired, as NPEP-133 requires. In strict
+	// mode each run of the firewall enforcer evaluates the established
+	// connections and refreshes the entries they match. The retention is twice
+	// the longest interval between two runs, so an entry stays as long as a
+	// connection uses it and goes away after the last connection closed.
+	staleRetention = 2 * dataplane.FirewallEnforcerMaxInterval
 	// It was 512 byRFC1035 for UDP until EDNS, but large packets can be fragmented ...
 	// it seems bind uses 1232 as maximum size
 	// https://kb.isc.org/docs/behavior-dig-versions-edns-bufsize
@@ -246,8 +256,9 @@ func (n *DomainCache) cleanRules() {
 	}
 }
 
-func (n *DomainCache) ContainsIP(domain string, ip net.IP) bool {
-	return n.cache.containsIP(domain, ip)
+// ContainsIP is part of the api.DomainResolver interface.
+func (n *DomainCache) ContainsIP(domain string, ip net.IP, established bool) bool {
+	return n.cache.containsIP(domain, ip, established)
 }
 
 func (n *DomainCache) handleDNSPacket(ctx context.Context, pkt network.Packet) {

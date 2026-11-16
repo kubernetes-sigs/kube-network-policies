@@ -15,7 +15,12 @@ type PodInfoProvider interface {
 
 // DomainResolver provides an interface for resolving domain names to IP addresses.
 type DomainResolver interface {
-	ContainsIP(domain string, ip net.IP) bool
+	// ContainsIP reports whether a DNS answer resolved domain to ip. A new
+	// connection matches while the TTL of the answer has not expired. An
+	// established connection also matches an expired answer: the expiry of a
+	// DNS record stops new connections to the IP and keeps the existing ones,
+	// as NPEP-133 requires.
+	ContainsIP(domain string, ip net.IP, established bool) bool
 }
 
 // SyncFunc is a callback function that an evaluator can invoke to trigger
