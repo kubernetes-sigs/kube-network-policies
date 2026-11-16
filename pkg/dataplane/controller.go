@@ -806,6 +806,52 @@ func (c *Controller) writeNFTablesRules(ctx context.Context, allPodIPs []netip.A
 		},
 	})
 
+	// An established connection without the accept label, one that is older than the agent
+	// or that the firewall enforcer revoked, sends all its packets to the queue. The TCP
+	// packets without payload do not open the connection, it is already established, and
+	// do not carry data: they are the ACKs and the FIN and RST that close it. Dropping them
+	// does not protect anything, it hides the close from the peer and logs a denial for
+	// each retransmission, so only the packets with data are queued.
+	//
+	// A packet has no payload when its length is the length of its headers. nftables can
+	// not compare two fields of a packet, so there is one rule for each length of the TCP
+	// header, that goes from 5 to 15 words of 32 bits (tcp doff). A packet with IPv4 options
+	// or IPv6 extension headers is longer than the lengths here, so it is queued.
+	// Ref: https://github.com/kubernetes-sigs/kube-network-policies/issues/440
+	for _, ip := range []struct {
+		family       byte
+		lengthOffset uint32 // offset of the length field in the IP header
+		headerLength int    // bytes of the IP header that the length field counts
+	}{
+		// ct state established ip length 40 tcp doff 5 counter accept
+		{family: unix.NFPROTO_IPV4, lengthOffset: 2, headerLength: 20},
+		// ct state established ip6 length 20 tcp doff 5 counter accept
+		{family: unix.NFPROTO_IPV6, lengthOffset: 4, headerLength: 0},
+	} {
+		for doff := 5; doff <= 15; doff++ {
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: []expr.Any{
+					&expr.Ct{Register: 0x1, Key: expr.CtKeySTATE},
+					&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 0x4, Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED), Xor: []byte{0x0, 0x0, 0x0, 0x0}},
+					&expr.Cmp{Op: expr.CmpOpNeq, Register: 0x1, Data: []byte{0x0, 0x0, 0x0, 0x0}},
+					&expr.Meta{Key: expr.MetaKeyNFPROTO, SourceRegister: false, Register: 0x1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{ip.family}},
+					&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseNetworkHeader, Offset: ip.lengthOffset, Len: 2},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: binaryutil.BigEndian.PutUint16(uint16(ip.headerLength + 4*doff))},
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, SourceRegister: false, Register: 0x1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{unix.IPPROTO_TCP}},
+					&expr.Payload{DestRegister: 0x1, Base: expr.PayloadBaseTransportHeader, Offset: 12, Len: 1},
+					&expr.Bitwise{SourceRegister: 0x1, DestRegister: 0x1, Len: 1, Mask: []byte{0xf0}, Xor: []byte{0x0}},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 0x1, Data: []byte{byte(doff << 4)}},
+					&expr.Counter{},
+					&expr.Verdict{Kind: expr.VerdictAccept},
+				},
+			})
+		}
+	}
+
 	queue := &expr.Queue{Num: uint16(c.config.QueueID)}
 	if c.config.FailOpen {
 		queue.Flag = expr.QueueFlagBypass

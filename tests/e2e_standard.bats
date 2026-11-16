@@ -73,6 +73,20 @@ busywait() {
   return 1 # Timeout
 }
 
+# Checks if the webserver has the expected number of connections from an IP
+check_connections_from() {
+  local ip="$1"
+  local expected="$2"
+  local count=$(kubectl -n prod exec webserver -- netstat -tn | grep -c "$ip:" || true)
+
+  if [ "$count" = "$expected" ]; then
+    return 0
+  else
+    echo "Expected $expected connections from $ip, but got $count"
+    return 1
+  fi
+}
+
 # https://github.com/kubernetes-sigs/kube-network-policies/issues/150
 @test "liveness probes" {
   kubectl apply -f - <<EOF
@@ -281,6 +295,12 @@ EOF
   busywait check_last_line "$TMPFILEOUT" "Hello World"
   echo "Initial connection established."
 
+  # A second connection that stays idle, to close it once the policy forbids it.
+  kubectl -n dev run idle --image alpine/socat --restart=Never -- "TCP:$WEBSERVER_IP:8080" EXEC:"sleep 1000"
+  kubectl -n dev wait --for=condition=ready pod/idle --timeout=30s
+  IDLE_IP=$(kubectl get pod idle -n dev -o jsonpath='{.status.podIP}')
+  busywait check_connections_from "$IDLE_IP" 1
+
   # Delete the allow-client policy
   kubectl -n prod delete networkpolicy allow-client
   sleep 2
@@ -322,10 +342,16 @@ EOF
   # Check that new messages are not received
   busywait check_last_line "$TMPFILEOUT" "Keepalive without policies"
 
+  # The packets that close a forbidden connection carry no data, the close reaches the server.
+  # https://github.com/kubernetes-sigs/kube-network-policies/issues/440
+  kubectl -n dev exec idle -- kill 1
+  busywait check_connections_from "$IDLE_IP" 0
+  echo "The close of the forbidden connection reached the server."
+
   kill "$CLIENT_PID" > /dev/null 2>&1 || true
   # Cleanup: delete resources created by this test
   kubectl delete pod webserver -n prod --ignore-not-found
-  kubectl delete pod client -n dev --ignore-not-found
+  kubectl delete pod client idle -n dev --ignore-not-found
   kubectl delete networkpolicy default-deny-ingress -n prod --ignore-not-found
   rm -f "$TMPFILEIN" "$TMPFILEOUT"
 }

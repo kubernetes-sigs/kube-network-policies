@@ -252,6 +252,33 @@ func TestNetworkPolicies_SyncRules(t *testing.T) {
 	testNetworkPolicies_SyncRules(t)
 }
 
+// expectedTCPNoPayloadRules are the rules that accept the TCP packets without
+// payload of the established connections, the same for every configuration.
+const expectedTCPNoPayloadRules = `
+		ct state established ip length 40 tcp doff 5 counter packets 0 bytes 0 accept
+		ct state established ip length 44 tcp doff 6 counter packets 0 bytes 0 accept
+		ct state established ip length 48 tcp doff 7 counter packets 0 bytes 0 accept
+		ct state established ip length 52 tcp doff 8 counter packets 0 bytes 0 accept
+		ct state established ip length 56 tcp doff 9 counter packets 0 bytes 0 accept
+		ct state established ip length 60 tcp doff 10 counter packets 0 bytes 0 accept
+		ct state established ip length 64 tcp doff 11 counter packets 0 bytes 0 accept
+		ct state established ip length 68 tcp doff 12 counter packets 0 bytes 0 accept
+		ct state established ip length 72 tcp doff 13 counter packets 0 bytes 0 accept
+		ct state established ip length 76 tcp doff 14 counter packets 0 bytes 0 accept
+		ct state established ip length 80 tcp doff 15 counter packets 0 bytes 0 accept
+		ct state established ip6 length 20 tcp doff 5 counter packets 0 bytes 0 accept
+		ct state established ip6 length 24 tcp doff 6 counter packets 0 bytes 0 accept
+		ct state established ip6 length 28 tcp doff 7 counter packets 0 bytes 0 accept
+		ct state established ip6 length 32 tcp doff 8 counter packets 0 bytes 0 accept
+		ct state established ip6 length 36 tcp doff 9 counter packets 0 bytes 0 accept
+		ct state established ip6 length 40 tcp doff 10 counter packets 0 bytes 0 accept
+		ct state established ip6 length 44 tcp doff 11 counter packets 0 bytes 0 accept
+		ct state established ip6 length 48 tcp doff 12 counter packets 0 bytes 0 accept
+		ct state established ip6 length 52 tcp doff 13 counter packets 0 bytes 0 accept
+		ct state established ip6 length 56 tcp doff 14 counter packets 0 bytes 0 accept
+		ct state established ip6 length 60 tcp doff 15 counter packets 0 bytes 0 accept
+`
+
 func testNetworkPolicies_SyncRules(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -301,6 +328,7 @@ table inet kube-network-policies {
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct state related ct direction reply counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
+` + expectedTCPNoPayloadRules + `
 		ip saddr @podips-v4 queue flags bypass to 102
 		ip daddr @podips-v4 queue flags bypass to 102
 		ip6 saddr @podips-v6 queue flags bypass to 102
@@ -356,6 +384,7 @@ table inet kube-network-policies {
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct state related ct direction reply counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
+` + expectedTCPNoPayloadRules + `
 		queue to 102
 		ct label set 28
 	}
@@ -404,6 +433,7 @@ table inet kube-network-policies {
 		meta skuid 0 counter packets 0 bytes 0 accept
 		ct state related ct direction reply counter packets 0 bytes 0 accept
 		ct label 28 ct state established,related counter packets 0 bytes 0 accept
+` + expectedTCPNoPayloadRules + `
 		queue to 102
 		ct label set 28
 	}
