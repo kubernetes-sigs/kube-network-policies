@@ -88,3 +88,4 @@ sequenceDiagram
 2. **Parsing DNS Answers:** The background `DomainCache` controller parses the captured DNS answer packet, reads the A and AAAA resource records, and stores the resolved IPs and the associated domain name in a radix tree.
 3. **TTL Handling:** Cached IP-to-domain associations expire automatically based on the TTL in the DNS answer (subject to a minimum timeout of 30 seconds and a maximum timeout of 300 seconds).
 4. **Policy Evaluation:** When a pod attempts to send traffic to an IP, the CNP egress evaluator queries the `DomainCache` to see if the destination IP matches any allowed domain names before making a verdict.
+5. **Node Scope:** The cache is local to each node and only has the DNS answers that cross that node. For that reason the egress policies of a pod are evaluated only on the node of the pod. The node of the destination pod evaluates the ingress policies of the destination, not the egress policies of the source.
