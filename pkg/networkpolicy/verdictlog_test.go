@@ -74,14 +74,15 @@ func TestVerdictLogMode_logs(t *testing.T) {
 // testPacket is a TCP connection from a Pod to an external IP.
 func testPacket() *network.Packet {
 	return &network.Packet{
-		ID:      7,
-		Family:  v1.IPv4Protocol,
-		SrcIP:   net.ParseIP("192.168.1.201"),
-		DstIP:   net.ParseIP("192.168.1.1"),
-		Proto:   v1.ProtocolTCP,
-		SrcPort: 46818,
-		DstPort: 5001,
-		Payload: []byte{0x01, 0x02},
+		ID:       7,
+		Family:   v1.IPv4Protocol,
+		SrcIP:    net.ParseIP("192.168.1.201"),
+		DstIP:    net.ParseIP("192.168.1.1"),
+		Proto:    v1.ProtocolTCP,
+		SrcPort:  46818,
+		DstPort:  5001,
+		TCPFlags: network.TCPFlagFIN | network.TCPFlagACK,
+		Payload:  []byte{0x01, 0x02},
 	}
 }
 
@@ -122,6 +123,7 @@ func TestVerdictLogger_Log(t *testing.T) {
 					dst:       netip.MustParseAddrPort("192.168.1.1:5001"),
 					srcPod:    testSrcPod,
 					verdict:   tt.verdict,
+					tcpFlags:  network.TCPFlagFIN | network.TCPFlagACK,
 					direction: DirectionIngress,
 					evaluator: "StandardNetworkPolicy",
 				}
@@ -202,6 +204,7 @@ func TestVerdictLogger_Run(t *testing.T) {
 		`dstPod="external"`,
 		`direction="ingress"`,
 		`evaluator="StandardNetworkPolicy"`,
+		`tcpFlags="FIN,ACK"`,
 	} {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("denied line does not contain %s:\n%s", want, lines[0])

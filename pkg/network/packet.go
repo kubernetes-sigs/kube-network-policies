@@ -5,10 +5,39 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strings"
 	"syscall"
 
 	v1 "k8s.io/api/core/v1"
 )
+
+// TCPFlags are the flags of a TCP header.
+type TCPFlags uint8
+
+const (
+	TCPFlagFIN TCPFlags = 1 << iota
+	TCPFlagSYN
+	TCPFlagRST
+	TCPFlagPSH
+	TCPFlagACK
+	TCPFlagURG
+	TCPFlagECE
+	TCPFlagCWR
+)
+
+var tcpFlagNames = []string{"FIN", "SYN", "RST", "PSH", "ACK", "URG", "ECE", "CWR"}
+
+// String returns the names of the flags that are set separated by commas,
+// for example "FIN,ACK", and the empty string when none is set.
+func (f TCPFlags) String() string {
+	var names []string
+	for i, name := range tcpFlagNames {
+		if f&(1<<i) != 0 {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ",")
+}
 
 type Packet struct {
 	ID      uint32
@@ -18,6 +47,9 @@ type Packet struct {
 	Proto   v1.Protocol
 	SrcPort int
 	DstPort int
+	// TCPFlags are the flags of the TCP header, zero for the other protocols.
+	TCPFlags TCPFlags
+
 	Payload []byte
 }
 
@@ -169,6 +201,9 @@ func ParsePacket(b []byte) (Packet, error) {
 	}
 	t.SrcPort = int(binary.BigEndian.Uint16(b[l4offset : l4offset+2]))
 	t.DstPort = int(binary.BigEndian.Uint16(b[l4offset+2 : l4offset+4]))
+	if protocol == syscall.IPPROTO_TCP {
+		t.TCPFlags = TCPFlags(b[l4offset+13])
+	}
 
 	// TODO allow to filter by the payload
 	t.Payload = b[payloadOffset:]

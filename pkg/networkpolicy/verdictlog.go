@@ -75,6 +75,8 @@ type verdictRecord struct {
 	dstPod *api.PodInfo
 	// verdict is VerdictAccept or VerdictDeny.
 	verdict api.Verdict
+	// tcpFlags are the flags of the evaluated packet, zero when it is not TCP.
+	tcpFlags network.TCPFlags
 	// direction is the pipeline that produced the verdict and evaluator the
 	// name of the evaluator that produced it. A denied packet was denied by
 	// that evaluator. An accepted packet was accepted by both pipelines, so
@@ -132,6 +134,7 @@ func (l *VerdictLogger) Log(packet *network.Packet, srcPod, dstPod *api.PodInfo,
 		srcPod:    srcPod,
 		dstPod:    dstPod,
 		verdict:   verdict,
+		tcpFlags:  packet.TCPFlags,
 		direction: direction,
 		evaluator: evaluator,
 	}
@@ -180,6 +183,7 @@ func (l *VerdictLogger) write(r verdictRecord) {
 		"dstPod", podKey(r.dstPod),
 		"direction", r.direction,
 		"evaluator", r.evaluator,
+		"tcpFlags", r.tcpFlags.String(),
 	)
 }
 

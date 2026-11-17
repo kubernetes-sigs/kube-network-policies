@@ -53,7 +53,8 @@ One entry is emitted per packet after the pipeline completes:
   "srcPod": "default/frontend",
   "dstPod": "default/backend",
   "direction": "ingress",
-  "evaluator": "StandardNetworkPolicy"
+  "evaluator": "StandardNetworkPolicy",
+  "tcpFlags": "SYN"
 }
 ```
 
@@ -68,6 +69,11 @@ Key fields:
 - `evaluator`: the evaluator that produced the verdict, for example `"StandardNetworkPolicy"`,
   `"ClusterNetworkPolicyAdmin"` or `"ClusterNetworkPolicyBaseline"`. Both `direction` and
   `evaluator` are empty when the packet is accepted because no policy applies to it.
+- `tcpFlags`: the flags of the TCP packet, empty for the other protocols. `"SYN"` is a new
+  connection. Any other value, like `"PSH,ACK"` or `"FIN,ACK"`, is a packet of an established
+  connection that is evaluated again, because it is older than the agent or because the
+  strict mode revoked it. It is also empty in the verdicts of the strict mode on the
+  established connections, that have `id` 0 and no packet.
 
 The verdicts are written by a dedicated goroutine, so a slow log destination does not
 delay the packets. When the destination falls behind, the verdicts that do not fit in
@@ -143,7 +149,7 @@ also carries the evaluator that decided.
 In the default text format, the verdict entry is a single line with the same keys:
 
 ```
-I0712 09:53:52.257809       1 verdictlog.go:172] "Packet verdict" id=9 verdict="deny" family="IPv4" protocol="TCP" src="10.0.1.3:40243" dst="10.0.2.2:8080" srcPod="default/frontend" dstPod="default/backend" direction="ingress" evaluator="StandardNetworkPolicy"
+I0712 09:53:52.257809       1 verdictlog.go:172] "Packet verdict" id=9 verdict="deny" family="IPv4" protocol="TCP" src="10.0.1.3:40243" dst="10.0.2.2:8080" srcPod="default/frontend" dstPod="default/backend" direction="ingress" evaluator="StandardNetworkPolicy" tcpFlags="SYN"
 ```
 
 and the trace entries are logged with a raw hex dump of the payload:

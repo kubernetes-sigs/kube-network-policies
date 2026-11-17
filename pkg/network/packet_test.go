@@ -80,88 +80,96 @@ func TestTCPIPv4(t *testing.T) {
 			name:  "SYN",
 			input: packetsTCPIPv4[0],
 			expected: Packet{
-				Family:  v1.IPv4Protocol,
-				Proto:   v1.ProtocolTCP,
-				DstIP:   net.ParseIP("192.168.1.1"),
-				DstPort: 5001,
-				SrcIP:   net.ParseIP("192.168.1.201"),
+				Family:   v1.IPv4Protocol,
+				Proto:    v1.ProtocolTCP,
+				DstIP:    net.ParseIP("192.168.1.1"),
+				DstPort:  5001,
+				SrcIP:    net.ParseIP("192.168.1.201"),
+				TCPFlags: TCPFlagSYN,
 			},
 		},
 		{
 			name:  "SYN, ACK",
 			input: packetsTCPIPv4[1],
 			expected: Packet{
-				Family:  v1.IPv4Protocol,
-				Proto:   v1.ProtocolTCP,
-				DstIP:   net.ParseIP("192.168.1.201"),
-				SrcIP:   net.ParseIP("192.168.1.1"),
-				SrcPort: 5001,
+				Family:   v1.IPv4Protocol,
+				Proto:    v1.ProtocolTCP,
+				DstIP:    net.ParseIP("192.168.1.201"),
+				SrcIP:    net.ParseIP("192.168.1.1"),
+				SrcPort:  5001,
+				TCPFlags: TCPFlagSYN | TCPFlagACK,
 			},
 		},
 		{
 			name:  "ACK 1",
 			input: packetsTCPIPv4[2],
 			expected: Packet{
-				Family:  v1.IPv4Protocol,
-				Proto:   v1.ProtocolTCP,
-				DstIP:   net.ParseIP("192.168.1.1"),
-				DstPort: 5001,
-				SrcIP:   net.ParseIP("192.168.1.2+1"),
+				Family:   v1.IPv4Protocol,
+				Proto:    v1.ProtocolTCP,
+				DstIP:    net.ParseIP("192.168.1.1"),
+				DstPort:  5001,
+				SrcIP:    net.ParseIP("192.168.1.2+1"),
+				TCPFlags: TCPFlagACK,
 			},
 		},
 		{
 			name:  "PSH, ACK",
 			input: packetsTCPIPv4[3],
 			expected: Packet{
-				Family:  v1.IPv4Protocol,
-				Proto:   v1.ProtocolTCP,
-				DstIP:   net.ParseIP("192.168.1.201"),
-				SrcIP:   net.ParseIP("192.168.1.1"),
-				SrcPort: 5001,
+				Family:   v1.IPv4Protocol,
+				Proto:    v1.ProtocolTCP,
+				DstIP:    net.ParseIP("192.168.1.201"),
+				SrcIP:    net.ParseIP("192.168.1.1"),
+				SrcPort:  5001,
+				TCPFlags: TCPFlagPSH | TCPFlagACK,
 			},
 		},
 		{
 			name:  "ACK 7",
 			input: packetsTCPIPv4[4],
 			expected: Packet{
-				Family:  v1.IPv4Protocol,
-				Proto:   v1.ProtocolTCP,
-				DstIP:   net.ParseIP("192.168.1.1"),
-				DstPort: 5001,
-				SrcIP:   net.ParseIP("192.168.1.2+1"),
+				Family:   v1.IPv4Protocol,
+				Proto:    v1.ProtocolTCP,
+				DstIP:    net.ParseIP("192.168.1.1"),
+				DstPort:  5001,
+				SrcIP:    net.ParseIP("192.168.1.2+1"),
+				TCPFlags: TCPFlagACK,
 			},
 		},
 		{
 			name:  "FIN, ACK 7",
 			input: packetsTCPIPv4[5],
 			expected: Packet{
-				Family:  v1.IPv4Protocol,
-				Proto:   v1.ProtocolTCP,
-				DstIP:   net.ParseIP("192.168.1.1"),
-				DstPort: 5001,
-				SrcIP:   net.ParseIP("192.168.1.201"),
+				Family:   v1.IPv4Protocol,
+				Proto:    v1.ProtocolTCP,
+				DstIP:    net.ParseIP("192.168.1.1"),
+				DstPort:  5001,
+				SrcIP:    net.ParseIP("192.168.1.201"),
+				TCPFlags: TCPFlagFIN | TCPFlagACK,
 			},
 		},
 		{
 			name:  "FIN, ACK 2",
 			input: packetsTCPIPv4[6],
 			expected: Packet{
-				Family:  v1.IPv4Protocol,
-				Proto:   v1.ProtocolTCP,
-				DstIP:   net.ParseIP("192.168.1.201"),
-				SrcIP:   net.ParseIP("192.168.1.1"),
-				SrcPort: 5001,
+				Family:   v1.IPv4Protocol,
+				Proto:    v1.ProtocolTCP,
+				DstIP:    net.ParseIP("192.168.1.201"),
+				SrcIP:    net.ParseIP("192.168.1.1"),
+				SrcPort:  5001,
+				TCPFlags: TCPFlagFIN | TCPFlagACK,
 			},
 		},
 		{
 			name:  "ACK 8",
 			input: packetsTCPIPv4[7],
 			expected: Packet{
-				Family:  v1.IPv4Protocol,
-				Proto:   v1.ProtocolTCP,
-				DstIP:   net.ParseIP("192.168.1.1"),
-				DstPort: 5001,
-				SrcIP:   net.ParseIP("192.168.1.201"),
+				Family:   v1.IPv4Protocol,
+				Proto:    v1.ProtocolTCP,
+				DstIP:    net.ParseIP("192.168.1.1"),
+				DstPort:  5001,
+				SrcIP:    net.ParseIP("192.168.1.201"),
+				TCPFlags: TCPFlagACK,
 			},
 		},
 	}
@@ -224,6 +232,27 @@ func comparePacket(t *testing.T, tc string, expected, got Packet) {
 	if expected.DstPort > 0 {
 		if got.DstPort != expected.DstPort {
 			t.Fatalf("%s: DstPort: expected=%v, got=%v", tc, expected.DstPort, got.DstPort)
+		}
+	}
+	if got.TCPFlags != expected.TCPFlags {
+		t.Fatalf("%s: TCPFlags: expected=%q, got=%q", tc, expected.TCPFlags, got.TCPFlags)
+	}
+}
+
+func TestTCPFlags_String(t *testing.T) {
+	tests := []struct {
+		flags TCPFlags
+		want  string
+	}{
+		{flags: 0, want: ""},
+		{flags: TCPFlagSYN, want: "SYN"},
+		{flags: TCPFlagFIN | TCPFlagACK, want: "FIN,ACK"},
+		{flags: TCPFlagRST | TCPFlagACK, want: "RST,ACK"},
+		{flags: 0xff, want: "FIN,SYN,RST,PSH,ACK,URG,ECE,CWR"},
+	}
+	for _, tt := range tests {
+		if got := tt.flags.String(); got != tt.want {
+			t.Errorf("TCPFlags(%#x).String() = %q, want %q", uint8(tt.flags), got, tt.want)
 		}
 	}
 }
