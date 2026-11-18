@@ -122,3 +122,86 @@ EOF
   kubectl delete clusternetworkpolicy allow-internal-egress
   kubectl delete clusternetworkpolicy allow-domains-egress
 }
+
+# https://github.com/kubernetes-sigs/kube-network-policies/issues/443
+@test "a domain rule allows connections to a pod on another node" {
+  # A packet between Pods on two nodes goes through the agents of both nodes. Only the node
+  # of the client sees the DNS answers of the client, so it is the one that evaluates the
+  # egress policies of the client. The node of the server must not evaluate them again, it
+  # never saw the answer and would deny the connection.
+  CLIENT_OVERRIDES="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"${CLUSTER_NAME}-worker\"}}"
+  SERVER_OVERRIDES="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"${CLUSTER_NAME}-worker2\"}}"
+
+  # Two echo servers on the other node, reachable through the DNS record of their headless
+  # Service. The policy only allows the first one.
+  for name in allowed forbidden; do
+    kubectl -n prod run "$name" --image=alpine/socat --labels=app="$name" --overrides="$SERVER_OVERRIDES" -- TCP-LISTEN:8080,fork EXEC:cat
+    kubectl -n prod expose pod "$name" --name="$name" --port=8080 --cluster-ip=None
+  done
+  kubectl -n prod wait --for=condition=ready pod/allowed pod/forbidden --timeout=60s
+
+  kubectl apply -f - <<EOF
+apiVersion: policy.networking.k8s.io/v1beta1
+kind: ClusterNetworkPolicy
+metadata:
+  name: allow-dns-egress
+spec:
+  tier: Admin
+  priority: 45
+  subject:
+    namespaces:
+      matchLabels:
+        kubernetes.io/metadata.name: "dev"
+  egress:
+  - name: "allow-dns"
+    action: "Accept"
+    to:
+    - namespaces:
+        matchLabels:
+          kubernetes.io/metadata.name: "kube-system"
+    protocols:
+    - udp:
+        destinationPort:
+          number: 53
+    - tcp:
+        destinationPort:
+          number: 53
+---
+apiVersion: policy.networking.k8s.io/v1beta1
+kind: ClusterNetworkPolicy
+metadata:
+  name: allow-server-by-domain
+spec:
+  tier: Admin
+  priority: 55
+  subject:
+    namespaces:
+      matchLabels:
+        kubernetes.io/metadata.name: "dev"
+  egress:
+  - name: "allow-server"
+    action: "Accept"
+    to:
+    - domainNames:
+      - "allowed.prod.svc.cluster.local"
+    protocols:
+    - tcp:
+        destinationPort:
+          number: 8080
+  - name: "default-deny"
+    action: "Deny"
+    to:
+    - networks:
+      - "0.0.0.0/0"
+      - "::/0"
+EOF
+  # propagation delay
+  sleep 2
+
+  # The client waits before connecting so the agents know the IP of the new Pod. Each
+  # server echoes its own name back if the connection is allowed.
+  output=$(kubectl -n dev run test-$RANDOM --image=alpine/socat --overrides="$CLIENT_OVERRIDES" --restart=Never -i --command -- sh -c "sleep 3; for name in allowed forbidden; do echo \$name | socat -T 3 STDIO TCP:\$name.prod.svc.cluster.local:8080,connect-timeout=3; done; true" || true)
+  echo "Servers that answered: '$output'"
+  kubectl delete clusternetworkpolicy allow-dns-egress allow-server-by-domain --ignore-not-found
+  test "$output" = "allowed"
+}

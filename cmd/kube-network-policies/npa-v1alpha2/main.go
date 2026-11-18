@@ -218,7 +218,11 @@ func run() int {
 	informersFactory.Start(ctx.Done())
 	npaInformerFactory.Start(ctx.Done())
 
-	cmd.Start(ctx, networkpolicy.NewPolicyEngine(podInfoProvider, evaluators), dpCfg, opts)
+	// The domain cache only has the DNS answers that cross this node, so the
+	// egress policies of a Pod are evaluated on the node of the Pod.
+	policyEngine := networkpolicy.NewPolicyEngine(podInfoProvider, evaluators)
+	policyEngine.EvaluateEgressOnSourceNode(nodeName)
+	cmd.Start(ctx, policyEngine, dpCfg, opts)
 
 	<-ctx.Done()
 	logger.Info("Received termination signal, starting cleanup...")

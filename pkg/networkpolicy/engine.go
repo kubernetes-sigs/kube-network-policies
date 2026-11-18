@@ -29,6 +29,9 @@ type PolicyEngine struct {
 	evaluators      []api.PolicyEvaluator
 	// verdictLogger receives the verdicts, nil when they are not logged.
 	verdictLogger *VerdictLogger
+	// egressNodeName is the name of the node the engine runs on, set when the
+	// egress policies are evaluated only on the node of the source Pod.
+	egressNodeName string
 }
 
 // NewPolicyEngine creates a new engine with a predefined evaluation order.
@@ -44,6 +47,33 @@ func NewPolicyEngine(podInfoProvider api.PodInfoProvider, evaluators []api.Polic
 // called before the engine starts evaluating packets.
 func (e *PolicyEngine) SetVerdictLogger(l *VerdictLogger) {
 	e.verdictLogger = l
+}
+
+// EvaluateEgressOnSourceNode makes the engine evaluate the egress policies of
+// a Pod only on the node of the Pod, nodeName is the node the engine runs on.
+// It must be called before the engine starts evaluating packets.
+//
+// The node of the destination Pod also receives the packet, and without this
+// it evaluates the egress policies of the source Pod again. That is redundant
+// when every node reaches the same verdict, and wrong when the verdict depends
+// on state that only the node of the source Pod has, like the DNS answers a
+// domainNames peer matches: the other node never saw them and denies a
+// connection that the node of the source Pod allowed. The evaluators can not
+// skip the Pod on their own, the next evaluators of the pipeline would then
+// judge a packet that a previous one accepted on the node of the source Pod.
+func (e *PolicyEngine) EvaluateEgressOnSourceNode(nodeName string) {
+	e.egressNodeName = nodeName
+}
+
+// egressEvaluatedElsewhere reports whether the node of the source Pod, and
+// not this one, evaluates the egress policies of the Pod. A Pod with no known
+// node is evaluated here.
+func (e *PolicyEngine) egressEvaluatedElsewhere(srcPod *api.PodInfo) bool {
+	if e.egressNodeName == "" || srcPod == nil {
+		return false
+	}
+	node := srcPod.GetNode().GetName()
+	return node != "" && node != e.egressNodeName
 }
 
 // EvaluatePacket runs the full ingress and egress evaluation pipelines.
@@ -63,19 +93,23 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 	}
 
 	// 1. Evaluate Egress
-	verdict, evaluator, err := e.runEgressPipeline(ctx, packet, srcPod, dstPod)
-	if err != nil {
-		logger.Error(err, "Egress pipeline evaluation failed")
-		return false, err
-	}
-	if verdict == api.VerdictDeny {
-		logger.V(4).Info("Packet denied by egress policy")
-		e.logVerdict(packet, srcPod, dstPod, verdict, DirectionEgress, evaluator)
-		return false, nil
+	if e.egressEvaluatedElsewhere(srcPod) {
+		logger.V(4).Info("Skipping egress policies, the node of the source Pod evaluates them", "node", srcPod.GetNode().GetName())
+	} else {
+		verdict, evaluator, err := e.runEgressPipeline(ctx, packet, srcPod, dstPod)
+		if err != nil {
+			logger.Error(err, "Egress pipeline evaluation failed")
+			return false, err
+		}
+		if verdict == api.VerdictDeny {
+			logger.V(4).Info("Packet denied by egress policy")
+			e.logVerdict(packet, srcPod, dstPod, verdict, DirectionEgress, evaluator)
+			return false, nil
+		}
 	}
 
 	// 2. Evaluate Ingress
-	verdict, evaluator, err = e.runIngressPipeline(ctx, packet, srcPod, dstPod)
+	verdict, evaluator, err := e.runIngressPipeline(ctx, packet, srcPod, dstPod)
 	if err != nil {
 		logger.Error(err, "Ingress pipeline evaluation failed")
 		return false, err
