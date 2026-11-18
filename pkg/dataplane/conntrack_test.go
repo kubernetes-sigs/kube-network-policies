@@ -2,7 +2,12 @@ package dataplane
 
 import (
 	"encoding/hex"
+	"net"
 	"testing"
+
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
+	"k8s.io/utils/ptr"
 )
 
 func TestGenerateLabelMask(t *testing.T) {
@@ -209,5 +214,58 @@ func TestHasLabelBit(t *testing.T) {
 	}
 	if hasLabelBit(nil, 0) || hasLabelBit([]byte{1, 2, 3}, 0) {
 		t.Errorf("expected invalid label length to return false")
+	}
+}
+
+func TestPacketFromFlow_Established(t *testing.T) {
+	flow := &netlink.ConntrackFlow{
+		FamilyType: unix.AF_INET,
+		Forward: netlink.IPTuple{
+			SrcIP:    net.ParseIP("10.244.0.8"),
+			DstIP:    net.ParseIP("172.18.0.3"),
+			SrcPort:  39546,
+			DstPort:  7777,
+			Protocol: unix.IPPROTO_TCP,
+		},
+		Reverse: netlink.IPTuple{
+			SrcIP:    net.ParseIP("172.18.0.3"),
+			DstIP:    net.ParseIP("10.244.0.8"),
+			SrcPort:  7777,
+			DstPort:  39546,
+			Protocol: unix.IPPROTO_TCP,
+		},
+	}
+	packet := PacketFromFlow(flow)
+	if packet == nil {
+		t.Fatal("PacketFromFlow() = nil")
+	}
+	if !packet.Established {
+		t.Errorf("PacketFromFlow().Established = false, want true: conntrack flows are established connections")
+	}
+	if !packet.SrcIP.Equal(flow.Forward.SrcIP) || packet.SrcPort != 39546 || !packet.DstIP.Equal(flow.Reverse.SrcIP) || packet.DstPort != 7777 {
+		t.Errorf("PacketFromFlow() = %s, want the original direction of the flow", packet.String())
+	}
+}
+
+func TestIsEstablished(t *testing.T) {
+	tests := []struct {
+		name   string
+		ctInfo *uint32
+		want   bool
+	}{
+		{name: "no conntrack", ctInfo: nil, want: false},
+		{name: "IP_CT_ESTABLISHED", ctInfo: ptr.To[uint32](0), want: true},
+		{name: "IP_CT_RELATED", ctInfo: ptr.To[uint32](1), want: false},
+		{name: "IP_CT_NEW", ctInfo: ptr.To[uint32](2), want: false},
+		{name: "IP_CT_ESTABLISHED_REPLY", ctInfo: ptr.To[uint32](3), want: true},
+		{name: "IP_CT_RELATED_REPLY", ctInfo: ptr.To[uint32](4), want: false},
+		{name: "IP_CT_UNTRACKED", ctInfo: ptr.To[uint32](7), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isEstablished(tt.ctInfo); got != tt.want {
+				t.Errorf("isEstablished() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

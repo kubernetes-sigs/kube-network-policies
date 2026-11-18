@@ -53,6 +53,11 @@ const (
 // with another policy resets it, the kernel updates the policy in place.
 var chainPolicyAccept = nftables.ChainPolicyAccept
 
+// FirewallEnforcerMaxInterval is the longest time between two runs of the
+// firewall enforcer, that in strict mode evaluates the established connections
+// again. The state those evaluations depend on has to be kept longer than this.
+const FirewallEnforcerMaxInterval = 1 * time.Hour
+
 type Config struct {
 	FailOpen            bool // allow traffic if the controller is not available
 	QueueID             int
@@ -140,9 +145,9 @@ func newController(
 		c.connRunner = runner.NewBoundedFrequencyRunner(
 			controllerName+"-firewall-enforcer",
 			func() error { return c.firewallEnforcer(context.Background()) },
-			30*time.Second, // minInterval (less frequent than nftables sync to avoid overload listing conntrack entries)
-			15*time.Second, // retryInterval
-			1*time.Hour,    // maxInterval
+			30*time.Second,              // minInterval (less frequent than nftables sync to avoid overload listing conntrack entries)
+			15*time.Second,              // retryInterval
+			FirewallEnforcerMaxInterval, // maxInterval
 		)
 	}
 
@@ -262,6 +267,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			return 0
 		}
 		packet.ID = *a.PacketID
+		packet.Established = isEstablished(a.CtInfo)
 		// Established connections without the accept label (pre-existing connections or
 		// connections whose label was cleared after a policy update) are sent to the queue
 		// on their next packet, which may be a reply. Network policies apply to connections

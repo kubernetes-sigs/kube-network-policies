@@ -291,7 +291,7 @@ func TestDomainCache_HandleDNSPacket(t *testing.T) {
 			foundCount := 0
 			for _, expectedIP := range tt.answerIPs {
 				// Need to check the correct domain name (without trailing dot for storage)
-				if ok := n.cache.containsIP(strings.TrimSuffix(tt.queryName, "."), expectedIP); ok {
+				if ok := n.cache.containsIP(strings.TrimSuffix(tt.queryName, "."), expectedIP, false); ok {
 					t.Logf("Successfully found %s -> %s in cache", tt.queryName, expectedIP)
 					foundCount++
 				} else {
@@ -306,7 +306,7 @@ func TestDomainCache_HandleDNSPacket(t *testing.T) {
 			n.cache.gc() // Explicitly call GC for testing
 			for _, expectedIP := range tt.answerIPs {
 				storedDomain := strings.TrimSuffix(tt.queryName, ".")
-				if ok := n.cache.containsIP(storedDomain, expectedIP); ok {
+				if ok := n.cache.containsIP(storedDomain, expectedIP, false); ok {
 					t.Errorf("Expected %s -> %s to be expired and removed from cache, but it was still present", storedDomain, expectedIP)
 				}
 			}

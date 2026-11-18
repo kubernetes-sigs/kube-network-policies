@@ -89,7 +89,7 @@ func (c *ClusterNetworkPolicy) EvaluateEgress(ctx context.Context, p *network.Pa
 		return api.VerdictNext, err
 	}
 
-	action := c.evaluateClusterEgress(policies, dstPod, p.DstIP, p.DstPort, p.Proto)
+	action := c.evaluateClusterEgress(policies, dstPod, p.DstIP, p.DstPort, p.Proto, p.Established)
 	logger.V(4).Info("Egress CNP evaluation", "tier", c.tier, "npolicies", len(policies), "action", action)
 
 	return actionToVerdict(action), nil
@@ -146,6 +146,7 @@ func (c *ClusterNetworkPolicy) evaluateClusterEgress(
 	dstIP net.IP,
 	dstPort int,
 	protocol v1.Protocol,
+	established bool,
 ) npav1alpha2.ClusterNetworkPolicyRuleAction {
 	for _, policy := range policies {
 		for _, rule := range policy.Spec.Egress {
@@ -197,7 +198,7 @@ func (c *ClusterNetworkPolicy) evaluateClusterEgress(
 					}
 				}
 				for _, domain := range to.DomainNames {
-					if c.domainResolver != nil && c.domainResolver.ContainsIP(string(domain), dstIP) {
+					if c.domainResolver != nil && c.domainResolver.ContainsIP(string(domain), dstIP, established) {
 						return rule.Action
 					}
 				}

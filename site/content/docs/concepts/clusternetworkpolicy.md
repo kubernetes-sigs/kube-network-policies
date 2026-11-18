@@ -86,5 +86,5 @@ sequenceDiagram
 
 1. **Packet Redirection:** The agent sets up an `nftables` rule to capture all DNS UDP responses (source port 53) and redirects them to a secondary `nfqueue` (specifically, `nfqueue-id + 1`).
 2. **Parsing DNS Answers:** The background `DomainCache` controller parses the captured DNS answer packet, reads the A and AAAA resource records, and stores the resolved IPs and the associated domain name in a radix tree.
-3. **TTL Handling:** Cached IP-to-domain associations expire automatically based on the TTL in the DNS answer (subject to a minimum timeout of 30 seconds and a maximum timeout of 300 seconds).
+3. **TTL Handling:** Cached IP-to-domain associations expire based on the TTL in the DNS answer (subject to a minimum timeout of 30 seconds and a maximum timeout of 300 seconds). The expiry only stops new connections to the IP: connections established while the answer was valid stay allowed, also when the strict mode re-evaluates them after a policy change, and the cache keeps an expired association while established connections use it.
 4. **Policy Evaluation:** When a pod attempts to send traffic to an IP, the CNP egress evaluator queries the `DomainCache` to see if the destination IP matches any allowed domain names before making a verdict.

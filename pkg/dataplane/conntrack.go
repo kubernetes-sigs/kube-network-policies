@@ -20,15 +20,19 @@ var (
 	}
 )
 
+// PacketFromFlow converts a conntrack flow to a packet in the original
+// direction of the connection. The flow is an established connection, so the
+// packet is marked as such.
 func PacketFromFlow(flow *netlink.ConntrackFlow) *network.Packet {
 	if flow == nil {
 		return nil
 	}
 	packet := network.Packet{
-		SrcIP:   flow.Forward.SrcIP,
-		DstIP:   flow.Reverse.SrcIP,
-		SrcPort: int(flow.Forward.SrcPort),
-		DstPort: int(flow.Reverse.SrcPort),
+		SrcIP:       flow.Forward.SrcIP,
+		DstIP:       flow.Reverse.SrcIP,
+		SrcPort:     int(flow.Forward.SrcPort),
+		DstPort:     int(flow.Reverse.SrcPort),
+		Established: true,
 	}
 
 	if family, ok := mapIPFamilyToString[flow.FamilyType]; ok {
@@ -102,10 +106,9 @@ func hasLabelBit(currentLabel []byte, bitIndex int) bool {
 	return (currentLabel[arrayIndex] & (uint8(1) << bitPos)) != 0
 }
 
-// ipCTIsReply is IP_CT_IS_REPLY from enum ip_conntrack_info in
-// include/uapi/linux/netfilter/nf_conntrack_common.h. The kernel sends this
-// value in the NFQA_CT_INFO attribute when the queue is configured with
-// NFQA_CFG_F_CONNTRACK.
+// ip_conntrack_info values from include/uapi/linux/netfilter/nf_conntrack_common.h.
+// The kernel sends this value in the NFQA_CT_INFO attribute when the queue is
+// configured with NFQA_CFG_F_CONNTRACK.
 //
 //	IP_CT_ESTABLISHED       = 0
 //	IP_CT_RELATED           = 1
@@ -115,7 +118,11 @@ func hasLabelBit(currentLabel []byte, bitIndex int) bool {
 //	IP_CT_RELATED_REPLY     = IP_CT_RELATED + IP_CT_IS_REPLY     = 4
 //	IP_CT_NUMBER            = 5 (no NEW in the reply direction)
 //	IP_CT_UNTRACKED         = 7
-const ipCTIsReply uint32 = 3
+const (
+	ipCTEstablished      uint32 = 0
+	ipCTIsReply          uint32 = 3
+	ipCTEstablishedReply uint32 = ipCTEstablished + ipCTIsReply
+)
 
 // isReply reports whether the packet flows in the reply direction of its
 // conntrack entry. It mirrors the kernel's CTINFO2DIR() from
@@ -124,4 +131,10 @@ const ipCTIsReply uint32 = 3
 //	#define CTINFO2DIR(ctinfo) ((ctinfo) >= IP_CT_IS_REPLY ? IP_CT_DIR_REPLY : IP_CT_DIR_ORIGINAL)
 func isReply(ctInfo *uint32) bool {
 	return ctInfo != nil && *ctInfo >= ipCTIsReply
+}
+
+// isEstablished reports whether the packet belongs to a connection the kernel
+// tracks as established, in either direction, so the packet did not open it.
+func isEstablished(ctInfo *uint32) bool {
+	return ctInfo != nil && (*ctInfo == ipCTEstablished || *ctInfo == ipCTEstablishedReply)
 }

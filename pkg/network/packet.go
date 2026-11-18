@@ -51,6 +51,11 @@ type Packet struct {
 	TCPFlags TCPFlags
 
 	Payload []byte
+	// Established reports that the packet belongs to a connection the kernel
+	// already tracks as established, in either direction, so the packet did
+	// not open it. Nothing in the packet bytes carries it, the dataplane sets
+	// it from the conntrack information of the packet.
+	Established bool
 }
 
 var ErrorTooShort = fmt.Errorf("packet too short")
@@ -63,13 +68,14 @@ func (p Packet) String() string {
 // This function is used for JSON output (interface logr.Marshaler)
 func (p Packet) MarshalLog() any {
 	return &struct {
-		ID      uint32
-		Family  v1.IPFamily
-		SrcIP   net.IP
-		DstIP   net.IP
-		Proto   v1.Protocol
-		SrcPort int
-		DstPort int
+		ID          uint32
+		Family      v1.IPFamily
+		SrcIP       net.IP
+		DstIP       net.IP
+		Proto       v1.Protocol
+		SrcPort     int
+		DstPort     int
+		Established bool
 	}{
 		p.ID,
 		p.Family,
@@ -78,6 +84,7 @@ func (p Packet) MarshalLog() any {
 		p.Proto,
 		p.SrcPort,
 		p.DstPort,
+		p.Established,
 	}
 }
 
