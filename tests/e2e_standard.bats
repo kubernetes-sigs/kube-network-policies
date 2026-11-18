@@ -322,6 +322,14 @@ EOF
   # Check that new messages are not received
   busywait check_last_line "$TMPFILEOUT" "Keepalive without policies"
 
+  # The denied packets of the established connection are logged with their TCP flags, so
+  # they can be told from a new connection that the policy denies.
+  # https://github.com/kubernetes-sigs/kube-network-policies/issues/440
+  CLIENT_IP=$(kubectl get pod client -n dev -o jsonpath='{.status.podIP}')
+  logs=$(kubectl -n kube-system logs -l k8s-app=kube-network-policies --tail=-1 | grep '"Packet verdict"' | grep "src=\"$CLIENT_IP:" || true)
+  echo "Verdicts logged for the client: $logs"
+  echo "$logs" | grep 'verdict="deny"' | grep -q 'tcpFlags="PSH,ACK"'
+
   kill "$CLIENT_PID" > /dev/null 2>&1 || true
   # Cleanup: delete resources created by this test
   kubectl delete pod webserver -n prod --ignore-not-found
@@ -435,6 +443,8 @@ EOF
   echo "$logs" | grep -q 'dstPod="default/web"'
   echo "$logs" | grep -q 'direction="ingress"'
   echo "$logs" | grep -q 'evaluator="StandardNetworkPolicy"'
+  # the denied packet is the one that opens the connection
+  echo "$logs" | grep "srcPod=\"dev/$client\"" | grep -q 'tcpFlags="SYN"'
   # the trace is not logged
   ! kubectl -n kube-system logs -l k8s-app=kube-network-policies --tail=-1 | grep -q '"Evaluating packet"'
 
