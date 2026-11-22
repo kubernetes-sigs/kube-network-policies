@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync"
 	"time"
 
 	nfqueue "github.com/florianl/go-nfqueue/v2"
@@ -65,6 +66,7 @@ type Config struct {
 	NFTableName         string // if other projects use this controllers they need to be able to use their own table name
 	StrictMode          bool   // enforce network policies also on established connections
 	CTLabelAccept       int    // conntrack label to set on accepted connections (between 1-127)
+	AsyncWorkers        int    // if > 0, evaluate nfqueue packets asynchronously in a bounded worker pool
 	skipSkuidBypass     bool   // skip the "meta skuid 0 accept" rule, used for testing to force all traffic through nfqueue
 }
 
@@ -91,6 +93,10 @@ func (c *Config) Validate() error {
 
 	if c.CTLabelAccept < 0 || c.CTLabelAccept > 127 {
 		errorsList = append(errorsList, fmt.Errorf("invalid ct label accept value, must be between 1-127"))
+	}
+
+	if c.AsyncWorkers < 0 {
+		errorsList = append(errorsList, fmt.Errorf("invalid async workers value, must be >= 0"))
 	}
 
 	return errors.Join(errorsList...)
@@ -163,6 +169,14 @@ func newController(
 	return c, nil
 }
 
+// verdictSetter abstracts the verdict methods of *nfqueue.Nfqueue so the
+// synchronous and asynchronous packet dispatch paths can be unit tested
+// without requiring netlink or user namespaces.
+type verdictSetter interface {
+	SetVerdict(id uint32, verdict int) error
+	SetVerdictWithOption(id uint32, verdict int, options ...nfqueue.VerdictOption) error
+}
+
 // Controller manages selector-based networkpolicy endpoints.
 type Controller struct {
 	config       Config
@@ -170,7 +184,13 @@ type Controller struct {
 	syncRunner   *runner.BoundedFrequencyRunner
 	connRunner   *runner.BoundedFrequencyRunner
 
-	nfq *nfqueue.Nfqueue
+	verdictMu sync.Mutex
+	nfq       verdictSetter
+}
+
+type asyncPacketItem struct {
+	packet    network.Packet
+	startTime time.Time
 }
 
 // Run will not return until stopCh is closed. workers determines how many
@@ -249,60 +269,13 @@ func (c *Controller) Run(ctx context.Context) error {
 		WriteTimeout: 100 * time.Millisecond,
 	}
 
+	// Start optional async nfqueue worker pool so remote lookups (e.g., DHT)
+	// do not block the netlink reader goroutine.
+	workerCtx, workCh, stopWorkers := c.startAsyncWorkers(ctx, int(config.MaxQueueLen))
+
 	// Parse the packet and check if it should be accepted
-	// Packets should be evaludated independently in each direction
-	fn := func(a nfqueue.Attribute) int {
-		verdict := nfqueue.NfDrop
-		if c.config.FailOpen {
-			verdict = nfqueue.NfAccept
-		}
-
-		startTime := time.Now()
-		logger.V(4).Info("Processing sync for packet", "id", *a.PacketID)
-
-		packet, err := network.ParsePacket(*a.Payload)
-		if err != nil {
-			logger.Error(err, "Can not process packet, applying default policy", "id", *a.PacketID, "failOpen", c.config.FailOpen)
-			c.nfq.SetVerdict(*a.PacketID, verdict) //nolint:errcheck
-			return 0
-		}
-		packet.ID = *a.PacketID
-		packet.Established = isEstablished(a.CtInfo)
-		// Established connections without the accept label (pre-existing connections or
-		// connections whose label was cleared after a policy update) are sent to the queue
-		// on their next packet, which may be a reply. Network policies apply to connections
-		// rather than individual packets, so evaluate the connection as it was originally
-		// initiated. The kernel packet is not modified, only the parsed copy.
-		if isReply(a.CtInfo) {
-			packet = packet.Reverse()
-		}
-
-		defer func() {
-			processingTime := float64(time.Since(startTime).Microseconds())
-			packetProcessingHist.WithLabelValues(string(packet.Proto), string(packet.Family)).Observe(processingTime)
-			packetProcessingSum.Observe(processingTime)
-			verdictStr := verdictString(verdict)
-			packetCounterVec.WithLabelValues(string(packet.Proto), string(packet.Family), verdictStr).Inc()
-			logger.V(4).Info("Finished syncing packet", "id", *a.PacketID, "duration", time.Since(startTime), "verdict", verdictStr)
-		}()
-
-		verdictOptions := []nfqueue.VerdictOption{}
-		if c.evaluatePacket(ctx, &packet) {
-			verdict = nfqueue.NfAccept
-			// TODO: it is unclear if setting the label here will completely remove the existing labels
-			// or just set the specific bit. If it removes all the existing labels we need to read them first.
-			// Based on the bugs found in the conntrack and netfilter code around ct labels, it is likely that
-			// it removes all existing labels, but also that is not widely used, so for now we set it directly.
-			verdictOptions = append(verdictOptions, nfqueue.WithLabel(generateLabelMask(c.config.CTLabelAccept)))
-		} else {
-			verdict = nfqueue.NfDrop
-		}
-		err = c.nfq.SetVerdictWithOption(*a.PacketID, verdict, verdictOptions...)
-		if err != nil {
-			logger.Error(err, "failed to set verdict with label", "id", *a.PacketID)
-		}
-		return 0
-	}
+	// Packets should be evaluated independently in each direction
+	fn := c.newPacketHandler(workerCtx, workCh)
 
 	// Register your function to listen on nflog group 100
 	errfn := func(err error) int {
@@ -316,16 +289,151 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 	nf, err := c.openQueue(ctx, &config, fn, errfn)
 	if err != nil {
+		stopWorkers()
 		logger.Info("could not open nfqueue socket", "error", err)
 		return err
 	}
+	// LIFO defer order ensures async workers drain before closing the netlink socket.
 	defer nf.Close()
+	defer stopWorkers()
 
 	<-ctx.Done()
 
 	c.Shutdown(context.Background())
 
 	return nil
+}
+
+func (c *Controller) startAsyncWorkers(ctx context.Context, queueLen int) (context.Context, chan asyncPacketItem, func()) {
+	if c.config.AsyncWorkers <= 0 {
+		return ctx, nil, func() {}
+	}
+	if queueLen <= 0 {
+		queueLen = 1024
+	}
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	workCh := make(chan asyncPacketItem, queueLen)
+	var workerWG sync.WaitGroup
+	for range c.config.AsyncWorkers {
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			for {
+				select {
+				case <-workerCtx.Done():
+					return
+				case item := <-workCh:
+					c.processPacket(workerCtx, item.packet, item.startTime)
+				}
+			}
+		}()
+	}
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancelWorkers()
+			workerWG.Wait()
+		})
+	}
+	return workerCtx, workCh, stop
+}
+
+func (c *Controller) newPacketHandler(ctx context.Context, workCh chan asyncPacketItem) nfqueue.HookFunc {
+	logger := klog.FromContext(ctx)
+	return func(a nfqueue.Attribute) int {
+		startTime := time.Now()
+		packetID := *a.PacketID
+		logger.V(4).Info("Processing sync for packet", "id", packetID)
+
+		packet, err := network.ParsePacket(*a.Payload)
+		if err != nil {
+			logger.Error(err, "Can not process packet, applying default policy", "id", packetID, "failOpen", c.config.FailOpen)
+			c.setDefaultVerdict(packetID)
+			return 0
+		}
+		packet.ID = packetID
+		packet.Established = isEstablished(a.CtInfo)
+		// Established connections without the accept label (pre-existing connections or
+		// connections whose label was cleared after a policy update) are sent to the queue
+		// on their next packet, which may be a reply. Network policies apply to connections
+		// rather than individual packets, so evaluate the connection as it was originally
+		// initiated. The kernel packet is not modified, only the parsed copy.
+		if isReply(a.CtInfo) {
+			packet = packet.Reverse()
+		}
+
+		if workCh != nil {
+			if ctx.Err() != nil {
+				c.setDefaultVerdict(packetID)
+				return 0
+			}
+			select {
+			case workCh <- asyncPacketItem{packet: packet, startTime: startTime}:
+			case <-ctx.Done():
+				c.setDefaultVerdict(packetID)
+			default:
+				nfqueueAsyncQueueFullTotal.Inc()
+				logger.V(2).Info("Async nfqueue worker queue full, applying default policy", "id", packetID, "failOpen", c.config.FailOpen)
+				c.setDefaultVerdict(packetID)
+			}
+			return 0
+		}
+
+		c.processPacket(ctx, packet, startTime)
+		return 0
+	}
+}
+
+func (c *Controller) defaultVerdict() int {
+	if c.config.FailOpen {
+		return nfqueue.NfAccept
+	}
+	return nfqueue.NfDrop
+}
+
+func (c *Controller) setDefaultVerdict(packetID uint32) {
+	c.verdictMu.Lock()
+	defer c.verdictMu.Unlock()
+	if c.nfq == nil {
+		return
+	}
+	_ = c.nfq.SetVerdict(packetID, c.defaultVerdict())
+}
+
+func (c *Controller) processPacket(ctx context.Context, packet network.Packet, startTime time.Time) {
+	logger := klog.FromContext(ctx)
+	verdict := c.defaultVerdict()
+
+	defer func() {
+		processingTime := float64(time.Since(startTime).Microseconds())
+		packetProcessingHist.WithLabelValues(string(packet.Proto), string(packet.Family)).Observe(processingTime)
+		packetProcessingSum.Observe(processingTime)
+		verdictStr := verdictString(verdict)
+		packetCounterVec.WithLabelValues(string(packet.Proto), string(packet.Family), verdictStr).Inc()
+		logger.V(4).Info("Finished syncing packet", "id", packet.ID, "duration", time.Since(startTime), "verdict", verdictStr)
+	}()
+
+	verdictOptions := []nfqueue.VerdictOption{}
+	if c.evaluatePacket(ctx, &packet) {
+		verdict = nfqueue.NfAccept
+		// TODO: it is unclear if setting the label here will completely remove the existing labels
+		// or just set the specific bit. If it removes all the existing labels we need to read them first.
+		// Based on the bugs found in the conntrack and netfilter code around ct labels, it is likely that
+		// it removes all existing labels, but also that is not widely used, so for now we set it directly.
+		verdictOptions = append(verdictOptions, nfqueue.WithLabel(generateLabelMask(c.config.CTLabelAccept)))
+	} else {
+		verdict = nfqueue.NfDrop
+	}
+
+	c.verdictMu.Lock()
+	var err error
+	if c.nfq != nil {
+		err = c.nfq.SetVerdictWithOption(packet.ID, verdict, verdictOptions...)
+	}
+	c.verdictMu.Unlock()
+	if err != nil {
+		logger.Error(err, "failed to set verdict with label", "id", packet.ID)
+	}
 }
 
 // openQueue opens the nfqueue socket and binds the queue, retrying on failure.
@@ -345,10 +453,15 @@ func (c *Controller) openQueue(ctx context.Context, config *nfqueue.Config, fn n
 		if err != nil {
 			return nil, err
 		}
+		c.verdictMu.Lock()
 		c.nfq = nf
+		c.verdictMu.Unlock()
 		if err = nf.RegisterWithErrorFunc(ctx, fn, errfn); err == nil {
 			return nf, nil
 		}
+		c.verdictMu.Lock()
+		c.nfq = nil
+		c.verdictMu.Unlock()
 		nf.Close()
 		logger.V(2).Info("failed to bind nfqueue, retrying", "attempt", attempt, "error", err)
 		select {

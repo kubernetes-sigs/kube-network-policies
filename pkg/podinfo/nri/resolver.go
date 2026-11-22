@@ -13,6 +13,7 @@ import (
 	"github.com/containerd/nri/pkg/stub"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"google.golang.org/protobuf/proto"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
@@ -23,6 +24,13 @@ import (
 var _ podinfo.IPResolver = &NRIResolver{}
 var _ api.PodInfoProvider = &NRIResolver{}
 var _ stub.StopPodInterface = &NRIResolver{}
+
+// EventHandler receives notifications when local pod sandboxes start,
+// synchronize, or stop. Callbacks are invoked outside the resolver lock.
+type EventHandler struct {
+	OnUpsert func(pod *api.PodInfo)
+	OnDelete func(uid string, ips []string)
+}
 
 // NRIResolver listens to NRI events and tracks which pod sandbox owns each
 // IP on the node. A sandbox owns its IPs from RunPodSandbox until
@@ -35,10 +43,41 @@ type NRIResolver struct {
 	mu          sync.Mutex
 	podInfoByIP map[string]*api.PodInfo
 	sandboxes   map[string]*api.PodInfo
+	handler     EventHandler
+}
+
+// Option configures an NRIResolver at construction time.
+type Option func(*NRIResolver)
+
+// WithEventHandler registers sandbox lifecycle callbacks before the NRI plugin
+// starts, avoiding startup races with the initial Synchronize snapshot.
+func WithEventHandler(h EventHandler) Option {
+	return func(p *NRIResolver) {
+		p.handler = h
+	}
+}
+
+// SetEventHandler registers callbacks invoked when local sandboxes are synced,
+// started, or stopped, and replays any already-tracked sandboxes to OnUpsert.
+func (p *NRIResolver) SetEventHandler(h EventHandler) {
+	p.mu.Lock()
+	p.handler = h
+	var existing []*api.PodInfo
+	if h.OnUpsert != nil {
+		existing = make([]*api.PodInfo, 0, len(p.sandboxes))
+		for _, info := range p.sandboxes {
+			existing = append(existing, proto.Clone(info).(*api.PodInfo))
+		}
+	}
+	p.mu.Unlock()
+
+	for _, info := range existing {
+		h.OnUpsert(info)
+	}
 }
 
 // NewNRIResolver creates a new resolver that looks up pods via the NRI plugin.
-func NewNRIResolver(ctx context.Context, nodeName string, namespaceInformer coreinformers.NamespaceInformer) (*NRIResolver, error) {
+func NewNRIResolver(ctx context.Context, nodeName string, namespaceInformer coreinformers.NamespaceInformer, resolverOpts ...Option) (*NRIResolver, error) {
 	const (
 		pluginName = "kube-network-policies-podip-resolver"
 		pluginIdx  = "10"
@@ -50,6 +89,11 @@ func NewNRIResolver(ctx context.Context, nodeName string, namespaceInformer core
 	}
 	if namespaceInformer != nil {
 		p.nsLister = namespaceInformer.Lister()
+	}
+	for _, opt := range resolverOpts {
+		if opt != nil {
+			opt(p)
+		}
 	}
 
 	opts := []stub.Option{
@@ -158,9 +202,46 @@ func (p *NRIResolver) Synchronize(_ context.Context, pods []*nriapi.PodSandbox, 
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	prevSandboxes := p.sandboxes
 	p.podInfoByIP = podInfoByIP
 	p.sandboxes = sandboxes
+	onUpsert := p.handler.OnUpsert
+	onDelete := p.handler.OnDelete
+	var removed []struct {
+		uid string
+		ips []string
+	}
+	if onDelete != nil {
+		for _, oldPod := range prevSandboxes {
+			var gone []string
+			for _, ip := range oldPod.IPs {
+				if cur, ok := podInfoByIP[ip]; !ok || cur.UID != oldPod.UID {
+					gone = append(gone, ip)
+				}
+			}
+			if len(gone) > 0 {
+				removed = append(removed, struct {
+					uid string
+					ips []string
+				}{uid: oldPod.UID, ips: gone})
+			}
+		}
+	}
+	var upserts []*api.PodInfo
+	if onUpsert != nil {
+		upserts = make([]*api.PodInfo, 0, len(sandboxes))
+		for _, podInfo := range sandboxes {
+			upserts = append(upserts, proto.Clone(podInfo).(*api.PodInfo))
+		}
+	}
+	p.mu.Unlock()
+
+	for _, r := range removed {
+		onDelete(r.uid, r.ips)
+	}
+	for _, podInfo := range upserts {
+		onUpsert(podInfo)
+	}
 	return nil, nil
 }
 
@@ -171,19 +252,39 @@ func (p *NRIResolver) Shutdown(_ context.Context) {
 // RunPodSandbox is called after the runtime set up the network of the
 // sandbox, so the sandbox owns its IPs from now on.
 func (p *NRIResolver) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
-	ips := getPodIPs(pod)
+	nsPath := getNetworkNamespace(pod)
 	podKey := fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName())
-	klog.V(4).Infof("Starting Pod %s sandbox=%s netns=%s ips=%v", podKey, pod.GetId(), getNetworkNamespace(pod), ips)
+	// Host-network and stopped sandboxes have no pod network namespace; ignoring
+	// them prevents hostNetwork pods on containerd 2.1+ from claiming the node IP.
+	if nsPath == "" {
+		klog.V(4).Infof("Ignoring hostNetwork or stopped pod %s sandbox=%s", podKey, pod.GetId())
+		return nil
+	}
+	ips := getPodIPs(pod)
+	klog.V(4).Infof("Starting Pod %s sandbox=%s netns=%s ips=%v", podKey, pod.GetId(), nsPath, ips)
 	podInfo := p.getPodInfo(pod, ips)
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	// A sandbox runs once, but if the runtime reports it again the IPs of
 	// the first run must not outlive it.
-	p.release(pod.GetId())
+	releasedUID, releasedIPs := p.release(pod.GetId())
 	p.sandboxes[pod.GetId()] = podInfo
 	for _, ip := range ips {
 		p.podInfoByIP[ip] = podInfo
+	}
+	onUpsert := p.handler.OnUpsert
+	onDelete := p.handler.OnDelete
+	var upsertCopy *api.PodInfo
+	if onUpsert != nil && len(ips) > 0 {
+		upsertCopy = proto.Clone(podInfo).(*api.PodInfo)
+	}
+	p.mu.Unlock()
+
+	if onDelete != nil && len(releasedIPs) > 0 {
+		onDelete(releasedUID, releasedIPs)
+	}
+	if upsertCopy != nil {
+		onUpsert(upsertCopy)
 	}
 	return nil
 }
@@ -193,8 +294,12 @@ func (p *NRIResolver) RunPodSandbox(_ context.Context, pod *nriapi.PodSandbox) e
 func (p *NRIResolver) StopPodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
 	klog.V(4).Infof("Stopping Pod %s/%s sandbox=%s", pod.GetNamespace(), pod.GetName(), pod.GetId())
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.release(pod.GetId())
+	releasedUID, releasedIPs := p.release(pod.GetId())
+	onDelete := p.handler.OnDelete
+	p.mu.Unlock()
+	if onDelete != nil && len(releasedIPs) > 0 {
+		onDelete(releasedUID, releasedIPs)
+	}
 	return nil
 }
 
@@ -204,24 +309,31 @@ func (p *NRIResolver) StopPodSandbox(_ context.Context, pod *nriapi.PodSandbox) 
 func (p *NRIResolver) RemovePodSandbox(_ context.Context, pod *nriapi.PodSandbox) error {
 	klog.V(4).Infof("Removing Pod %s/%s sandbox=%s", pod.GetNamespace(), pod.GetName(), pod.GetId())
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.release(pod.GetId())
+	releasedUID, releasedIPs := p.release(pod.GetId())
+	onDelete := p.handler.OnDelete
+	p.mu.Unlock()
+	if onDelete != nil && len(releasedIPs) > 0 {
+		onDelete(releasedUID, releasedIPs)
+	}
 	return nil
 }
 
 // release forgets the sandbox and the IPs it still owns. An IP taken over by
 // a newer sandbox is left alone. It must be called with p.mu held.
-func (p *NRIResolver) release(id string) {
+func (p *NRIResolver) release(id string) (string, []string) {
 	podInfo, ok := p.sandboxes[id]
 	if !ok {
-		return
+		return "", nil
 	}
 	delete(p.sandboxes, id)
+	var released []string
 	for _, ip := range podInfo.IPs {
 		if p.podInfoByIP[ip] == podInfo {
 			delete(p.podInfoByIP, ip)
+			released = append(released, ip)
 		}
 	}
+	return podInfo.UID, released
 }
 
 // onClose is called when the connection to the runtime is lost. The state

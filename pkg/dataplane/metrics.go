@@ -62,6 +62,12 @@ var (
 		Name:      "nfqueue_packet_id",
 		Help:      "ID of the most recent packet queued.",
 	}, []string{"queue"})
+
+	nfqueueAsyncQueueFullTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "kube_network_policies",
+		Name:      "nfqueue_async_queue_full_total",
+		Help:      "Number of packets that fell back to the default verdict because the async nfqueue worker buffer was full.",
+	})
 )
 
 var registerMetricsOnce sync.Once
@@ -77,6 +83,7 @@ func registerMetrics(ctx context.Context) {
 		prometheus.MustRegister(nfqueueQueueDropped)
 		prometheus.MustRegister(nfqueueUserDropped)
 		prometheus.MustRegister(nfqueuePacketID)
+		prometheus.MustRegister(nfqueueAsyncQueueFullTotal)
 	})
 }
 

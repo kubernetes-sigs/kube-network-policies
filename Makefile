@@ -12,9 +12,9 @@ REGISTRY?=gcr.io/k8s-staging-networking
 TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git describe --always --dirty)")
 PLATFORMS?=linux/amd64,linux/arm64,linux/s390x
 
-.PHONY: all build build-standard build-npa-v1alpha2 build-npa-v1beta1 build-iptracker build-kube-ip-tracker-standard
+.PHONY: all build build-standard build-npa-v1alpha2 build-npa-v1beta1 build-iptracker build-dht build-kube-ip-tracker-standard
 
-build: build-standard build-npa-v1alpha2 build-npa-v1beta1 build-iptracker build-kube-ip-tracker-standard
+build: build-standard build-npa-v1alpha2 build-npa-v1beta1 build-iptracker build-dht build-kube-ip-tracker-standard
 
 build-standard:
 	@echo "Building standard binary..."
@@ -31,6 +31,10 @@ build-npa-v1beta1:
 build-iptracker:
 	@echo "Building iptracker binary..."
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-network-policies-iptracker ./cmd/kube-network-policies/iptracker
+
+build-dht:
+	@echo "Building dht binary..."
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o ./bin/kube-network-policies-dht ./cmd/kube-network-policies/dht
 
 build-kube-ip-tracker-standard:
 	@echo "Building kube-ip-tracker binary..."
@@ -80,6 +84,12 @@ image-build-iptracker: build-iptracker
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-iptracker" \
 		--load
 
+image-build-dht: build-dht
+	docker buildx build . \
+		--build-arg TARGET_BUILD=dht \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-dht" \
+		--load
+
 image-build-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 	docker buildx build . -f Dockerfile.iptracker \
 		--build-arg TARGET_BUILD=standard \
@@ -115,6 +125,13 @@ image-push-iptracker: build-iptracker
 		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-iptracker" \
 		--push
 
+image-push-dht: build-dht
+	docker buildx build . \
+		--build-arg TARGET_BUILD=dht \
+		--platform="${PLATFORMS}" \
+		--tag="${REGISTRY}/$(IMAGE_NAME):$(TAG)-dht" \
+		--push
+
 image-push-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 	docker buildx build . -f Dockerfile.iptracker \
 		--build-arg TARGET_BUILD=standard \
@@ -126,7 +143,7 @@ image-push-kube-ip-tracker-standard: build-kube-ip-tracker-standard
 .PHONY: images-build images-push release
 
 # Build all image variants and load them into the local Docker daemon
-images-build: ensure-buildx image-build-standard image-build-npa-v1alpha2 image-build-npa-v1beta1 image-build-iptracker image-build-kube-ip-tracker-standard
+images-build: ensure-buildx image-build-standard image-build-npa-v1alpha2 image-build-npa-v1beta1 image-build-iptracker image-build-dht image-build-kube-ip-tracker-standard
 
 # Build and push all multi-platform image variants to the registry
 images-push: ensure-buildx image-push-standard image-push-npa-v1alpha2 image-push-npa-v1beta1 image-push-iptracker image-push-kube-ip-tracker-standard

@@ -325,3 +325,89 @@ func TestGetPodIPs(t *testing.T) {
 		}
 	})
 }
+
+func TestNRIResolver_EventHandler(t *testing.T) {
+	ctx := context.Background()
+	resolver := newTestResolver()
+
+	var mu sync.Mutex
+	var upserts []string
+	var deletes []string
+	resolver.SetEventHandler(EventHandler{
+		OnUpsert: func(pod *api.PodInfo) {
+			mu.Lock()
+			defer mu.Unlock()
+			upserts = append(upserts, pod.UID)
+		},
+		OnDelete: func(uid string, ips []string) {
+			mu.Lock()
+			defer mu.Unlock()
+			deletes = append(deletes, fmt.Sprintf("%s:%v", uid, ips))
+		},
+	})
+
+	pod1 := makeNRIPod("ns1", "pod1", []string{"10.0.0.1"})
+	if err := resolver.RunPodSandbox(ctx, pod1); err != nil {
+		t.Fatalf("RunPodSandbox() error = %v", err)
+	}
+	if err := resolver.StopPodSandbox(ctx, pod1); err != nil {
+		t.Fatalf("StopPodSandbox() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(upserts, []string{pod1.GetUid()}) {
+		t.Fatalf("upserts = %v, want [%s]", upserts, pod1.GetUid())
+	}
+	wantDelete := fmt.Sprintf("%s:[10.0.0.1]", pod1.GetUid())
+	if !reflect.DeepEqual(deletes, []string{wantDelete}) {
+		t.Fatalf("deletes = %v, want [%s]", deletes, wantDelete)
+	}
+}
+
+func TestNRIResolver_RunPodSandboxIgnoresHostNetworkAndSyncDiffsDeletes(t *testing.T) {
+	ctx := context.Background()
+	resolver := newTestResolver()
+
+	var mu sync.Mutex
+	var upserts []string
+	var deletes []string
+	resolver.SetEventHandler(EventHandler{
+		OnUpsert: func(pod *api.PodInfo) {
+			mu.Lock()
+			defer mu.Unlock()
+			upserts = append(upserts, pod.UID)
+		},
+		OnDelete: func(uid string, ips []string) {
+			mu.Lock()
+			defer mu.Unlock()
+			deletes = append(deletes, fmt.Sprintf("%s:%v", uid, ips))
+		},
+	})
+
+	// hostNetwork pod has empty network namespace path -> must be ignored.
+	hostPod := makeNRISandbox("host-sb", "kube-system", "kube-proxy", "", []string{"192.168.1.10"})
+	if err := resolver.RunPodSandbox(ctx, hostPod); err != nil {
+		t.Fatalf("RunPodSandbox(hostPod) error = %v", err)
+	}
+	expectNotFound(t, resolver, "192.168.1.10")
+
+	// Start normal pod, then Synchronize without it -> must emit OnDelete.
+	pod1 := makeNRIPod("ns1", "pod1", []string{"10.0.0.1"})
+	if err := resolver.RunPodSandbox(ctx, pod1); err != nil {
+		t.Fatalf("RunPodSandbox(pod1) error = %v", err)
+	}
+	if _, err := resolver.Synchronize(ctx, nil, nil); err != nil {
+		t.Fatalf("Synchronize(empty) error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(upserts, []string{pod1.GetUid()}) {
+		t.Fatalf("upserts = %v, want [%s]", upserts, pod1.GetUid())
+	}
+	wantDelete := fmt.Sprintf("%s:[10.0.0.1]", pod1.GetUid())
+	if !reflect.DeepEqual(deletes, []string{wantDelete}) {
+		t.Fatalf("deletes = %v, want [%s]", deletes, wantDelete)
+	}
+}
