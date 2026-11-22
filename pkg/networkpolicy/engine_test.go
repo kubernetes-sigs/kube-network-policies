@@ -808,3 +808,121 @@ func TestPolicyEngine_PodIPReuse(t *testing.T) {
 		})
 	}
 }
+
+// The node of the source Pod evaluates its egress policies, the other nodes
+// that receive the packet only evaluate the ingress policies of the
+// destination Pod.
+func TestPolicyEngine_EvaluateEgressOnSourceNode(t *testing.T) {
+	const (
+		srcIP = "10.244.1.2"
+		dstIP = "10.244.2.2"
+	)
+	podOn := func(node string) *api.PodInfo {
+		pod := &api.PodInfo{Name: "client", Namespace: &api.Namespace{Name: "dev"}}
+		if node != "" {
+			pod.Node = &api.Node{Name: node}
+		}
+		return pod
+	}
+
+	tests := []struct {
+		name        string
+		nodeName    string // node of the engine, empty when egress is evaluated on every node
+		srcPod      *api.PodInfo
+		denyEgress  bool
+		denyIngress bool
+		wantEgress  bool // the egress pipeline runs
+		wantAllow   bool
+	}{
+		{
+			name:       "egress is evaluated on every node by default",
+			srcPod:     podOn("worker2"),
+			denyEgress: true,
+			wantEgress: true,
+			wantAllow:  false,
+		},
+		{
+			name:       "egress of a local Pod is evaluated",
+			nodeName:   "worker",
+			srcPod:     podOn("worker"),
+			denyEgress: true,
+			wantEgress: true,
+			wantAllow:  false,
+		},
+		{
+			name:       "egress of a Pod on another node is not evaluated",
+			nodeName:   "worker",
+			srcPod:     podOn("worker2"),
+			denyEgress: true,
+			wantEgress: false,
+			wantAllow:  true,
+		},
+		{
+			name:        "ingress is evaluated when the source Pod is on another node",
+			nodeName:    "worker",
+			srcPod:      podOn("worker2"),
+			denyIngress: true,
+			wantEgress:  false,
+			wantAllow:   false,
+		},
+		{
+			name:       "egress of a Pod with no known node is evaluated",
+			nodeName:   "worker",
+			srcPod:     podOn(""),
+			denyEgress: true,
+			wantEgress: true,
+			wantAllow:  false,
+		},
+		{
+			name:       "egress of a source that is not a Pod is evaluated",
+			nodeName:   "worker",
+			srcPod:     nil,
+			denyEgress: true,
+			wantEgress: true,
+			wantAllow:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdictFor := func(deny bool) api.Verdict {
+				if deny {
+					return api.VerdictDeny
+				}
+				return api.VerdictNext
+			}
+			egressRuns := 0
+			evaluator := &mockPolicyEvaluator{
+				name: "evaluator",
+				evaluateEgress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+					egressRuns++
+					return verdictFor(tt.denyEgress), nil
+				},
+				evaluateIngress: func(context.Context, *network.Packet, *api.PodInfo, *api.PodInfo) (api.Verdict, error) {
+					return verdictFor(tt.denyIngress), nil
+				},
+			}
+			provider := &FuncProvider{GetFunc: func(ip string) (*api.PodInfo, bool) {
+				if ip == srcIP && tt.srcPod != nil {
+					return tt.srcPod, true
+				}
+				return nil, false
+			}}
+			engine := NewPolicyEngine(provider, []api.PolicyEvaluator{evaluator})
+			if tt.nodeName != "" {
+				engine.EvaluateEgressOnSourceNode(tt.nodeName)
+			}
+
+			packet := &network.Packet{SrcIP: net.ParseIP(srcIP), DstIP: net.ParseIP(dstIP)}
+			gotAllow, err := engine.EvaluatePacket(context.Background(), packet)
+			if err != nil {
+				t.Fatalf("EvaluatePacket() error = %v", err)
+			}
+			if gotAllow != tt.wantAllow {
+				t.Errorf("EvaluatePacket() = %v, want %v", gotAllow, tt.wantAllow)
+			}
+			if got := egressRuns > 0; got != tt.wantEgress {
+				t.Errorf("egress pipeline ran = %v, want %v", got, tt.wantEgress)
+			}
+		})
+	}
+}
