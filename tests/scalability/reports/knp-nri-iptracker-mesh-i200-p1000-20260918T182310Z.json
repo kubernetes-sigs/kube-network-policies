@@ -1,0 +1,85 @@
+{
+  "run_id": "knp-nri-iptracker-mesh-i200-p1000-20260918T182310Z",
+  "dut": "knp-nri-iptracker",
+  "scenario": "mesh",
+  "nodes": 20,
+  "pods": 1000,
+  "identities": 200,
+  "namespaces": 5,
+  "rate": 100,
+  "churn_rate": 10,
+  "churn_duration": "30s",
+  "fresh_identities": false,
+  "started": "2026-09-18T18:28:40Z",
+  "kind_version": "kind v0.33.0-alpha.11+83e38063baeaa7 go1.26.3 linux/amd64",
+  "kwok_version": "v0.8.0",
+  "total_seconds": 159,
+  "fill_seconds": 10,
+  "results": {
+    "enforce_ms_idle": 316,
+    "denied_ok_idle": true,
+    "fill_achieved_rate": 99.9,
+    "allowed_ok_loaded": true,
+    "denied_ok_loaded": true,
+    "revoke_ms": 2328,
+    "enforce_ms_loaded": 307,
+    "churn_replaced": 301,
+    "churn_failed": 0,
+    "allowed_ok_after_churn": true,
+    "denied_ok_after_churn": true
+  },
+  "probes": {
+    "fresh_conn_count": 200,
+    "fresh_conn_ok": 200,
+    "fresh_conn_p50_ms": 0.7126615126903553,
+    "fresh_conn_p99_ms": 1,
+    "connrate_qps": 10280.631546040786,
+    "connrate_count": 308483,
+    "connrate_ok": 308483,
+    "connrate_p50_ms": 8.014493697448588,
+    "connrate_p99_ms": 11.43780643634643,
+    "denied_attempts": 960,
+    "denied_succeeded": 0
+  },
+  "agent": {
+    "cpu_cores_max": 1.5046101182985148,
+    "cpu_cores_mean": 0.16859534969484533,
+    "memory_wss_mb_max": 131.77734375,
+    "go_heap_mb_max": 23.9453125,
+    "accept_per_s_max": 6829.581861333332,
+    "drop_per_s_max": 30.608533333333337,
+    "process_p99_us_max": 811,
+    "queue_depth_max": 44,
+    "queue_dropped_max": 0
+  },
+  "iptracker": {
+    "cpu_cores_max": 0.08978661268090973,
+    "memory_wss_mb_max": 57.99609375
+  },
+  "control_plane": {
+    "apiserver_cpu_cores_max": 0.6659550213585804,
+    "apiserver_memory_wss_mb_max": 782.5234375,
+    "watch_events_per_s_max": 629.4000000000001,
+    "kwok_cpu_cores_max": 0.1517550577642787
+  },
+  "kernel_state_steady": [
+    {
+      "node": "knp-scale-worker",
+      "dut": "knp-nri-iptracker",
+      "nft_rules": 15,
+      "podips_v4": -1,
+      "podips_v6": -1,
+      "conntrack_labeled": 0,
+      "divert_all": true
+    },
+    {
+      "node": "knp-scale-worker2",
+      "dut": "knp-nri-iptracker",
+      "nft_rules": 15,
+      "podips_v4": -1,
+      "podips_v6": -1,
+      "conntrack_labeled": 0,
+      "divert_all": true
+    }
+  ]
+}

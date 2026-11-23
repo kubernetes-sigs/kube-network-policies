@@ -1,0 +1,106 @@
+# Probe workloads: the only real Pods that carry traffic. They are pinned to
+# the real kind workers and labeled so the scenarios in scenarios/ apply to
+# them exactly as to the fake sandboxes.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${PROBE_NAMESPACE}
+  labels:
+    scale.knp.x-k8s.io/managed: "true"
+---
+# Gateway: the server every sandbox is allowed to reach. Also isolated so
+# its ingress rule (from group=sandbox) is what admits probe connections.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  namespace: ${PROBE_NAMESPACE}
+spec:
+  podSelector:
+    matchLabels:
+      group: gateway
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          scale.knp.x-k8s.io/managed: "true"
+      podSelector:
+        matchLabels:
+          group: sandbox
+    ports:
+    - protocol: TCP
+      port: ${GATEWAY_PORT}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gateway
+  namespace: ${PROBE_NAMESPACE}
+  labels:
+    group: gateway
+    app: gateway
+spec:
+  nodeName: ${GATEWAY_NODE}
+  containers:
+  - name: server
+    image: ${FORTIO_IMAGE}
+    args: [server, -http-port, "${GATEWAY_PORT}", -grpc-port, disabled, -redirect-port, disabled]
+    ports:
+    - name: http
+      containerPort: ${GATEWAY_PORT}
+    readinessProbe:
+      httpGet:
+        path: /
+        port: ${GATEWAY_PORT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: ${PROBE_NAMESPACE}
+spec:
+  selector:
+    app: gateway
+  ports:
+  - name: http
+    port: ${GATEWAY_PORT}
+    targetPort: ${GATEWAY_PORT}
+---
+# Allowed client: labeled like a sandbox, scheduled on a different worker
+# than the gateway so every connection crosses nodes and both the egress
+# (client node) and ingress (gateway node) evaluations run.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-allowed
+  namespace: ${PROBE_NAMESPACE}
+  labels:
+    group: sandbox
+    identity: probe
+    app: client-allowed
+spec:
+  nodeName: ${CLIENT_NODE}
+  containers:
+  - name: fortio
+    image: ${FORTIO_IMAGE}
+    # The image ships no shell or sleep; an idle fortio server keeps the Pod
+    # alive so kubectl exec can run fortio curl/load from inside it.
+    args: [server, -http-port, "8079", -grpc-port, disabled, -redirect-port, disabled]
+---
+# Denied client: same node, no sandbox label. Under default-deny nothing
+# admits it; a successful connection from here is an enforcement failure.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-denied
+  namespace: ${PROBE_NAMESPACE}
+  labels:
+    group: outsider
+    app: client-denied
+spec:
+  nodeName: ${CLIENT_NODE}
+  containers:
+  - name: fortio
+    image: ${FORTIO_IMAGE}
+    args: [server, -http-port, "8079", -grpc-port, disabled, -redirect-port, disabled]
