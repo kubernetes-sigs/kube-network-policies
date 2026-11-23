@@ -13,6 +13,15 @@ type PodInfoProvider interface {
 	GetPodInfoByIP(podIP string) (*PodInfo, bool)
 }
 
+// PodInfoResolver is an optional extension of PodInfoProvider for providers
+// that perform remote lookups and can return transient errors so callers can
+// honor fail-open / fail-closed policy instead of misclassifying outages as
+// external IPs.
+type PodInfoResolver interface {
+	PodInfoProvider
+	ResolvePodInfoByIP(ctx context.Context, podIP string) (*PodInfo, bool, error)
+}
+
 // DomainResolver provides an interface for resolving domain names to IP addresses.
 type DomainResolver interface {
 	// ContainsIP reports whether a DNS answer resolved domain to ip. A new

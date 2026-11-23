@@ -53,8 +53,16 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 
 	// Only run podInfoProvider once per packet to guarantee consistency
 	// across the pipeline and for efficiency.
-	srcPod, _ := e.podInfoProvider.GetPodInfoByIP(packet.SrcIP.String())
-	dstPod, _ := e.podInfoProvider.GetPodInfoByIP(packet.DstIP.String())
+	srcPod, err := e.resolvePodInfo(ctx, packet.SrcIP.String())
+	if err != nil {
+		logger.Error(err, "Source pod info lookup failed")
+		return false, err
+	}
+	dstPod, err := e.resolvePodInfo(ctx, packet.DstIP.String())
+	if err != nil {
+		logger.Error(err, "Destination pod info lookup failed")
+		return false, err
+	}
 	if srcPod == nil {
 		unresolvedIPCounter.WithLabelValues("source").Inc()
 	}
@@ -89,6 +97,23 @@ func (e *PolicyEngine) EvaluatePacket(ctx context.Context, packet *network.Packe
 	logger.V(4).Info("Packet accepted by policy")
 	e.logVerdict(packet, srcPod, dstPod, verdict, DirectionIngress, evaluator)
 	return true, nil
+}
+
+// resolvePodInfo queries podInfoProvider, honoring the optional error-aware
+// api.PodInfoResolver extension when implemented.
+func (e *PolicyEngine) resolvePodInfo(ctx context.Context, ip string) (*api.PodInfo, error) {
+	if resolver, ok := e.podInfoProvider.(api.PodInfoResolver); ok {
+		pod, found, err := resolver.ResolvePodInfoByIP(ctx, ip)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+		return pod, nil
+	}
+	pod, _ := e.podInfoProvider.GetPodInfoByIP(ip)
+	return pod, nil
 }
 
 // logVerdict hands the verdict over to the verdict logger, if any. The

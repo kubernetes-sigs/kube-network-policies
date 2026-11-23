@@ -1,0 +1,173 @@
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-network-policies
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - namespaces
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - "networking.k8s.io"
+    resources:
+      - networkpolicies
+    verbs:
+      - list
+      - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-network-policies
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-network-policies
+subjects:
+- kind: ServiceAccount
+  name: kube-network-policies
+  namespace: kube-system
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-network-policies-dht
+  namespace: kube-system
+rules:
+  - apiGroups:
+      - "discovery.k8s.io"
+    resources:
+      - endpointslices
+    verbs:
+      - list
+      - watch
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: kube-network-policies-dht
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-network-policies-dht
+subjects:
+- kind: ServiceAccount
+  name: kube-network-policies
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-network-policies
+  namespace: kube-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-network-policies-dht
+  namespace: kube-system
+  labels:
+    app: kube-network-policies
+spec:
+  clusterIP: None
+  selector:
+    app: kube-network-policies
+  ports:
+  - name: dht
+    port: 19091
+    targetPort: 19091
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-network-policies
+  namespace: kube-system
+  labels:
+    tier: node
+    app: kube-network-policies
+    k8s-app: kube-network-policies
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: kube-network-policies
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: kube-network-policies
+        k8s-app: kube-network-policies
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute
+      serviceAccountName: kube-network-policies
+      containers:
+      - name: kube-network-policies
+        image: registry.k8s.io/networking/kube-network-policies:v1.1.3-dht
+        args:
+        - /bin/netpol
+        - --hostname-override=$(MY_NODE_NAME)
+        - --v=2
+        - --nfqueue-id=98
+        - --dht-listen-address=:19091
+        - --dht-service-name=kube-network-policies-dht
+        - --dht-service-namespace=kube-system
+        # Production clusters should enable mutual TLS between agents using:
+        # - --dht-ca-file=/etc/kube-network-policies/tls/ca.crt
+        # - --dht-cert-file=/etc/kube-network-policies/tls/tls.crt
+        # - --dht-key-file=/etc/kube-network-policies/tls/tls.key
+        # and restrict host port 19091 to node-to-node traffic.
+        ports:
+        - containerPort: 19091
+          name: dht
+        - containerPort: 9080
+          name: metrics
+        readinessProbe:
+          tcpSocket:
+            port: 19091
+          initialDelaySeconds: 1
+          periodSeconds: 2
+          failureThreshold: 3
+        volumeMounts:
+        - name: nri-plugin
+          mountPath: /var/run/nri
+        - name: netns
+          mountPath: /var/run/netns
+          mountPropagation: HostToContainer
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "50Mi"
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN"]
+        env:
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumes:
+      - name: nri-plugin
+        hostPath:
+          path: /var/run/nri
+      - name: netns
+        hostPath:
+          path: /var/run/netns
+---

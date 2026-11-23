@@ -1505,3 +1505,101 @@ func testController_NodeInitiatedConnectionClose(t *testing.T) {
 		t.Fatalf("expected 0 packets queued to nfqueue for node-initiated connection, got %d", got)
 	}
 }
+
+// TestController_AsyncWorkersDoNotBlockQueue verifies that when AsyncWorkers > 0,
+// a slow evaluation (for example a remote DHT RPC on cache miss) does not block
+// unrelated connections in the nfqueue.
+func TestController_AsyncWorkersDoNotBlockQueue(t *testing.T) {
+	if !unpriviledUserns() {
+		t.Skip("Test requires unprivileged user namespaces")
+	}
+	execInUserns(t, testController_AsyncWorkersDoNotBlockQueue, syscall.CLONE_NEWNET)
+}
+
+func testController_AsyncWorkersDoNotBlockQueue(t *testing.T) {
+	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+		t.Fatalf("failed to bring lo up: %v: %s", err, out)
+	}
+
+	const (
+		probePort = 54321
+		slowPort  = 12350
+		fastPort  = 12351
+	)
+
+	slowStarted := make(chan struct{}, 1)
+	releaseSlow := make(chan struct{})
+
+	evaluators := []api.PolicyEvaluator{
+		&mockPolicyEvaluator{
+			name:      "async-test-evaluator",
+			divertAll: true,
+			isReady:   true,
+			evaluateEgress: func(_ context.Context, p *network.Packet, _, _ *api.PodInfo) (api.Verdict, error) {
+				switch p.DstPort {
+				case probePort:
+					return api.VerdictDeny, nil
+				case slowPort:
+					select {
+					case slowStarted <- struct{}{}:
+					default:
+					}
+					<-releaseSlow
+				}
+				return api.VerdictAccept, nil
+			},
+		},
+	}
+
+	config := Config{
+		QueueID:         202,
+		FailOpen:        false,
+		NFTableName:     "test-controller-async",
+		AsyncWorkers:    4,
+		skipSkuidBypass: true,
+	}
+	controller := newTestController(config, evaluators)
+	go func() { _ = controller.Run(t.Context()) }()
+	waitForController(t, fmt.Sprintf("127.0.0.1:%d", probePort))
+
+	slowAddr := fmt.Sprintf("127.0.0.1:%d", slowPort)
+	fastAddr := fmt.Sprintf("127.0.0.1:%d", fastPort)
+	slowReceived := tcpServer(t, slowAddr)
+	fastReceived := tcpServer(t, fastAddr)
+
+	// Start slow connection in background; its SYN blocks in one async worker.
+	slowDone := make(chan struct{})
+	go func() {
+		defer close(slowDone)
+		tcpSend(t, slowAddr, "slow-msg")
+	}()
+
+	select {
+	case <-slowStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for slow packet to enter evaluator")
+	}
+
+	// While slowPort is still blocked, fastPort must complete immediately on another worker.
+	tcpSend(t, fastAddr, "fast-msg")
+	select {
+	case got := <-fastReceived:
+		if got != "fast-msg" {
+			t.Fatalf("fastReceived = %q, want fast-msg", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fast connection was head-of-line blocked by slow connection")
+	}
+
+	// Now unblock slowPort and confirm it finishes cleanly too.
+	close(releaseSlow)
+	select {
+	case got := <-slowReceived:
+		if got != "slow-msg" {
+			t.Fatalf("slowReceived = %q, want slow-msg", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for unblocked slow connection")
+	}
+	<-slowDone
+}

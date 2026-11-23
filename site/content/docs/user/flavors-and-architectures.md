@@ -49,6 +49,13 @@ Depending on your cluster size, requirements, and policy choices, you can select
 * **Description:** A standalone control-plane helper daemon that runs centrally in your cluster. It watches pods, namespaces, and nodes, aggregates their labels, and runs an embedded etcd store to serve IP-to-PodInfo mappings to the node agents running in `iptracker` mode.
 * **Deployment Manifest:** Included as a Deployment in `install-iptracker.yaml`
 
+### 6. `dht` (1-Hop Agent DHT)
+* **Target Image:** `registry.k8s.io/networking/kube-network-policies:<tag>-dht`
+* **Description:** Self-contained large-scale flavor with no central stateful helper daemon. Each node watches only its own local pods (`spec.nodeName=<node>` + NRI), `Namespaces`, `NetworkPolicies`, and the DaemonSet headless Service `EndpointSlice`s, sharing IP-to-PodInfo mappings in a 1-hop Rendezvous-Hashing DHT over stdlib HTTP/2 with async `NFQUEUE` dispatch.
+* **Resource Cost:** Very low memory footprint per node ($O(\text{local pods} + \text{active peers} + k \cdot P/N)$), and keeps `divertAll = false` so unmanaged local pods stay in the kernel fast path.
+* **Deployment Manifest:** `install-dht.yaml`
+* **Design & Comparison:** See [1-Hop Agent DHT Design](../../concepts/dht-design/) and [Scaling Approaches Comparison](../../concepts/scaling-approaches/).
+
 ---
 
 ## Configuration Options & Flags
@@ -78,6 +85,17 @@ When deploying `kube-network-policies` or `kube-ip-tracker`, you can pass the fo
 | `--tls-ca-file` | `""` | TLS CA file for client validation. |
 | `--tls-cert-file` | `""` | TLS certificate file. |
 | `--tls-key-file` | `""` | TLS key file. |
+
+### 1-Hop Agent DHT Flags (`kube-network-policies` `dht` flavor)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dht-listen-address` | `:19091` | Address and port for the 1-hop DHT HTTP/2 server. |
+| `--dht-service-name` | `kube-network-policies-dht` | Headless Service name whose `EndpointSlice`s define the DHT ring. |
+| `--dht-service-namespace` | `kube-system` | Namespace of the DHT headless Service. |
+| `--dht-ca-file` | `""` | CA certificate file for mutual TLS between DHT agents. |
+| `--dht-cert-file` | `""` | Certificate file for mutual TLS between DHT agents. |
+| `--dht-key-file` | `""` | Private key file for mutual TLS between DHT agents. |
 
 ---
 
