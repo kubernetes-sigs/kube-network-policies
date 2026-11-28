@@ -27,7 +27,7 @@ require (
 	k8s.io/component-helpers v0.37.2
 	k8s.io/klog/v2 v2.140.0
 	k8s.io/utils v0.0.0-20261023123148-ca04ba58ecab
-	sigs.k8s.io/network-policy-api v0.3.0
+	sigs.k8s.io/network-policy-api v0.3.1
 )
 
 require (
